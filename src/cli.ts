@@ -205,6 +205,10 @@ async function runTui(initialSession: SessionManager | null): Promise<void> {
       app.appendMessage("assistant", "");
     },
   });
+  // 15a：TUI 权限弹窗接入 askUser（非 TUI 模式保持默认拒绝）
+  const { setAskUserImpl } = await import("./permission-sync.ts");
+  setAskUserImpl((req, label) => app.askPermission(req, label));
+
   app.start();
   // 事件循环由 pi-tui 驱动；退出条件由 /quit / Esc / Ctrl+C 触发
   await new Promise<void>((resolve) => {

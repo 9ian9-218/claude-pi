@@ -193,3 +193,48 @@ describe("TuiApp + agentLoop 流式集成（S14）", () => {
     }
   });
 });
+
+describe("权限弹窗（S15a）", () => {
+  function makeRequest() {
+    return {
+      id: "perm-1",
+      workerName: "worker-1",
+      workerId: "worker-1",
+      teamName: "t1",
+      toolName: "run_bash",
+      toolUseId: "call_1",
+      description: "Potentially destructive command",
+      input: { command: "rm -rf build" },
+      workerColor: "green",
+      status: "pending" as const,
+      createdAt: Date.now(),
+    };
+  }
+
+  it("回车选择允许 → approved", async () => {
+    const term = new FakeTerminal();
+    const app = new TuiApp({ terminal: term, onQuery: () => {} });
+    app.tui.start();
+    const promise = app.askPermission(makeRequest(), "Teammate [worker-1]");
+    await nextTick();
+    // SelectList 默认选中第一项（允许）→ 回车
+    term.onInput?.("\r");
+    const resolution = await promise;
+    expect(resolution.decision).toBe("approved");
+    app.stop();
+  });
+
+  it("向下 + 回车选择拒绝 → rejected", async () => {
+    const term = new FakeTerminal();
+    const app = new TuiApp({ terminal: term, onQuery: () => {} });
+    app.tui.start();
+    const promise = app.askPermission(makeRequest(), "Lead");
+    await nextTick();
+    term.onInput?.("\x1b[B"); // 向下
+    term.onInput?.("\r"); // 回车
+    const resolution = await promise;
+    expect(resolution.decision).toBe("rejected");
+    expect(resolution.feedback).toContain("Permission denied");
+    app.stop();
+  });
+});

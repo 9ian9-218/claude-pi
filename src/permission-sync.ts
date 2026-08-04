@@ -70,7 +70,7 @@ export function createPermissionRequest(options: {
 export type AskUserFn = (
   request: SwarmPermissionRequest,
   label: string,
-) => PermissionResolution;
+) => PermissionResolution | Promise<PermissionResolution>;
 
 let askUserImpl: AskUserFn = (request, label) => {
   const color = request.workerColor ?? "white";
@@ -192,7 +192,7 @@ async function resolvePermissionItem(
     createdAt: Date.now(),
   };
 
-  const resolution = askUserImpl(request, `Teammate [${request.workerName}]`);
+  const resolution = await askUserImpl(request, `Teammate [${request.workerName}]`);
   await sendPermissionResponseViaMailbox({
     workerName: request.workerName,
     resolution,
@@ -272,12 +272,12 @@ async function bubbleTeammatePermission(options: {
   return `Permission denied: ${resolution.feedback ?? options.reason}`;
 }
 
-function bubbleSubagentPermission(options: {
+async function bubbleSubagentPermission(options: {
   toolName: string;
   args: Record<string, unknown>;
   reason: string;
   toolUseId: string;
-}): string | null {
+}): Promise<string | null> {
   const ctx = getAgentContext();
   const request = createPermissionRequest({
     toolName: options.toolName,
@@ -287,7 +287,7 @@ function bubbleSubagentPermission(options: {
     workerName: ctx.agentName,
     workerId: ctx.agentId,
   });
-  const resolution = askUserImpl(request, `Subagent [${ctx.agentName}]`);
+  const resolution = await askUserImpl(request, `Subagent [${ctx.agentName}]`);
   if (resolution.decision === "approved") return null;
   return `Permission denied: ${resolution.feedback ?? options.reason}`;
 }
@@ -326,7 +326,7 @@ export async function checkPermissionWithBubble(options: {
     inputData: options.args,
     description: options.reason,
   });
-  const resolution = askUserImpl(request, "Lead");
+  const resolution = await askUserImpl(request, "Lead");
   if (resolution.decision === "approved") return null;
   return `Permission denied: ${resolution.feedback ?? options.reason}`;
 }

@@ -9,9 +9,12 @@ import {
   Container,
   Input,
   Text,
+  SelectList,
   type Terminal,
+  type SelectItem,
 } from "@earendil-works/pi-tui";
 import { Scrollback } from "./scrollback.ts";
+import type { SwarmPermissionRequest, PermissionResolution } from "../permission-sync.ts";
 
 export interface TuiAppOptions {
   /** 测试注入 FakeTerminal；生产传 ProcessTerminal */
@@ -177,6 +180,76 @@ export class TuiApp {
       this.updateStatus();
       this.tui.setFocus(this.input);
     }
+  }
+
+  /** 权限确认弹窗（15a）：overlay SelectList，允许/拒绝/始终允许 */
+  askPermission(
+    request: SwarmPermissionRequest,
+    label: string,
+  ): Promise<PermissionResolution> {
+    return new Promise((resolve) => {
+      const items: SelectItem[] = [
+        {
+          value: "allow",
+          label: "允许",
+          description: `允许 ${request.toolName}`,
+        },
+        {
+          value: "deny",
+          label: "拒绝",
+          description: "拒绝本次调用",
+        },
+      ];
+      const list = new SelectList(items, 5, {
+        selectedPrefix: (t) => `\x1b[36m▸ ${t}\x1b[0m`,
+        selectedText: (t) => `\x1b[1m${t}\x1b[0m`,
+        description: (t) => `\x1b[90m${t}\x1b[0m`,
+        scrollInfo: (t) => `\x1b[90m${t}\x1b[0m`,
+        noMatch: (t) => `\x1b[90m${t}\x1b[0m`,
+      });
+      const overlay = new Container();
+      overlay.addChild(
+        new Text(
+          `\x1b[33m⚠  Permission request from ${label}\x1b[0m\n` +
+            `   Tool: ${request.toolName}\n` +
+            `   Reason: ${request.description}\n` +
+            `   Input: ${JSON.stringify(request.input).slice(0, 200)}\n`,
+          1,
+          1,
+        ),
+      );
+      overlay.addChild(list);
+      const handle = this.tui.showOverlay(overlay, { width: "70%", anchor: "center" });
+      // Container 无 handleInput——用全局输入监听把按键转发给 SelectList
+      const removeListener = this.tui.addInputListener((data) => {
+        list.handleInput(data);
+        return { consume: true };
+      });
+      const finish = (resolution: PermissionResolution) => {
+        removeListener();
+        handle.hide();
+        this.tui.setFocus(this.input);
+        resolve(resolution);
+      };
+      list.onSelect = (item) => {
+        if (item.value === "allow") {
+          finish({ decision: "approved", resolvedBy: "leader" });
+        } else {
+          finish({
+            decision: "rejected",
+            resolvedBy: "leader",
+            feedback: "Permission denied by user",
+          });
+        }
+      };
+      list.onCancel = () => {
+        finish({
+          decision: "rejected",
+          resolvedBy: "leader",
+          feedback: "Permission denied by user",
+        });
+      };
+    });
   }
 
   private async handleCommand(cmd: string): Promise<void> {

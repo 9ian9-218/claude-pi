@@ -39,5 +39,6 @@ npm run build          # tsc 构建到 dist/
 ✅ **工单 12 会话机制**（树形 JSONL 会话 + fork/clone/resume + 断线恢复 + L4 compaction entry）
 ✅ **工单 13 运行模式**（`-p` 打印 / `--mode json` 对拍接口，stdout 纯净）
 ✅ **工单 14 TUI 核心**（pi-tui 滚动区 + 输入 + 状态行 + 斜杠命令，TTY 自动呈现）
-⬜ 工单 15a TUI 权限弹窗（frontier）
+✅ **工单 15a TUI 权限弹窗**（overlay SelectList 允许/拒绝，接入 askUser）
+⬜ 工单 15b TUI 会话命令（frontier）
 
