@@ -1,0 +1,13 @@
+# Runtime data (project-local, like .claude in the Python original)
+.agent/
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Env
+.env
+
+# OS
+.DS_Store
