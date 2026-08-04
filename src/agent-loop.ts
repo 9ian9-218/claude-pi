@@ -117,6 +117,7 @@ async function agentLoopInner(
       preserveSystem: opts.preserveSystem,
       quietOutput: opts.quietOutput,
       tools: getOpenaiTools(opts.exitOnFinalContent && !opts.preserveSystem),
+      onStream: opts.onStream,
     });
     if (llmResult.action === "retry") {
       if (llmResult.maxTokens !== undefined) {

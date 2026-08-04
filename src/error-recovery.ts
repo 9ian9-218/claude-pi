@@ -137,6 +137,7 @@ export interface RecoveryOptions {
   preserveSystem?: boolean;
   quietOutput?: boolean;
   tools?: unknown[];
+  onStream?: (text: string) => void;
 }
 
 export async function sendMessagesWithRecovery(
@@ -151,6 +152,7 @@ export async function sendMessagesWithRecovery(
     preserveSystem = false,
     quietOutput,
     tools,
+    onStream,
   } = options;
 
   let message: AssistantMessage;
@@ -164,6 +166,7 @@ export async function sendMessagesWithRecovery(
           preserveSystem,
           quietOutput,
           tools,
+          onStream,
         }),
       state,
     );

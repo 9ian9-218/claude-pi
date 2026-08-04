@@ -40,6 +40,8 @@ export interface SendOptions {
   preserveSystem?: boolean;
   quietOutput?: boolean;
   tools?: unknown[];
+  /** 流式内容回调（TUI 渲染路径；quietOutput 时也触发） */
+  onStream?: (text: string) => void;
 }
 
 let _client: OpenAI | null = null;
@@ -108,6 +110,7 @@ export async function sendMessages(
     preserveSystem = false,
     quietOutput,
     tools,
+    onStream,
   } = options;
   const quiet = quietOutput ?? isSubagent;
 
@@ -146,6 +149,7 @@ export async function sendMessages(
     const delta = choice.delta;
     if (delta.content) {
       if (!quiet) process.stdout.write(delta.content);
+      onStream?.(delta.content);
       contentParts.push(delta.content);
     }
     if (delta.tool_calls) {

@@ -12,6 +12,8 @@ export class LoopOptions {
   readonly quietOutput: boolean;
   readonly exitOnFinalContent: boolean;
   readonly skipMemoryStopHook: boolean;
+  /** 流式输出回调（TUI 渲染路径） */
+  readonly onStream?: (text: string) => void;
 
   constructor(init: Partial<LoopOptions> = {}) {
     this.preserveSystem = init.preserveSystem ?? false;
@@ -22,6 +24,7 @@ export class LoopOptions {
     this.quietOutput = init.quietOutput ?? false;
     this.exitOnFinalContent = init.exitOnFinalContent ?? false;
     this.skipMemoryStopHook = init.skipMemoryStopHook ?? false;
+    this.onStream = init.onStream;
   }
 
   static lead(): LoopOptions {

@@ -14,6 +14,8 @@ import { agentLoop } from "./agent-loop.ts";
 import { triggerHooks } from "./hook.ts";
 import type { ChatMessage } from "./client.ts";
 import { SessionManager } from "./session-manager.ts";
+import { TuiApp } from "./tui/app.ts";
+import { LoopOptions } from "./loop-options.ts";
 import { TEAM_LEAD_NAME } from "./teammates/constants.ts";
 import { createTeam, readTeamConfig } from "./teammates/team-helpers.ts";
 import { startLeadInboxPoller } from "./teammates/poller.ts";
@@ -174,6 +176,48 @@ function pickSession(args: string[]): SessionManager | null {
   return SessionManager.continueRecent(cwd);
 }
 
+/** TUI 交互模式（TTY 时默认；管道/非 TTY 走 REPL） */
+async function runTui(initialSession: SessionManager | null): Promise<void> {
+  let session = initialSession;
+  const { ProcessTerminal } = await import("@earendil-works/pi-tui");
+  const app = new TuiApp({
+    terminal: new ProcessTerminal(),
+    initialText: "claude-pi — 输入 /help 查看命令\n\n",
+    onNewSession: () => {
+      session = SessionManager.create(process.cwd());
+    },
+    statusText: () => `${process.env.OPENAI_MODEL ?? "?"} | ${process.cwd()}`,
+    onQuery: async (query) => {
+      await triggerHooks("UserPromptSubmit", query);
+      if (session) {
+        session.appendMessage({ role: "user", content: query });
+        const ctx = session.buildSessionContext();
+        await agentLoop(ctx.messages, {
+          session,
+          loopOptions: new LoopOptions({ quietOutput: true, onStream: (t) => app.appendStream(t) }),
+        });
+      } else {
+        const messages: ChatMessage[] = [{ role: "user", content: query }];
+        await agentLoop(messages, {
+          loopOptions: new LoopOptions({ quietOutput: true, onStream: (t) => app.appendStream(t) }),
+        });
+      }
+      app.appendMessage("assistant", "");
+    },
+  });
+  app.start();
+  // 事件循环由 pi-tui 驱动；退出条件由 /quit / Esc / Ctrl+C 触发
+  await new Promise<void>((resolve) => {
+    const check = setInterval(() => {
+      if (!app.isRunning()) {
+        clearInterval(check);
+        app.stop();
+        resolve();
+      }
+    }, 100);
+  });
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
 
@@ -209,13 +253,19 @@ async function main(): Promise<void> {
 
   initLeadTeam();
 
-  process.stdout.write(`claude-pi ${readVersion()} — 类 Claude Code 架构的 TS Agent 运行时\n`);
-  process.stdout.write("输入 /new 开新会话，q/exit 退出。\n");
   const session = pickSession(args);
   if (session?.isPersisted()) {
     const file = session.getSessionFile();
     process.stdout.write(`会话 ${session.getSessionId().slice(0, 8)}（${file}）已恢复\n`);
   }
+
+  // 交互呈现层：TTY → TUI；管道/非 TTY → 行式 REPL（ADR-0003：显式模式不变）
+  if (process.stdout.isTTY && process.stdin.isTTY && !args.includes("--repl")) {
+    await runTui(session);
+    return;
+  }
+  process.stdout.write(`claude-pi ${readVersion()} — 类 Claude Code 架构的 TS Agent 运行时\n`);
+  process.stdout.write("输入 /new 开新会话，q/exit 退出。\n");
   await runRepl(session);
 }
 
