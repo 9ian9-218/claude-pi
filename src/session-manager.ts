@@ -105,7 +105,10 @@ export function setSessionRoot(dir: string): void {
 }
 
 export function defaultSessionDir(): string {
-  return sessionRoot ?? resolveAgentDirs(PROJECT_ROOT).sessionsDir;
+  if (sessionRoot) return sessionRoot;
+  const envRoot = process.env.CLAUDE_PI_SESSION_ROOT;
+  if (envRoot) return envRoot;
+  return resolveAgentDirs(PROJECT_ROOT).sessionsDir;
 }
 
 function newSessionPath(cwd: string): string {

@@ -77,6 +77,66 @@ function initLeadTeam(): void {
   void startLeadInboxPoller(DEFAULT_TEAM);
 }
 
+/** 读取 stdin 全量（print/json 模式的管道输入） */
+function readAllStdin(): Promise<string> {
+  return new Promise((resolve) => {
+    let data = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => {
+      data += chunk;
+    });
+    process.stdin.on("end", () => resolve(data));
+  });
+}
+
+/** 取最终回复（最后一条 assistant 消息的 content） */
+function finalContent(messages: ChatMessage[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === "assistant" && typeof m.content === "string" && m.content.trim()) {
+      return m.content;
+    }
+  }
+  return null;
+}
+
+/** 单次对话模式（-p 打印 / --mode json）：管道 stdin 合并进首轮提示（对齐 pi print 模式） */
+async function runSingleTurn(args: string[], mode: "print" | "json"): Promise<void> {
+  const stdin = await readAllStdin();
+  const positionals = args.filter((a) => !a.startsWith("-"));
+  const query = stdin.trim() || positionals.join(" ") || "";
+  if (!query) {
+    console.error("Error: no input. Pipe stdin or pass a prompt argument.");
+    process.exit(1);
+  }
+  const session = pickSession(args);
+  const loopOptions = { quietOutput: true };
+  const { LoopOptions } = await import("./loop-options.ts");
+  const opts = new LoopOptions(loopOptions);
+
+  if (session) {
+    session.appendMessage({ role: "user", content: query });
+    const ctx = session.buildSessionContext();
+    await agentLoop(ctx.messages, { session, loopOptions: opts });
+    const messages = session.buildSessionContext().messages;
+    const final = finalContent(messages);
+    if (mode === "print") {
+      process.stdout.write((final ?? "(no output)") + "\n");
+    } else {
+      process.stdout.write(JSON.stringify({ turns: messages, final }, null, 2) + "\n");
+    }
+  } else {
+    const messages: ChatMessage[] = [{ role: "user", content: query }];
+    await agentLoop(messages, { loopOptions: opts });
+    const final = finalContent(messages);
+    if (mode === "print") {
+      process.stdout.write((final ?? "(no output)") + "\n");
+    } else {
+      process.stdout.write(JSON.stringify({ turns: messages, final }, null, 2) + "\n");
+    }
+  }
+}
+
 function pickSession(args: string[]): SessionManager | null {
   const cwd = process.cwd();
   const idx = (flag: string) => {
@@ -123,6 +183,30 @@ async function main(): Promise<void> {
   }
 
   initRuntime();
+
+  // 模式分派（ADR-0003：显式模式，无自动回退）；print/json 不初始化团队/轮询器
+  if (args.includes("-p") || args.includes("--print")) {
+    // 诊断日志重定向 stderr，保持 stdout 纯净（对拍接口）
+    const origLog = console.log;
+    console.log = (...a: unknown[]) => process.stderr.write(a.join(" ") + "\n");
+    try {
+      await runSingleTurn(args, "print");
+    } finally {
+      console.log = origLog;
+    }
+    return;
+  }
+  if (args.includes("--mode") && args[args.indexOf("--mode") + 1] === "json") {
+    const origLog = console.log;
+    console.log = (...a: unknown[]) => process.stderr.write(a.join(" ") + "\n");
+    try {
+      await runSingleTurn(args, "json");
+    } finally {
+      console.log = origLog;
+    }
+    return;
+  }
+
   initLeadTeam();
 
   process.stdout.write(`claude-pi ${readVersion()} — 类 Claude Code 架构的 TS Agent 运行时\n`);
