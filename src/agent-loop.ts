@@ -19,6 +19,7 @@ import { RELEVANT_MEMORIES_OPEN } from "./prompt.ts";
 import { consumePendingNotifications } from "./message-queue.ts";
 import { shouldRunBackground, startBackgroundTask } from "./background-task.ts";
 import { getWorkdir, runWithWorkdir } from "./workdir.ts";
+import { consumePendingInjections } from "./teammates/poller.ts";
 
 export interface AgentLoopOptions {
   maxTurn?: number;
@@ -49,7 +50,13 @@ async function agentLoopInner(
   const bgRecipient = undefined;
 
   for (let turn = 0; turn < maxTurn; turn++) {
-    // teammate/通知注入（10 在此接入）
+    // teammate/通知注入
+    if (opts.injectLeadNotifications) {
+      for (const content of consumePendingInjections()) {
+        messages.push({ role: "user", content });
+        console.log(`  \x1b[33m[inject] teammate inbox message\x1b[0m`);
+      }
+    }
     if (opts.injectBackgroundNotifications) {
       for (const notif of consumePendingNotifications({ recipient: bgRecipient })) {
         messages.push({ role: "user", content: notif });

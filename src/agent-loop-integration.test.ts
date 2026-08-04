@@ -214,3 +214,37 @@ describe("agentLoop 集成（08 任务看板 + worktree）", () => {
     }
   }, 30000);
 });
+
+describe("agentLoop 集成（10 队友注入）", () => {
+  it("队友消息在轮首注入为 user 消息", async () => {
+    const { setTeamsDir } = await import("./teammates/constants.ts");
+    const { sendPlainMessage } = await import("./teammates/mailbox.ts");
+    const { pollOnce, clearPollerQueues } = await import("./teammates/poller.ts");
+    const { createTeam } = await import("./teammates/team-helpers.ts");
+    const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-tm-"));
+    setTeamsDir(teamDir);
+    clearPollerQueues();
+    try {
+      createTeam("default", "team-lead");
+      await sendPlainMessage({
+        fromAgent: "worker-1",
+        toAgent: "team-lead",
+        text: "任务完成报告",
+        teamName: "default",
+        color: "green",
+      });
+      await pollOnce("default");
+      mock.always(() => ({ kind: "sse", chunks: [{ content: "收到", finishReason: "stop" }] }));
+      const messages: ChatMessage[] = [{ role: "user", content: "继续" }];
+      await agentLoop(messages, { loopOptions: quiet });
+      // 请求体含注入的队友消息
+      const req = mock.requests.find((r) => r.messages.some((m) => m.role === "system"));
+      const userContents = req?.messages.filter((m) => m.role === "user").map((m) => String(m.content));
+      expect(userContents?.some((c) => c.includes("<teammate-message") && c.includes("任务完成报告"))).toBe(
+        true,
+      );
+    } finally {
+      fs.rmSync(teamDir, { recursive: true, force: true });
+    }
+  });
+});

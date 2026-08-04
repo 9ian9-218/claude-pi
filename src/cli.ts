@@ -13,6 +13,10 @@ import { PROJECT_ROOT, initRuntime } from "./config.ts";
 import { agentLoop } from "./agent-loop.ts";
 import { triggerHooks } from "./hook.ts";
 import type { ChatMessage } from "./client.ts";
+import { TEAM_LEAD_NAME } from "./teammates/constants.ts";
+import { createTeam, readTeamConfig } from "./teammates/team-helpers.ts";
+import { startLeadInboxPoller } from "./teammates/poller.ts";
+import { createAgentContext } from "./teammates/context.ts";
 
 const USER_PROMPT = "\x1b[36mUser >\t \x1b[0m";
 
@@ -50,6 +54,20 @@ async function runRepl(): Promise<void> {
   rl.close();
 }
 
+const DEFAULT_TEAM = "default";
+
+/** 确保 default 团队存在并启动 lead 收件箱轮询（对齐 main.py _init_lead_team） */
+function initLeadTeam(): void {
+  const ctx = createAgentContext();
+  ctx.agentName = TEAM_LEAD_NAME;
+  ctx.role = "lead";
+  if (readTeamConfig(DEFAULT_TEAM) === null) {
+    createTeam(DEFAULT_TEAM, TEAM_LEAD_NAME);
+  }
+  ctx.teamName = DEFAULT_TEAM;
+  void startLeadInboxPoller(DEFAULT_TEAM);
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
 
@@ -59,6 +77,7 @@ async function main(): Promise<void> {
   }
 
   initRuntime();
+  initLeadTeam();
 
   process.stdout.write(`claude-pi ${readVersion()} — 类 Claude Code 架构的 TS Agent 运行时\n`);
   process.stdout.write("输入 /new 清空会话，q/exit 退出。\n");
