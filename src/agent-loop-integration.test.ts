@@ -99,3 +99,39 @@ describe("agentLoop 集成（05 记忆）", () => {
     }
   });
 });
+
+describe("agentLoop 集成（06 后台任务）", () => {
+  it("后台任务完成通知在下一轮对话注入为 user 消息", async () => {
+    mock.push(() => ({
+      kind: "sse",
+      chunks: [
+        {
+          toolCalls: [
+            {
+              index: 0,
+              id: "call_bg",
+              name: "run_bash",
+              arguments: '{"command":"echo bg-task-done","run_in_background":true}',
+            },
+          ],
+          finishReason: "tool_calls",
+        },
+      ],
+    }));
+    mock.push(() => ({ kind: "sse", chunks: [{ content: "started", finishReason: "stop" }] }));
+    mock.push(() => ({ kind: "sse", chunks: [{ content: "final", finishReason: "stop" }] }));
+    const messages: ChatMessage[] = [{ role: "user", content: "run in bg" }];
+    await agentLoop(messages, { loopOptions: quiet });
+    // 第一轮：占位 tool 结果
+    expect(String(messages[3].content)).toContain("[Background task bg_");
+    // 第二轮对话：通知在轮首注入
+    messages.push({ role: "user", content: "next" });
+    await agentLoop(messages, { loopOptions: quiet });
+    const injected = messages.find(
+      (m) => m.role === "user" && String(m.content).includes("<task_notification>"),
+    );
+    expect(injected).toBeDefined();
+    expect(String(injected?.content)).toContain("<status>completed</status>");
+    expect(String(injected?.content)).toContain("bg-task-done");
+  }, 30000);
+});

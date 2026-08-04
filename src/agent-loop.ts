@@ -16,6 +16,8 @@ import { toolResultBudget, snipCompact, microCompact } from "./compact.ts";
 import { RecoveryState, sendMessagesWithRecovery } from "./error-recovery.ts";
 import { loadMemories, findMemoryInjectionIndex, snapshotMessages } from "./memory.ts";
 import { RELEVANT_MEMORIES_OPEN } from "./prompt.ts";
+import { consumePendingNotifications } from "./message-queue.ts";
+import { shouldRunBackground, startBackgroundTask } from "./background-task.ts";
 
 export interface AgentLoopOptions {
   maxTurn?: number;
@@ -34,9 +36,17 @@ export async function agentLoop(
   let effectiveMaxTokens = maxTokens;
   const preCompress = snapshotMessages(messages);
   const memoriesContent = opts.enableMemory ? await loadMemories(messages) : "";
+  // 06：lead 消费全局通知；teammate 定向（10 接入 agent context）
+  const bgRecipient = undefined;
 
   for (let turn = 0; turn < maxTurn; turn++) {
-    // teammate/通知注入（10）在此接入
+    // teammate/通知注入（10 在此接入）
+    if (opts.injectBackgroundNotifications) {
+      for (const notif of consumePendingNotifications({ recipient: bgRecipient })) {
+        messages.push({ role: "user", content: notif });
+        console.log(`  \x1b[32m[inject] task_notification\x1b[0m`);
+      }
+    }
     // L3/L1/L2 压缩（对齐 agent_loop.py：每轮发送前执行）
     replaceMessages(messages, toolResultBudget(messages));
     replaceMessages(messages, snipCompact(messages));
@@ -96,6 +106,14 @@ export async function agentLoop(
           const blocked = triggerHooks("PreToolUse", block);
           if (blocked !== null && blocked !== undefined) {
             toolResult = JSON.stringify({ status: "error", message: String(blocked) });
+          } else if (opts.enableBackground && shouldRunBackground(toolCall.function.name, args as Record<string, unknown>)) {
+            const bgId = startBackgroundTask(toolCall, args as Record<string, unknown>);
+            const command = String((args as Record<string, unknown>)["command"] ?? "");
+            toolResult =
+              `[Background task ${bgId} started] ` +
+              `Command: ${command}. ` +
+              `Output will arrive as a <task_notification> user message ` +
+              `when the task completes or stalls.`;
           } else {
             toolResult = executeToolCall(toolCall, args as Record<string, unknown>);
             triggerHooks("PostToolUse", block, toolResult);
