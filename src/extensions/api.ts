@@ -7,6 +7,7 @@
  */
 import { registerHook } from "../hook.ts";
 import type { HookCallback } from "../hook.ts";
+import { ui as uiProvider, registerEntryRenderer } from "../tui/ui-provider.ts";
 
 /** 扩展事件全集（对齐 pi 事件集 + claude-pi 机制事件） */
 export const EXTENSION_EVENTS = new Set([
@@ -36,12 +37,22 @@ export interface ExtensionCommandHandler {
   (args: string, ui: unknown): Promise<string> | string;
 }
 
+export interface ExtensionUi {
+  confirm(message: string, defaultValue?: boolean): Promise<boolean>;
+  select<T extends string>(items: Array<{ value: T; label: string }>, title: string): Promise<T | null>;
+  input(message: string): Promise<string | null>;
+  notify(message: string, options?: { level?: "info" | "warning" | "error" }): void;
+  custom(component: unknown): void;
+}
+
 export interface ExtensionAPI {
   on(event: string, handler: HookCallback): void;
   registerTool(tool: ExtensionToolDef): void;
   registerCommand(name: string, handler: ExtensionCommandHandler): void;
   appendEntry(customType: string, data?: unknown): string;
-  ui: Record<string, never>; // 17 填充
+  ui: ExtensionUi;
+  /** 自定义 entry 渲染器（customType → 文本） */
+  registerEntryRenderer(customType: string, renderer: (data: unknown) => string): void;
 }
 
 export function createExtensionApi(deps: {
@@ -56,6 +67,9 @@ export function createExtensionApi(deps: {
     registerTool: deps.registerTool,
     registerCommand: deps.registerCommand,
     appendEntry: deps.appendEntry,
-    ui: {},
+    ui: uiProvider,
+    registerEntryRenderer: (customType, renderer) => {
+      registerEntryRenderer(customType, renderer);
+    },
   };
 }

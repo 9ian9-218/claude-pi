@@ -43,5 +43,6 @@ npm run build          # tsc 构建到 dist/
 ✅ **工单 15b TUI 会话命令**（/tree /fork /clone /resume /name /session 选择器）
 ✅ **工单 15c TUI 通知与状态**（队友配色 + 后台通知 + worktree 指示器）
 ✅ **工单 16 扩展核心**（三位置加载 + 事件/工具/命令/appendEntry + /reload 热重载）
-⬜ 工单 17 扩展 UI（frontier）
+✅ **工单 17 扩展 UI**（ctx.ui confirm/select/input/notify/custom + entry 渲染器）
+⬜ 工单 18 对拍 + 冒烟（frontier）
 

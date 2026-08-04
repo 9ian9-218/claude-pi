@@ -16,6 +16,7 @@ import type { ChatMessage } from "./client.ts";
 import { SessionManager } from "./session-manager.ts";
 import { TuiApp } from "./tui/app.ts";
 import { handleSessionCommand } from "./tui/session-commands.ts";
+import { setTuiApp } from "./tui/ui-provider.ts";
 import { getCurrentWorktreeTaskId } from "./worktree.ts";
 import { getWorkdir } from "./workdir.ts";
 import { ExtensionManager } from "./extensions/loader.ts";
@@ -253,6 +254,7 @@ async function runTui(
       app.appendMessage("assistant", "");
     },
   });
+  setTuiApp(app);
   // 16：会话生命周期事件
   void triggerHooks("session_start", { sessionId: sessionRef.current?.getSessionId() ?? null });
   // 15a：TUI 权限弹窗接入 askUser（非 TUI 模式保持默认拒绝）

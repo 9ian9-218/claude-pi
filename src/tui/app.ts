@@ -12,6 +12,7 @@ import {
   SelectList,
   type Terminal,
   type SelectItem,
+  type Component,
 } from "@earendil-works/pi-tui";
 import { Scrollback } from "./scrollback.ts";
 import { getSlashCommand } from "../commands.ts";
@@ -367,5 +368,53 @@ export class TuiApp {
   refreshScrollback(text: string): void {
     this.scrollback.setText(text);
     this.tui.requestRender();
+  }
+
+  /** 输入对话框（17 ctx.ui.input）：overlay + Input 组件 */
+  showInputDialog(message: string): Promise<string | null> {
+    return new Promise((resolve) => {
+      const input = new Input();
+      const overlay = new Container();
+      overlay.addChild(new Text(`\x1b[36m${message}\x1b[0m\n`, 1, 1));
+      overlay.addChild(input);
+      const handle = this.tui.showOverlay(overlay, { width: "70%", anchor: "center" });
+      const removeListener = this.tui.addInputListener((data) => {
+        input.handleInput(data);
+        return { consume: true };
+      });
+      const finish = (value: string | null) => {
+        removeListener();
+        handle.hide();
+        this.tui.setFocus(this.input);
+        resolve(value);
+      };
+      input.onSubmit = (value) => finish(value);
+      input.onEscape = () => finish(null);
+    });
+  }
+
+  /** 挂载扩展自定义组件（17 ctx.ui.custom） */
+  mountCustomComponent(component: Component): void {
+    const handle = this.tui.showOverlay(component, { width: "70%", anchor: "center" });
+    // 自定义组件负责自身交互；Esc 关闭
+    const removeListener = this.tui.addInputListener((data) => {
+      if (component.handleInput) {
+        component.handleInput(data);
+      }
+      return { consume: true };
+    });
+    const close = () => {
+      removeListener();
+      handle.hide();
+      this.tui.setFocus(this.input);
+    };
+    // Esc 关闭
+    const esc = this.tui.addInputListener((data) => {
+      if (data === "\x1b") {
+        close();
+        esc();
+      }
+      return { consume: false };
+    });
   }
 }
