@@ -3,29 +3,26 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { MockOpenAI } from "../tests/helpers/mock-openai.ts";
+import { installMockModels } from "../tests/helpers/test-client.ts";
 import { resetClient, type ChatMessage } from "./client.ts";
 import { agentLoop } from "./agent-loop.ts";
 import { LoopOptions } from "./loop-options.ts";
 import { installBuiltinHooks } from "./hook.ts";
 import { runWithWorkdir } from "./workdir.ts";
 
-const originalEnv = { ...process.env };
 let mock: MockOpenAI;
 let ws: string;
 
 beforeEach(async () => {
-  process.env = { ...originalEnv };
-  process.env.OPENAI_API_KEY = "test-key";
-  process.env.OPENAI_MODEL = "gpt-test";
   resetClient();
   mock = await MockOpenAI.create();
-  process.env.OPENAI_BASE_URL = mock.baseUrl;
+  installMockModels(mock.baseUrl);
   ws = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-loop-"));
   installBuiltinHooks();
 });
 
 afterEach(async () => {
-  process.env = { ...originalEnv };
+  resetClient();
   await mock.close();
   fs.rmSync(ws, { recursive: true, force: true });
 });

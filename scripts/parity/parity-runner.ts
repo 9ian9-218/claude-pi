@@ -11,6 +11,7 @@ import { execFile, spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { MockOpenAI, type ChatRequest, type Responder } from "../../tests/helpers/mock-openai.ts";
+import { createTestAgentDir } from "../../tests/helpers/test-client.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PYTHON_PROJECT = "/home/z9ian9/myproject/Claude-Code-simple";
@@ -148,7 +149,7 @@ function runTsJson(prompts: string[], baseUrl: string): Promise<{ json: unknown;
       [path.resolve(TS_PROJECT, "node_modules/tsx/dist/cli.mjs"), "src/cli.ts", "--mode", "json", "--no-session"],
       {
         cwd: TS_PROJECT,
-        env: { ...process.env, OPENAI_API_KEY: "test-key", OPENAI_BASE_URL: baseUrl, OPENAI_MODEL: "gpt-test" },
+        env: { ...process.env, PI_CODING_AGENT_DIR: createTestAgentDir(baseUrl) },
         timeout: 30000,
       },
       (error, stdout, stderr) => {

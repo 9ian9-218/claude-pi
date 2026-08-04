@@ -8,7 +8,6 @@ import {
   ensureAgentDirs,
   envBool,
   loadEnvFile,
-  getToolStrict,
 } from "./config.ts";
 
 const originalEnv = { ...process.env };
@@ -79,11 +78,6 @@ describe("envBool", () => {
     expect(envBool("TEST_FLAG", false)).toBe(false);
   });
 
-  it("getToolStrict 默认 true，OPENAI_TOOL_STRICT=false 时为 false", () => {
-    expect(getToolStrict()).toBe(true);
-    process.env.OPENAI_TOOL_STRICT = "false";
-    expect(getToolStrict()).toBe(false);
-  });
 });
 
 describe("loadEnvFile", () => {

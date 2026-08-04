@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { MockOpenAI } from "./helpers/mock-openai.ts";
+import { createTestAgentDir } from "./helpers/test-client.ts";
 import { PROJECT_ROOT } from "../src/config.ts";
 
 const require = createRequire(import.meta.url);
@@ -12,8 +13,10 @@ const tsxCli = require.resolve("tsx/cli");
 const cliEntry = path.join(PROJECT_ROOT, "src", "cli.ts");
 
 let mock: MockOpenAI | null = null;
+let agentDirs: string[] = [];
 
 beforeEach(() => {
+  agentDirs = [];
   // 隔离会话目录
   process.env.CLAUDE_PI_SESSION_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-modes-"));
 });
@@ -21,6 +24,7 @@ beforeEach(() => {
 afterEach(async () => {
   if (mock) await mock.close();
   mock = null;
+  for (const d of agentDirs) fs.rmSync(d, { recursive: true, force: true });
 });
 
 function runCli(args: string[], input: string): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -33,9 +37,8 @@ function runCli(args: string[], input: string): Promise<{ code: number; stdout: 
         timeout: 20000,
         env: {
           ...process.env,
-          OPENAI_API_KEY: "test-key",
-          OPENAI_BASE_URL: mock!.baseUrl,
-          OPENAI_MODEL: "gpt-test",
+          // 临时 pi 配置目录（models.json 指向 mock server）
+          PI_CODING_AGENT_DIR: createTestAgentDir(mock!.baseUrl),
         },
       },
       (error, stdout, stderr) => {
@@ -52,7 +55,7 @@ function runCli(args: string[], input: string): Promise<{ code: number; stdout: 
 }
 
 describe("运行模式（S13）", () => {
-  it("-p 打印模式：管道 stdin 合并进首轮提示，输出最终回复后退出", async () => {
+  it("-p 打印模式：管道 stdin 合并进首轮提示，输出最终回复后退出", { timeout: 30_000 }, async () => {
     mock = await MockOpenAI.create();
     mock.always(() => ({ kind: "sse", chunks: [{ content: "这是最终回复", finishReason: "stop" }] }));
     const { code, stdout } = await runCli(["-p"], "帮我看看这个项目\n");
@@ -64,7 +67,7 @@ describe("运行模式（S13）", () => {
     expect(user?.some((c) => c.includes("帮我看看这个项目"))).toBe(true);
   });
 
-  it("-p 支持工具调用序列后输出最终回复", async () => {
+  it("-p 支持工具调用序列后输出最终回复", { timeout: 30_000 }, async () => {
     mock = await MockOpenAI.create();
     mock.push(() => ({
       kind: "sse",
@@ -83,7 +86,7 @@ describe("运行模式（S13）", () => {
     expect(stdout.trim()).toBe("分析完成");
   });
 
-  it("--mode json 输出稳定结构（turns + final）", async () => {
+  it("--mode json 输出稳定结构（turns + final）", { timeout: 30_000 }, async () => {
     mock = await MockOpenAI.create();
     mock.always(() => ({ kind: "sse", chunks: [{ content: "JSON 回复", finishReason: "stop" }] }));
     const { code, stdout } = await runCli(["--mode", "json"], "结构化输出\n");
@@ -95,7 +98,7 @@ describe("运行模式（S13）", () => {
     expect(parsed.final).toBe("JSON 回复");
   });
 
-  it("--mode json 含工具调用记录（对拍接口）", async () => {
+  it("--mode json 含工具调用记录（对拍接口）", { timeout: 30_000 }, async () => {
     mock = await MockOpenAI.create();
     mock.push(() => ({
       kind: "sse",
@@ -117,7 +120,7 @@ describe("运行模式（S13）", () => {
     expect(assistant.tool_calls[0].function.name).toBe("read_file");
   });
 
-  it("无输入时报错退出", async () => {
+  it("无输入时报错退出", { timeout: 30_000 }, async () => {
     mock = await MockOpenAI.create();
     const { code, stderr } = await runCli(["-p"], "");
     expect(code).toBe(1);

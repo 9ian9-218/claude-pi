@@ -1,30 +1,27 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { MockOpenAI } from "../tests/helpers/mock-openai.ts";
+import { installMockModels } from "../tests/helpers/test-client.ts";
 import { resetClient, type ChatMessage } from "./client.ts";
 import {
   RecoveryState,
-  retryDelay,
-  withRetry,
-  isPromptTooLongError,
+  getRetryPolicy,
+  setRetryPolicyForTest,
   sendMessagesWithRecovery,
   ESCALATED_MAX_TOKENS,
   MAX_RECOVERY_RETRIES,
 } from "./error-recovery.ts";
 
-const originalEnv = { ...process.env };
 let mock: MockOpenAI;
 
 beforeEach(async () => {
-  process.env = { ...originalEnv };
-  process.env.OPENAI_API_KEY = "test-key";
-  process.env.OPENAI_MODEL = "gpt-test";
   resetClient();
   mock = await MockOpenAI.create();
-  process.env.OPENAI_BASE_URL = mock.baseUrl;
+  installMockModels(mock.baseUrl);
 });
 
 afterEach(async () => {
-  process.env = { ...originalEnv };
+  resetClient();
+  setRetryPolicyForTest(null);
   await mock.close();
 });
 
@@ -32,83 +29,58 @@ function plain(): ChatMessage[] {
   return [{ role: "user", content: "hi" }];
 }
 
-describe("retryDelay（S3）", () => {
-  it("Retry-After 优先", () => {
-    expect(retryDelay(0, 5)).toBe(5);
+describe("retry 策略（S3，ADR-0007：pi settings retry 键）", () => {
+  it("getRetryPolicy 默认值与 pi 一致（enabled/3/2000）", () => {
+    setRetryPolicyForTest(null);
+    const p = getRetryPolicy();
+    expect(p.enabled).toBe(true);
+    expect(p.maxRetries).toBe(3);
+    expect(p.baseDelayMs).toBe(2000);
   });
 
-  it("指数退避 + jitter 在 [base, base*1.25] 内", () => {
-    const d0 = retryDelay(0);
-    expect(d0).toBeGreaterThanOrEqual(0.5);
-    expect(d0).toBeLessThanOrEqual(0.5 * 1.25);
-    const d5 = retryDelay(5);
-    expect(d5).toBeGreaterThanOrEqual(16);
-    expect(d5).toBeLessThanOrEqual(16 * 1.25);
-    const d10 = retryDelay(10);
-    expect(d10).toBeLessThanOrEqual(32 * 1.25); // 上限 32s
-  });
-});
-
-describe("withRetry（S3）", () => {
-  it("429 指数退避后成功", async () => {
-    vi.useFakeTimers();
-    try {
-      let calls = 0;
-      const fn = vi.fn(async () => {
-        calls++;
-        if (calls < 3) {
-          const err = new Error("429 rate limit") as Error & { status?: number };
-          throw err;
-        }
-        return "ok";
-      });
-      const state = new RecoveryState();
-      const p = withRetry(fn, state);
-      await vi.advanceTimersByTimeAsync(30_000);
-      const result = await p;
-      expect(result).toBe("ok");
-      expect(calls).toBe(3);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("连续 3 次 529 切换 fallback 模型", async () => {
-    vi.useFakeTimers();
-    try {
-      process.env.FALLBACK_MODEL_ID = "fallback-model";
-      let calls = 0;
-      const fn = vi.fn(async () => {
-        calls++;
-        if (calls <= 3) throw new Error("529 overloaded");
-        return "ok";
-      });
-      const state = new RecoveryState();
-      const p = withRetry(fn, state);
-      await vi.advanceTimersByTimeAsync(60_000);
-      await p;
-      expect(state.currentModel).toBe("fallback-model");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("非暂时性错误直接抛出", async () => {
-    const fn = vi.fn(async () => {
-      throw new Error("some other error");
-    });
+  it("429 重试后成功（指数退避，pi retryAssistantCall）", async () => {
+    setRetryPolicyForTest({ enabled: true, maxRetries: 2, baseDelayMs: 1 });
+    mock.push(() => ({
+      kind: "error",
+      status: 429,
+      body: JSON.stringify({ error: { message: "429 rate limit" } }),
+    }));
+    mock.push(() => ({
+      kind: "error",
+      status: 429,
+      body: JSON.stringify({ error: { message: "429 rate limit" } }),
+    }));
+    mock.push(() => ({ kind: "sse", chunks: [{ content: "ok", finishReason: "stop" }] }));
     const state = new RecoveryState();
-    await expect(withRetry(fn, state)).rejects.toThrow("some other error");
-    expect(fn).toHaveBeenCalledTimes(1);
+    const messages = plain();
+    const result = await sendMessagesWithRecovery({
+      requestMessages: messages,
+      messages,
+      state,
+      maxTokens: 8000,
+    });
+    expect(result.action).toBe("success");
+    expect(mock.requests).toHaveLength(3);
   });
-});
 
-describe("isPromptTooLongError（S3）", () => {
-  it("识别 prompt/context 过长错误", () => {
-    expect(isPromptTooLongError(new Error("prompt is too long"))).toBe(true);
-    expect(isPromptTooLongError(new Error("context_length_exceeded"))).toBe(true);
-    expect(isPromptTooLongError(new Error("max_context_window exceeded"))).toBe(true);
-    expect(isPromptTooLongError(new Error("rate limit"))).toBe(false);
+  it("非暂时性错误不重试（pi isRetryableAssistantError）", async () => {
+    setRetryPolicyForTest({ enabled: true, maxRetries: 5, baseDelayMs: 1 });
+    mock.always(() => ({
+      kind: "error",
+      status: 400,
+      body: JSON.stringify({ error: { message: "boom" } }),
+    }));
+    const state = new RecoveryState();
+    const messages = plain();
+    const result = await sendMessagesWithRecovery({
+      requestMessages: messages,
+      messages,
+      state,
+      maxTokens: 8000,
+    });
+    expect(result.action).toBe("abort");
+    expect(mock.requests).toHaveLength(1);
+    expect(String(messages[messages.length - 1].content)).toContain("[Error]");
   });
 });
 
@@ -167,7 +139,7 @@ describe("sendMessagesWithRecovery（S3）", () => {
       status: 400,
       body: JSON.stringify({ error: { message: "prompt is too long" } }),
     }));
-    mock.push(() => ({ kind: "json", content: "摘要" })); // summarizeHistory 非流式
+    mock.push(() => ({ kind: "sse", chunks: [{ content: "摘要", finishReason: "stop" }] })); // summarizeHistory
     mock.push(() => ({ kind: "sse", chunks: [{ content: "ok", finishReason: "stop" }] }));
     const state = new RecoveryState();
     const messages = plain();
@@ -179,18 +151,13 @@ describe("sendMessagesWithRecovery（S3）", () => {
   });
 
   it("压缩后仍过长则 abort 并写 [Error] 消息", async () => {
-    mock.always(() => ({ kind: "error", status: 400, body: JSON.stringify({ error: { message: "prompt is too long" } }) }));
+    mock.always(() => ({
+      kind: "error",
+      status: 400,
+      body: JSON.stringify({ error: { message: "prompt is too long" } }),
+    }));
     const state = new RecoveryState();
     state.hasAttemptedReactiveCompact = true;
-    const messages = plain();
-    const result = await sendMessagesWithRecovery({ requestMessages: messages, messages, state, maxTokens: 8000 });
-    expect(result.action).toBe("abort");
-    expect(String(messages[messages.length - 1].content)).toContain("[Error]");
-  });
-
-  it("不可恢复异常 abort 并写 [Error] 消息", async () => {
-    mock.always(() => ({ kind: "error", status: 500, body: JSON.stringify({ error: { message: "boom" } }) }));
-    const state = new RecoveryState();
     const messages = plain();
     const result = await sendMessagesWithRecovery({ requestMessages: messages, messages, state, maxTokens: 8000 });
     expect(result.action).toBe("abort");

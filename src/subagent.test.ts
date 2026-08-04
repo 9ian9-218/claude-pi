@@ -1,24 +1,21 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { MockOpenAI } from "../tests/helpers/mock-openai.ts";
+import { installMockModels } from "../tests/helpers/test-client.ts";
 import { resetClient, type ChatMessage } from "./client.ts";
 import { agentLoop } from "./agent-loop.ts";
 import { LoopOptions } from "./loop-options.ts";
 import { getOpenaiTools, spawnSubagent } from "./tool.ts";
 
-const originalEnv = { ...process.env };
 let mock: MockOpenAI;
 
 beforeEach(async () => {
-  process.env = { ...originalEnv };
-  process.env.OPENAI_API_KEY = "test-key";
-  process.env.OPENAI_MODEL = "gpt-test";
   resetClient();
   mock = await MockOpenAI.create();
-  process.env.OPENAI_BASE_URL = mock.baseUrl;
+  installMockModels(mock.baseUrl);
 });
 
 afterEach(async () => {
-  process.env = { ...originalEnv };
+  resetClient();
   await mock.close();
 });
 

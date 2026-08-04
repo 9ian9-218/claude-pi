@@ -1,118 +1,61 @@
 /**
- * error-recovery.ts — LLM 调用错误恢复（对齐 src/error_recovery.py）
+ * error-recovery.ts — LLM 调用错误恢复（pi 语义，ADR-0007）
  *
- * Path 1: finish_reason=length → 8K→64K 升级 / 续写提示（≤3 次）
- * Path 2: prompt_too_long → reactive compact（一次）
- * Path 3: 429/529 → 指数退避 + 连续 529 切 fallback 模型
+ * 传输错误重试：pi 的 retryAssistantCall + isRetryableAssistantError
+ * （settings.json 的 retry 键：enabled/maxRetries/baseDelayMs，默认
+ * 3 次、2s 指数退避）。fallback 模型机制已取消（pi 无此概念），
+ * 异常应对 = 重试 + 手动 /model 切换。
+ *
+ * Path 1: finish_reason=length → 8K→64K 升级 / 续写提示（≤3 次）【Python 语义保留】
+ * Path 2: context overflow → reactive compact（一次）【pi 的 isContextOverflow 分类】
  */
-import { sendMessages, resetClient, type AssistantMessage, type ChatMessage } from "./client.ts";
+import type { AssistantMessage as PiAssistantMessage, RetryPolicy } from "@earendil-works/pi-ai";
+import {
+  DEFAULT_MAX_TOKENS,
+  sendMessages,
+  type AssistantMessage,
+  type ChatMessage,
+} from "./client.ts";
 import { reactiveCompact } from "./compact.ts";
 import { CONTINUATION_PROMPT } from "./prompt.ts";
+import { readPiSettings, setSettingsOverrideForTest } from "./settings.ts";
+
+export { DEFAULT_MAX_TOKENS };
+
+// pi-ai 重试原语懒加载缓存（模块图大，避免 CLI 启动即加载）
+let _piRetry: { retryAssistantCall: unknown; isContextOverflow: unknown } | null = null;
+
+async function getPiRetry(): Promise<{
+  retryAssistantCall: (typeof import("@earendil-works/pi-ai"))["retryAssistantCall"];
+  isContextOverflow: (typeof import("@earendil-works/pi-ai"))["isContextOverflow"];
+}> {
+  if (_piRetry === null) {
+    const m = await import("@earendil-works/pi-ai");
+    _piRetry = { retryAssistantCall: m.retryAssistantCall, isContextOverflow: m.isContextOverflow };
+  }
+  return _piRetry as {
+    retryAssistantCall: (typeof import("@earendil-works/pi-ai"))["retryAssistantCall"];
+    isContextOverflow: (typeof import("@earendil-works/pi-ai"))["isContextOverflow"];
+  };
+}
 
 export const ESCALATED_MAX_TOKENS = 64_000;
-export const DEFAULT_MAX_TOKENS = 8_000;
 export const MAX_RECOVERY_RETRIES = 3;
-export const MAX_RETRIES = 10;
-export const BASE_DELAY_MS = 500;
-export const MAX_CONSECUTIVE_529 = 3;
 
 export class RecoveryState {
   hasEscalated = false;
   recoveryCount = 0;
-  consecutive529 = 0;
   hasAttemptedReactiveCompact = false;
-  currentModel = process.env.OPENAI_MODEL ?? null;
-
-  constructor() {
-    // 与 Python 一致：启动时读取 OPENAI_MODEL
-    this.currentModel = process.env.OPENAI_MODEL ?? null;
-  }
 }
 
-export function retryDelay(attempt: number, retryAfter?: number): number {
-  if (retryAfter !== undefined && retryAfter > 0) return retryAfter;
-  const base = Math.min(BASE_DELAY_MS * 2 ** attempt, 32_000) / 1000;
-  const jitter = Math.random() * base * 0.25;
-  return base + jitter;
+/** 当前重试策略：共享 settings.json 的 retry 键（pi 默认 enabled/maxRetries=3/baseDelayMs=2000） */
+export function getRetryPolicy(): RetryPolicy {
+  return readPiSettings().retry;
 }
 
-function extractRetryAfter(e: unknown): number | undefined {
-  const headers = (e as { headers?: Record<string, string | undefined> })?.headers;
-  const raw = headers?.["retry-after"] ?? headers?.["Retry-After"];
-  if (!raw) return undefined;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
-}
-
-export async function withRetry<T>(fn: () => Promise<T>, state: RecoveryState): Promise<T> {
-  const fallbackModel = process.env.FALLBACK_MODEL_ID;
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    try {
-      const result = await fn();
-      state.consecutive529 = 0;
-      return result;
-    } catch (e) {
-      const err = e as Error & { status?: number };
-      const name = err.name ?? "Error";
-      const msg = String(err.message ?? "").toLowerCase();
-      const retryAfter = extractRetryAfter(e);
-
-      // 429 rate limit → 指数退避
-      if (name.toLowerCase().includes("ratelimit") || msg.includes("429") || err.status === 429) {
-        const delay = retryDelay(attempt, retryAfter);
-        console.log(
-          `  \x1b[33m[429 rate limit] retry ${attempt + 1}/${MAX_RETRIES}, wait ${delay.toFixed(1)}s\x1b[0m`,
-        );
-        await sleep(delay);
-        continue;
-      }
-
-      // 529 overloaded → 退避 + fallback
-      if (msg.includes("overloaded") || msg.includes("529") || err.status === 529) {
-        state.consecutive529 += 1;
-        if (state.consecutive529 >= MAX_CONSECUTIVE_529) {
-          if (fallbackModel) {
-            state.currentModel = fallbackModel;
-            state.consecutive529 = 0;
-            console.log(
-              `  \x1b[31m[529 x${MAX_CONSECUTIVE_529}] switching to ${fallbackModel}\x1b[0m`,
-            );
-          } else {
-            state.consecutive529 = 0;
-            console.log(
-              `  \x1b[31m[529 x${MAX_CONSECUTIVE_529}] no FALLBACK_MODEL_ID configured, continuing retry\x1b[0m`,
-            );
-          }
-        }
-        const delay = retryDelay(attempt, retryAfter);
-        console.log(
-          `  \x1b[33m[529 overloaded] retry ${attempt + 1}/${MAX_RETRIES}, wait ${delay.toFixed(1)}s\x1b[0m`,
-        );
-        await sleep(delay);
-        continue;
-      }
-
-      // 非暂时性错误 → 抛出
-      throw e;
-    }
-  }
-  throw new Error(`Max retries (${MAX_RETRIES}) exceeded`);
-}
-
-function sleep(seconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, seconds * 1000));
-}
-
-export function isPromptTooLongError(e: unknown): boolean {
-  const msg = String((e as Error).message ?? "").toLowerCase();
-  return (
-    (msg.includes("prompt") && msg.includes("long")) ||
-    msg.includes("prompt_is_too_long") ||
-    msg.includes("prompt_too_long") ||
-    msg.includes("context_length_exceeded") ||
-    msg.includes("max_context_window") ||
-    msg.includes("too many tokens")
-  );
+/** 测试隔离：注入重试策略（null 恢复读 settings） */
+export function setRetryPolicyForTest(policy: RetryPolicy | null): void {
+  setSettingsOverrideForTest(policy === null ? null : { retry: policy });
 }
 
 function isMaxTokensFinish(finishReason: string | null): boolean {
@@ -143,6 +86,8 @@ export interface RecoveryOptions {
 export async function sendMessagesWithRecovery(
   options: RecoveryOptions,
 ): Promise<LLMInvokeResult> {
+  // 懒加载 pi-ai（启动阶段不引入大模块图；仅在首次 LLM 调用时）
+  const { retryAssistantCall, isContextOverflow } = await getPiRetry();
   const {
     requestMessages,
     messages,
@@ -155,24 +100,37 @@ export async function sendMessagesWithRecovery(
     onStream,
   } = options;
 
-  let message: AssistantMessage;
-  try {
-    message = await withRetry(
-      () =>
-        sendMessages(requestMessages, {
-          maxTokens,
-          isSubagent,
-          model: state.currentModel ?? undefined,
-          preserveSystem,
-          quietOutput,
-          tools,
-          onStream,
-        }),
-      state,
-    );
-  } catch (e) {
-    // Path 2: prompt/context 太长
-    if (isPromptTooLongError(e)) {
+  const produce = () =>
+    sendMessages(requestMessages, {
+      maxTokens,
+      isSubagent,
+      preserveSystem,
+      quietOutput,
+      tools,
+      onStream,
+    });
+
+  // 类型桥接：claude-pi 的 AssistantMessage 携带 stopReason/errorMessage，
+  // 与 pi-ai 的 isRetryableAssistantError 分类所需字段结构兼容
+  const message = (await retryAssistantCall(
+    produce as unknown as () => Promise<PiAssistantMessage>,
+    getRetryPolicy(),
+    undefined,
+    {
+      onRetryScheduled: (attempt, maxAttempts, delayMs, errorMessage) => {
+        console.log(
+          `  \x1b[33m[retry ${attempt}/${maxAttempts}] ${String(errorMessage).slice(0, 80)}, wait ${(delayMs / 1000).toFixed(1)}s\x1b[0m`,
+        );
+      },
+    },
+  )) as unknown as AssistantMessage;
+
+  // 传输错误（重试耗尽后仍失败）
+  if (message.stopReason === "error" || message.stopReason === "aborted") {
+    const errText = message.errorMessage ?? `LLM request failed (${message.stopReason})`;
+
+    // Path 2: context overflow → reactive compact（一次）
+    if (isContextOverflow(message as unknown as PiAssistantMessage)) {
       if (!state.hasAttemptedReactiveCompact) {
         console.log("  \x1b[31m[reactive compact]\x1b[0m");
         messages.splice(0, messages.length, ...(await reactiveCompact(messages)));
@@ -183,10 +141,9 @@ export async function sendMessagesWithRecovery(
       appendErrorMessage(messages, "Context too large, cannot continue.");
       return { action: "abort" };
     }
-    // 其它异常不可恢复
-    const name = (e as Error).name ?? "Error";
-    console.log(`  \x1b[31m[unrecoverable] ${name}: ${String((e as Error).message).slice(0, 100)}\x1b[0m`);
-    appendErrorMessage(messages, `${name}: ${String((e as Error).message).slice(0, 200)}`);
+
+    console.log(`  \x1b[31m[unrecoverable] ${errText.slice(0, 100)}\x1b[0m`);
+    appendErrorMessage(messages, errText.slice(0, 200));
     return { action: "abort" };
   }
 
@@ -212,9 +169,4 @@ export async function sendMessagesWithRecovery(
   }
 
   return { action: "success", message };
-}
-
-// 测试隔离辅助
-export function resetRecoveryClient(): void {
-  resetClient();
 }

@@ -9,7 +9,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getWorkdir } from "./workdir.ts";
-import { getClient, type ChatMessage } from "./client.ts";
+import { completeText, type ChatMessage } from "./client.ts";
 import {
   formatCompactedUserMessage,
   formatReactiveCompactedUserMessage,
@@ -273,12 +273,7 @@ export async function summarizeHistory(messages: ChatMessage[]): Promise<string>
   }
   const conversation = JSON.stringify(messagesToSummarize);
   const prompt = formatCompactSummary(conversation);
-  const response = await getClient().chat.completions.create({
-    model: process.env.OPENAI_MODEL ?? "gpt-4o",
-    messages: [{ role: "user", content: prompt }],
-    max_tokens: MAX_OUTPUT_TOKENS_FOR_SUMMARY,
-  });
-  return response.choices[0]?.message?.content || "(empty summary)";
+  return (await completeText(prompt, { maxTokens: MAX_OUTPUT_TOKENS_FOR_SUMMARY })) || "(empty summary)";
 }
 
 export async function compactHistory(messages: ChatMessage[]): Promise<ChatMessage[]> {

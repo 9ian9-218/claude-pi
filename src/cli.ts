@@ -21,6 +21,7 @@ import { getMCPHub } from "./mcp/hub.ts";
 import { getCurrentWorktreeTaskId } from "./worktree.ts";
 import { getWorkdir } from "./workdir.ts";
 import { ExtensionManager } from "./extensions/loader.ts";
+import { currentModelLabel } from "./ai-runtime.ts";
 import { registerExtensionTool, buildTool } from "./tool.ts";
 import { registerSlashCommand, clearSlashCommands } from "./commands.ts";
 import { LoopOptions } from "./loop-options.ts";
@@ -235,7 +236,7 @@ async function runTui(
     onReload: () => {
       void extManager.reload(cliPaths);
     },
-    statusText: () => `${process.env.OPENAI_MODEL ?? "?"} | ${process.cwd()}`,
+    statusText: () => `${currentModelLabel()} | ${process.cwd()}`,
     onQuery: async (query) => {
       await triggerHooks("UserPromptSubmit", query);
       const session = sessionRef.current;

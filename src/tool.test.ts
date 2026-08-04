@@ -10,6 +10,7 @@ import {
   executeToolCall,
   getOpenaiTools,
   buildTool,
+  CURRENT_TODOS,
   type ToolCallLike,
 } from "./tool.ts";
 import { runWithWorkdir } from "./workdir.ts";
@@ -19,6 +20,8 @@ let ws: string;
 
 beforeEach(() => {
   ws = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-tool-"));
+  // 清空 todo 模块状态（避免同文件测试间泄漏）
+  CURRENT_TODOS.splice(0, CURRENT_TODOS.length);
 });
 
 afterEach(() => {

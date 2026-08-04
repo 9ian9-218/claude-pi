@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { MockOpenAI } from "../../tests/helpers/mock-openai.ts";
+import { installMockModels } from "../../tests/helpers/test-client.ts";
 import { resetClient, type ChatMessage } from "../client.ts";
 import { setTeamsDir, TEAM_LEAD_NAME } from "./constants.ts";
 import { setGitRoot } from "../worktree.ts";
@@ -20,17 +21,13 @@ import { formatTeammateMessages, isStructuredProtocolMessage } from "./message-t
 import { pollOnce, consumePendingInjections, clearPollerQueues } from "./poller.ts";
 import { spawnTeammate, requestTeammateShutdown, isTeammateActive, clearActiveTeammates } from "./spawn.ts";
 
-const originalEnv = { ...process.env };
 let dir: string;
 let mock: MockOpenAI;
 
 beforeEach(async () => {
-  process.env = { ...originalEnv };
-  process.env.OPENAI_API_KEY = "test-key";
-  process.env.OPENAI_MODEL = "gpt-test";
   resetClient();
   mock = await MockOpenAI.create();
-  process.env.OPENAI_BASE_URL = mock.baseUrl;
+  installMockModels(mock.baseUrl);
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-team-"));
   setTeamsDir(dir);
   clearPollerQueues();
@@ -39,7 +36,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  process.env = { ...originalEnv };
+  resetClient();
   await mock.close();
   fs.rmSync(dir, { recursive: true, force: true });
 });

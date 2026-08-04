@@ -25,6 +25,8 @@ cpi --no-session      # 临时会话（不落盘）
 
 **数据根跟随当前目录**：在任意项目运行 `cpi`，`.agent/`（会话/团队/记忆/任务/Skill/worktree/扩展）自动落在该项目的 `.agent/` 下（`CLAUDE_PI_AGENT_ROOT` 可覆盖）。
 
+**模型配置与 pi 共享**：LLM 传输层基于 `@earendil-works/pi-ai`（ADR-0007）。模型/凭据/设置走 pi 全局目录 `~/.pi/agent/`（auth.json / models.json / settings.json，`PI_CODING_AGENT_DIR` 可覆盖）——与 pi 登录一次两边通用；或用各 provider 标准环境变量（`ANTHROPIC_API_KEY` 等）。传输错误按 pi 的 retry settings 自动重试；Python 版的 `FALLBACK_MODEL_ID` / `OPENAI_*` env 已退役。
+
 ## 开发
 
 ```bash

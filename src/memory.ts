@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { AGENT_ROOT, resolveAgentDirs } from "./config.ts";
-import { getClient, type ChatMessage } from "./client.ts";
+import { completeText, type ChatMessage } from "./client.ts";
 import {
   formatSelectMemories,
   formatExtractMemories,
@@ -134,12 +134,7 @@ export async function selectRelevantMemories(messages: ChatMessage[], maxItems =
   const prompt = formatSelectMemories(recent, catalog);
 
   try {
-    const response = await getClient().chat.completions.create({
-      model: process.env.OPENAI_MODEL ?? "gpt-4o",
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 200,
-    });
-    const text = response.choices[0]?.message?.content?.trim() ?? "";
+    const text = (await completeText(prompt, { maxTokens: 200 })).trim();
     const match = text.match(/\[.*?\]/s);
     if (match) {
       const indices = JSON.parse(match[0]) as unknown[];
@@ -220,12 +215,7 @@ export async function extractMemories(messages: ChatMessage[]): Promise<void> {
   const prompt = formatExtractMemories(existingDesc, dialogue.slice(0, 4000));
 
   try {
-    const response = await getClient().chat.completions.create({
-      model: process.env.OPENAI_MODEL ?? "gpt-4o",
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 800,
-    });
-    const text = response.choices[0]?.message?.content?.trim() ?? "";
+    const text = (await completeText(prompt, { maxTokens: 800 })).trim();
     const match = text.match(/\[.*\]/s);
     if (!match) return;
     const items = JSON.parse(match[0]) as Array<Record<string, unknown>>;
@@ -259,12 +249,7 @@ export async function consolidateMemories(): Promise<void> {
   const prompt = formatConsolidateMemories(catalog.slice(0, 16000), CONSOLIDATE_THRESHOLD);
 
   try {
-    const response = await getClient().chat.completions.create({
-      model: process.env.OPENAI_MODEL ?? "gpt-4o",
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 3000,
-    });
-    const text = response.choices[0]?.message?.content?.trim() ?? "";
+    const text = (await completeText(prompt, { maxTokens: 3000 })).trim();
     const match = text.match(/\[.*\]/s);
     if (!match) return;
     const items = JSON.parse(match[0]) as Array<Record<string, unknown>>;

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { MockOpenAI } from "../tests/helpers/mock-openai.ts";
+import { installMockModels } from "../tests/helpers/test-client.ts";
 import { resetClient, type ChatMessage } from "./client.ts";
 import {
   setMemoryDir,
@@ -21,23 +22,19 @@ import {
   MEMORY_TYPES,
 } from "./memory.ts";
 
-const originalEnv = { ...process.env };
 let mock: MockOpenAI;
 let dir: string;
 
 beforeEach(async () => {
-  process.env = { ...originalEnv };
-  process.env.OPENAI_API_KEY = "test-key";
-  process.env.OPENAI_MODEL = "gpt-test";
   resetClient();
   mock = await MockOpenAI.create();
-  process.env.OPENAI_BASE_URL = mock.baseUrl;
+  installMockModels(mock.baseUrl);
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-mem-"));
   setMemoryDir(dir);
 });
 
 afterEach(async () => {
-  process.env = { ...originalEnv };
+  resetClient();
   await mock.close();
   fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -75,7 +72,7 @@ describe("selectRelevantMemories（S5）", () => {
   it("LLM 返回索引时选择对应文件", async () => {
     writeMemoryFile("proj-arch", "project", "architecture decisions", "body");
     writeMemoryFile("unrelated", "user", "hobby stuff", "body");
-    mock.always(() => ({ kind: "json", content: "[0]" }));
+    mock.always(() => ({ kind: "sse", chunks: [{ content: "[0]", finishReason: "stop" }] }));
     const selected = await selectRelevantMemories([{ role: "user", content: "architecture?" } as ChatMessage]);
     expect(selected).toEqual(["proj-arch.md"]);
   });
@@ -98,7 +95,7 @@ describe("selectRelevantMemories（S5）", () => {
 describe("loadMemories / 注入索引（S5）", () => {
   it("loadMemories 包装 <relevant_memories>", async () => {
     writeMemoryFile("mem-x", "user", "desc", "body x");
-    mock.always(() => ({ kind: "json", content: "[0]" }));
+    mock.always(() => ({ kind: "sse", chunks: [{ content: "[0]", finishReason: "stop" }] }));
     const loaded = await loadMemories([{ role: "user", content: "mem-x?" } as ChatMessage]);
     expect(loaded).toContain("<relevant_memories>");
     expect(loaded).toContain("body x");
@@ -125,19 +122,16 @@ describe("loadMemories / 注入索引（S5）", () => {
 
 describe("extractMemories（S5）", () => {
   it("Stop 提取：LLM 返回数组时落盘", async () => {
-    mock.always(() => ({
-      kind: "json",
-      content: JSON.stringify([
-        { name: "proj-goal", type: "project", description: "goal desc", body: "goal body" },
-      ]),
-    }));
+    mock.always(() => ({ kind: "sse", chunks: [{ content: JSON.stringify([
+              { name: "proj-goal", type: "project", description: "goal desc", body: "goal body" },
+            ]), finishReason: "stop" }] }));
     await extractMemories([{ role: "user", content: "our goal is X" } as ChatMessage]);
     expect(readMemoryFile("proj-goal.md")).toContain("goal body");
     expect(readMemoryIndex()).toContain("proj-goal");
   });
 
   it("空数组不写文件", async () => {
-    mock.always(() => ({ kind: "json", content: "[]" }));
+    mock.always(() => ({ kind: "sse", chunks: [{ content: "[]", finishReason: "stop" }] }));
     await extractMemories([{ role: "user", content: "hi" } as ChatMessage]);
     expect(fs.readdirSync(dir).filter((f) => f.endsWith(".md"))).toHaveLength(0);
   });
@@ -152,12 +146,9 @@ describe("consolidateMemories（S5）", () => {
 
   it("达到阈值时合并（mock 返回合并结果）", async () => {
     for (let i = 0; i < 30; i++) writeMemoryFile(`mem-${i}`, "user", `d${i}`, `b${i}`);
-    mock.always(() => ({
-      kind: "json",
-      content: JSON.stringify([
-        { name: "merged", type: "project", description: "merged desc", body: "merged body" },
-      ]),
-    }));
+    mock.always(() => ({ kind: "sse", chunks: [{ content: JSON.stringify([
+              { name: "merged", type: "project", description: "merged desc", body: "merged body" },
+            ]), finishReason: "stop" }] }));
     await consolidateMemories();
     const remaining = fs.readdirSync(dir).filter((f) => f.endsWith(".md"));
     expect(remaining).toContain("merged.md"); // MEMORY.md 索引保留（Python 行为）
@@ -167,12 +158,9 @@ describe("consolidateMemories（S5）", () => {
 
 describe("memoryStopHook（S5）", () => {
   it("fire-and-forget：预压缩快照提取，不阻塞", async () => {
-    mock.always(() => ({
-      kind: "json",
-      content: JSON.stringify([
-        { name: "stop-mem", type: "user", description: "d", body: "b" },
-      ]),
-    }));
+    mock.always(() => ({ kind: "sse", chunks: [{ content: JSON.stringify([
+              { name: "stop-mem", type: "user", description: "d", body: "b" },
+            ]), finishReason: "stop" }] }));
     const messages = [{ role: "user", content: "remember this" } as ChatMessage];
     const snap = snapshotMessages(messages);
     memoryStopHook(messages, snap, false);

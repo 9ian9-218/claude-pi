@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { MockOpenAI } from "../tests/helpers/mock-openai.ts";
+import { installMockModels } from "../tests/helpers/test-client.ts";
 import { resetClient, type ChatMessage } from "./client.ts";
 import {
   estimateTokens,
@@ -20,7 +21,6 @@ import {
 } from "./compact.ts";
 import { runWithWorkdir } from "./workdir.ts";
 
-const originalEnv = { ...process.env };
 let mock: MockOpenAI;
 let ws: string;
 
@@ -30,17 +30,14 @@ function m(role: ChatMessage["role"], content: string, extra: Record<string, unk
 }
 
 beforeEach(async () => {
-  process.env = { ...originalEnv };
-  process.env.OPENAI_API_KEY = "test-key";
-  process.env.OPENAI_MODEL = "gpt-test";
   resetClient();
   mock = await MockOpenAI.create();
-  process.env.OPENAI_BASE_URL = mock.baseUrl;
+  installMockModels(mock.baseUrl);
   ws = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-compact-"));
 });
 
 afterEach(async () => {
-  process.env = { ...originalEnv };
+  resetClient();
   await mock.close();
   fs.rmSync(ws, { recursive: true, force: true });
 });
@@ -214,7 +211,7 @@ describe("persistLargeOutput（S4）", () => {
 
 describe("LLM 摘要压缩（S4）", () => {
   it("compactHistory 生成 [Compacted] user 消息（mock 摘要）", async () => {
-    mock.always(() => ({ kind: "json", content: "总结内容" }));
+    mock.always(() => ({ kind: "sse", chunks: [{ content: "总结内容", finishReason: "stop" }] }));
     const out = await compactHistory([userMsg(1), ...round(1)]);
     expect(out).toHaveLength(1);
     expect(out[0].role).toBe("user");
@@ -223,7 +220,7 @@ describe("LLM 摘要压缩（S4）", () => {
   });
 
   it("reactiveCompact 保留最近 5 条消息", async () => {
-    mock.always(() => ({ kind: "json", content: "摘要" }));
+    mock.always(() => ({ kind: "sse", chunks: [{ content: "摘要", finishReason: "stop" }] }));
     const msgs = Array.from({ length: 10 }, (_, i) => userMsg(i));
     const out = await reactiveCompact(msgs);
     expect(out[0].role).toBe("user");

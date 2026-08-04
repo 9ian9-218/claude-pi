@@ -1,21 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { MockOpenAI } from "../tests/helpers/mock-openai.ts";
+import { installMockModels } from "../tests/helpers/test-client.ts";
 import { sendMessages, resetClient, type ChatMessage } from "./client.ts";
 
-const originalEnv = { ...process.env };
 let mock: MockOpenAI;
 
 beforeEach(async () => {
-  process.env = { ...originalEnv };
   resetClient();
   mock = await MockOpenAI.create();
-  process.env.OPENAI_API_KEY = "test-key";
-  process.env.OPENAI_BASE_URL = mock.baseUrl;
-  process.env.OPENAI_MODEL = "gpt-test";
+  installMockModels(mock.baseUrl);
 });
 
 afterEach(async () => {
-  process.env = { ...originalEnv };
+  resetClient();
   await mock.close();
 });
 
@@ -106,5 +103,36 @@ describe("sendMessages 流式（S1）", () => {
     } finally {
       process.stdout.write = orig;
     }
+  });
+
+  it("history 回放：assistant tool_calls + tool 结果往返不丢参数", async () => {
+    mock.always(() => ({ kind: "sse", chunks: [{ content: "done", finishReason: "stop" }] }));
+    const messages: ChatMessage[] = [
+      { role: "user", content: "list files" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_1",
+            type: "function",
+            function: { name: "glob", arguments: '{"pattern":"*.ts"}' },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call_1", content: "a.ts\nb.ts" },
+    ];
+    await sendMessages(messages, { quietOutput: true });
+    const req = mock.requests[0];
+    const assistant = req.messages.find((m) => m.role === "assistant");
+    const toolMsg = req.messages.find((m) => m.role === "tool");
+    expect(assistant).toBeDefined();
+    const tc = (assistant as { tool_calls?: unknown }).tool_calls as Array<{
+      function: { name: string; arguments: string };
+    }>;
+    expect(tc[0].function.name).toBe("glob");
+    expect(tc[0].function.arguments).toBe('{"pattern":"*.ts"}');
+    expect(toolMsg).toBeDefined();
+    expect((toolMsg as { tool_call_id?: string }).tool_call_id).toBe("call_1");
   });
 });

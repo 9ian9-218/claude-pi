@@ -4,29 +4,27 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { MockOpenAI } from "../tests/helpers/mock-openai.ts";
+import { installMockModels } from "../tests/helpers/test-client.ts";
+import { setRetryPolicyForTest } from "./error-recovery.ts";
 import { resetClient, type ChatMessage } from "./client.ts";
 import { agentLoop } from "./agent-loop.ts";
 import { LoopOptions } from "./loop-options.ts";
 import { installBuiltinHooks } from "./hook.ts";
 import { runWithWorkdir } from "./workdir.ts";
 
-const originalEnv = { ...process.env };
 let mock: MockOpenAI;
 let ws: string;
 
 beforeEach(async () => {
-  process.env = { ...originalEnv };
-  process.env.OPENAI_API_KEY = "test-key";
-  process.env.OPENAI_MODEL = "gpt-test";
   resetClient();
   mock = await MockOpenAI.create();
-  process.env.OPENAI_BASE_URL = mock.baseUrl;
+  installMockModels(mock.baseUrl);
   ws = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-int-"));
   installBuiltinHooks();
 });
 
 afterEach(async () => {
-  process.env = { ...originalEnv };
+  resetClient();
   await mock.close();
   fs.rmSync(ws, { recursive: true, force: true });
 });
@@ -35,6 +33,7 @@ const quiet = new LoopOptions({ quietOutput: true });
 
 describe("agentLoop 集成（03/04）", () => {
   it("429 后指数退避重试成功（错误恢复接入 loop）", async () => {
+    setRetryPolicyForTest({ enabled: true, maxRetries: 1, baseDelayMs: 1 });
     mock.push(() => ({ kind: "error", status: 429, body: "rate limited" }));
     mock.push(() => ({ kind: "sse", chunks: [{ content: "recovered", finishReason: "stop" }] }));
     const messages: ChatMessage[] = [{ role: "user", content: "go" }];
@@ -81,7 +80,7 @@ describe("agentLoop 集成（03/04）", () => {
 describe("agentLoop 集成（05 记忆）", () => {
   it("记忆注入：请求体 user 消息含 <relevant_memories>", async () => {
     // select 调用（非流式 json）→ 主调用（sse）
-    mock.push(() => ({ kind: "json", content: "[0]" }));
+    mock.push(() => ({ kind: "sse", chunks: [{ content: "[0]", finishReason: "stop" }] }));
     mock.push(() => ({ kind: "sse", chunks: [{ content: "ok", finishReason: "stop" }] }));
     // Stop hook 的异步提取静默失败即可（无队列响应）
     const memDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-memint-"));
@@ -284,7 +283,7 @@ describe("agentLoop 集成（12 会话机制）", () => {
     setSessionRoot(sessDir);
     try {
       // 摘要调用（非流式 json）→ 主调用（sse）
-      mock.push(() => ({ kind: "json", content: "早期对话摘要" }));
+      mock.push(() => ({ kind: "sse", chunks: [{ content: "早期对话摘要", finishReason: "stop" }] }));
       mock.push(() => ({ kind: "sse", chunks: [{ content: "ok", finishReason: "stop" }] }));
       const session = SessionManager.create(process.cwd());
       // 构造超限上下文（~480K tokens 需要约 170 万英文字符）

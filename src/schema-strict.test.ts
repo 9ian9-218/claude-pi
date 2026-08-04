@@ -36,11 +36,6 @@ describe("schema-strict（S5）", () => {
     expect(out.function.strict).toBe(true);
   });
 
-  it("OPENAI_TOOL_STRICT=false：移除 strict 字段", () => {
-    process.env.OPENAI_TOOL_STRICT = "false";
-    const out = sanitizeOpenaiTool("read_file", tool);
-    expect(out.function.strict).toBeUndefined();
-  });
 
   it("sanitizeSchemaForStrict 递归：object 的 required 补全全部属性、array items 递归", () => {
     const schema = {
@@ -69,9 +64,8 @@ describe("schema-strict（S5）", () => {
     expect(out.properties.todos.items.additionalProperties).toBe(false);
   });
 
-  it("strict 关闭时 getOpenaiTools 输出无 strict 字段", () => {
-    process.env.OPENAI_TOOL_STRICT = "false";
+  it("strict 恒开：getOpenaiTools 输出带 strict:true（ADR-0007 env 移除）", () => {
     const tools = getOpenaiTools(false);
-    expect(tools.every((t) => t.function.strict === undefined)).toBe(true);
+    expect(tools.every((t) => t.function.strict === true)).toBe(true);
   });
 });

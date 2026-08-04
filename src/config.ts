@@ -71,11 +71,6 @@ export function envBool(name: string, defaultValue: boolean): boolean {
   return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase());
 }
 
-/** Tool calling strict 模式开关（OPENAI_TOOL_STRICT，默认开启） */
-export function getToolStrict(): boolean {
-  return envBool("OPENAI_TOOL_STRICT", true);
-}
-
 /** 启动时一次性初始化：加载 .env 并确保数据目录存在 */
 export function initRuntime(root: string = AGENT_ROOT): AgentDirs {
   loadEnvFile(root);

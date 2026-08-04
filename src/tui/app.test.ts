@@ -153,6 +153,7 @@ describe("TuiApp（S14）", () => {
 describe("TuiApp + agentLoop 流式集成（S14）", () => {
   it("onStream 流式内容进滚动区", async () => {
     const { MockOpenAI } = await import("../../tests/helpers/mock-openai.ts");
+    const { installMockModels } = await import("../../tests/helpers/test-client.ts");
     const { resetClient } = await import("../client.ts");
     const { agentLoop } = await import("../agent-loop.ts");
     const { LoopOptions } = await import("../loop-options.ts");
@@ -161,12 +162,9 @@ describe("TuiApp + agentLoop 流式集成（S14）", () => {
     const os = await import("node:os");
     const path = await import("node:path");
 
-    const originalEnv = { ...process.env };
-    process.env.OPENAI_API_KEY = "test-key";
-    process.env.OPENAI_MODEL = "gpt-test";
     resetClient();
     const mock = await MockOpenAI.create();
-    process.env.OPENAI_BASE_URL = mock.baseUrl;
+    installMockModels(mock.baseUrl);
     const sessDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-tui-"));
     setSessionRoot(sessDir);
     try {
@@ -187,7 +185,6 @@ describe("TuiApp + agentLoop 流式集成（S14）", () => {
       });
       expect(app.scrollback.getText()).toContain("流式回复");
     } finally {
-      process.env = originalEnv;
       await mock.close();
       fs.rmSync(sessDir, { recursive: true, force: true });
     }
