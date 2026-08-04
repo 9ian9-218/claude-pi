@@ -9,9 +9,9 @@ const require = createRequire(import.meta.url);
 const tsxCli = require.resolve("tsx/cli");
 const cliEntry = path.join(PROJECT_ROOT, "src", "cli.ts");
 
-function runCli(args: string[], timeoutMs = 15000): Promise<{ code: number; stdout: string; stderr: string }> {
+function runCli(args: string[], timeoutMs = 15000, input = ""): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    execFile(
+    const child = execFile(
       process.execPath,
       [tsxCli, cliEntry, ...args],
       { cwd: PROJECT_ROOT, timeout: timeoutMs },
@@ -28,6 +28,8 @@ function runCli(args: string[], timeoutMs = 15000): Promise<{ code: number; stdo
         resolve({ code: 0, stdout, stderr });
       },
     );
+    child.stdin?.write(input);
+    child.stdin?.end();
   });
 }
 
@@ -39,8 +41,8 @@ describe("CLI 入口（S3）", () => {
     expect(stdout.trim()).toBe(pkg.version);
   });
 
-  it("无参数启动打印 banner 并退出码 0", async () => {
-    const { code, stdout } = await runCli([]);
+  it("无参数启动打印 banner 并退出码 0（EOF 退出 REPL）", async () => {
+    const { code, stdout } = await runCli([], 15000, "q\n");
     expect(code).toBe(0);
     expect(stdout).toContain("claude-pi");
   });

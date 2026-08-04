@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@earendil-works/pi-tui": "0.83.0",
-    "dotenv": "16.6.1"
+    "dotenv": "16.6.1",
+    "openai": "^7.4.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",

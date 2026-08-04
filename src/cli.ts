@@ -1,13 +1,20 @@
 #!/usr/bin/env node
 /**
- * cli.ts — 入口（工单 01 范围）
+ * cli.ts — 入口（工单 02a）
  *
- * 当前能力：--version / banner / .agent 目录树初始化。
- * 交互 REPL（02a）、运行模式分派（13）、TUI（14）在后续工单接入。
+ * 模式：--version 输出版本退出；否则初始化运行时并进入占位 REPL
+ * （对齐 main.py：User > 提示、/new /n 清空、q/exit/空行退出、EOF/Ctrl+C 退出）。
+ * 运行模式分派（-p / --mode json）归工单 13，TUI 归 14。
  */
 import fs from "node:fs";
 import path from "node:path";
+import readline from "node:readline/promises";
 import { PROJECT_ROOT, initRuntime } from "./config.ts";
+import { agentLoop } from "./agent-loop.ts";
+import { triggerHooks } from "./hook.ts";
+import type { ChatMessage } from "./client.ts";
+
+const USER_PROMPT = "\x1b[36mUser >\t \x1b[0m";
 
 function readVersion(): string {
   const pkg = JSON.parse(
@@ -16,14 +23,46 @@ function readVersion(): string {
   return pkg.version;
 }
 
-const args = process.argv.slice(2);
+async function runRepl(): Promise<void> {
+  const messages: ChatMessage[] = [];
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    terminal: false,
+  });
+  process.on("SIGINT", () => rl.close());
 
-if (args.includes("--version") || args.includes("-v")) {
-  process.stdout.write(readVersion() + "\n");
-  process.exit(0);
+  process.stdout.write(USER_PROMPT);
+  for await (const line of rl) {
+    let query = line;
+    if (["/new", "/n"].includes(query.trim().toLowerCase())) {
+      messages.length = 0;
+      console.log("=".repeat(50));
+      process.stdout.write(USER_PROMPT);
+      continue;
+    }
+    if (["q", "exit", ""].includes(query.trim().toLowerCase())) break;
+    triggerHooks("UserPromptSubmit", query);
+    messages.push({ role: "user", content: query });
+    await agentLoop(messages);
+    process.stdout.write(USER_PROMPT);
+  }
+  rl.close();
 }
 
-initRuntime();
+async function main(): Promise<void> {
+  const args = process.argv.slice(2);
 
-process.stdout.write(`claude-pi ${readVersion()} — 类 Claude Code 架构的 TS Agent 运行时\n`);
-process.stdout.write("交互界面开发中（工单 02a / 13 / 14）…\n");
+  if (args.includes("--version") || args.includes("-v")) {
+    process.stdout.write(readVersion() + "\n");
+    process.exit(0);
+  }
+
+  initRuntime();
+
+  process.stdout.write(`claude-pi ${readVersion()} — 类 Claude Code 架构的 TS Agent 运行时\n`);
+  process.stdout.write("输入 /new 清空会话，q/exit 退出。\n");
+  await runRepl();
+}
+
+void main();
