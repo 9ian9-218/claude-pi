@@ -1,5 +1,5 @@
 /** teammates 常量（对齐 src/teammates/constants.py） */
-import { resolveAgentDirs, PROJECT_ROOT } from "../config.ts";
+import { resolveAgentDirs, AGENT_ROOT } from "../config.ts";
 
 export const TEAM_LEAD_NAME = "team-lead";
 export const TEAMMATE_MESSAGE_TAG = "teammate-message";
@@ -32,7 +32,7 @@ export const LOCK_MIN_TIMEOUT_MS = 5;
 export const LOCK_MAX_TIMEOUT_MS = 100;
 
 /** 测试可注入 teams 根目录 */
-let teamsDir: string = resolveAgentDirs(PROJECT_ROOT).teamsDir;
+let teamsDir: string = resolveAgentDirs(AGENT_ROOT).teamsDir;
 
 export function setTeamsDir(dir: string): void {
   teamsDir = dir;

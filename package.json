@@ -25,5 +25,20 @@
     "tsx": "^4.23.5",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
+  },
+  "bin": {
+    "cpi": "src/cli.ts"
+  },
+  "files": [
+    "src",
+    "scripts",
+    "examples",
+    "docs",
+    "CONTEXT.md",
+    "README.md",
+    "PLAN.md"
+  ],
+  "engines": {
+    "node": ">=22.18"
   }
 }

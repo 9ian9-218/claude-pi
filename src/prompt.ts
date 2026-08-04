@@ -8,13 +8,13 @@
 
 // ── 静态片段 ──────────────────────────────────────────────────────────────
 
-import { PROJECT_ROOT, resolveAgentDirs } from "./config.ts";
+import { AGENT_ROOT, resolveAgentDirs } from "./config.ts";
 import { readMemoryIndex } from "./memory.ts";
 import { getSkillCatalog } from "./skill-load.ts";
 import { getMCPHub } from "./mcp/hub.ts";
 
-const TASKS_DIR = resolveAgentDirs(PROJECT_ROOT).tasksDir;
-const MEMORY_DIR = resolveAgentDirs(PROJECT_ROOT).memoryDir;
+const TASKS_DIR = resolveAgentDirs(AGENT_ROOT).tasksDir;
+const MEMORY_DIR = resolveAgentDirs(AGENT_ROOT).memoryDir;
 
 export const AGENT_IDENTITY =
   "You are a coding agent at {workspace}. " +

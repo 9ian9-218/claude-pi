@@ -1,7 +1,7 @@
 /** MCP 配置（对齐 mcp_integration/config.py）：.agent/mcp.json */
 import fs from "node:fs";
 import path from "node:path";
-import { PROJECT_ROOT, resolveAgentDirs } from "../config.ts";
+import { AGENT_ROOT, resolveAgentDirs } from "../config.ts";
 
 export interface McpServerConfig {
   name: string;
@@ -39,7 +39,7 @@ function parseServer(name: string, raw: Record<string, unknown>): McpServerConfi
 }
 
 export function loadMcpConfig(configPath?: string): Record<string, McpServerConfig> {
-  const p = configPath ?? path.join(resolveAgentDirs(PROJECT_ROOT).agentsDir, "mcp.json");
+  const p = configPath ?? path.join(resolveAgentDirs(AGENT_ROOT).agentsDir, "mcp.json");
   if (!fs.existsSync(p)) return {};
   const data = JSON.parse(fs.readFileSync(p, "utf8")) as Record<string, unknown>;
   const servers = (data["mcpServers"] ?? data["servers"] ?? {}) as Record<string, unknown>;
@@ -55,5 +55,5 @@ export function loadMcpConfig(configPath?: string): Record<string, McpServerConf
 
 /** 测试隔离 */
 export function mcpConfigPath(): string {
-  return path.join(resolveAgentDirs(PROJECT_ROOT).agentsDir, "mcp.json");
+  return path.join(resolveAgentDirs(AGENT_ROOT).agentsDir, "mcp.json");
 }

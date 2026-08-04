@@ -6,7 +6,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { PROJECT_ROOT, resolveAgentDirs } from "./config.ts";
+import { AGENT_ROOT, resolveAgentDirs } from "./config.ts";
 import { buildSkillSection } from "./prompt.ts";
 
 export interface SkillInfo {
@@ -16,7 +16,7 @@ export interface SkillInfo {
 }
 
 // 测试可注入；默认 .agent/skills
-let skillsDir: string = resolveAgentDirs(PROJECT_ROOT).skillsDir;
+let skillsDir: string = resolveAgentDirs(AGENT_ROOT).skillsDir;
 
 export function setSkillsDir(dir: string): void {
   skillsDir = dir;

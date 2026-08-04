@@ -9,7 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { PROJECT_ROOT, resolveAgentDirs } from "../config.ts";
+import { AGENT_ROOT, resolveAgentDirs } from "../config.ts";
 import { createExtensionApi, type ExtensionAPI } from "./api.ts";
 
 export interface LoadedExtension {
@@ -18,7 +18,7 @@ export interface LoadedExtension {
 }
 
 function projectExtensionsDir(): string {
-  return resolveAgentDirs(PROJECT_ROOT).extensionsDir;
+  return resolveAgentDirs(AGENT_ROOT).extensionsDir;
 }
 
 function userExtensionsDir(): string {

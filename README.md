@@ -10,14 +10,29 @@
 - [CONTEXT.md](./CONTEXT.md) — 术语表（领域语言）
 - [docs/adr/](./docs/adr/) — 架构决策记录（6 项）
 
+## 安装与使用（全局命令 `cpi`）
+
+```bash
+npm link              # 全局安装（Node >= 22.18，原生运行 TS，无需构建）
+cpi                   # 交互模式（TTY 自动进入 TUI；管道/非 TTY 走行式 REPL）
+cpi -p                # 打印模式：echo "任务" | cpi -p
+cpi --mode json       # 结构化输出（对拍/脚本接口）
+cpi -c                # 继续最近会话（默认行为）
+cpi --session <id>    # 恢复指定会话
+cpi --fork <id>       # fork 会话到新文件
+cpi --no-session      # 临时会话（不落盘）
+```
+
+**数据根跟随当前目录**：在任意项目运行 `cpi`，`.agent/`（会话/团队/记忆/任务/Skill/worktree/扩展）自动落在该项目的 `.agent/` 下（`CLAUDE_PI_AGENT_ROOT` 可覆盖）。
+
 ## 开发
 
 ```bash
 npm install            # 安装依赖
-npm run dev            # tsx 开发运行（当前：版本/banner 占位入口）
+npm run dev            # tsx 开发运行
 npm run typecheck      # tsc --noEmit 类型检查
 npm test               # vitest 全量测试
-npm run build          # tsc 构建到 dist/
+npx tsx scripts/parity/parity-runner.ts   # Python 版对拍
 ```
 
 运行时数据（会话/团队/记忆/任务/Skill/worktree/扩展）存于项目内 `.agent/`（gitignored）。

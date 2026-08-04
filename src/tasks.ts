@@ -6,13 +6,13 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { PROJECT_ROOT, resolveAgentDirs } from "./config.ts";
+import { AGENT_ROOT, resolveAgentDirs } from "./config.ts";
 import { withFileLock } from "./file-lock.ts";
 import { createTaskWorktree, removeTaskWorktree } from "./worktree.ts";
 import { getWorkdir, setWorktreeOverride } from "./workdir.ts";
 
 // 测试可注入；默认 .agent/tasks
-let tasksDir: string = resolveAgentDirs(PROJECT_ROOT).tasksDir;
+let tasksDir: string = resolveAgentDirs(AGENT_ROOT).tasksDir;
 
 export function setTasksDir(dir: string): void {
   tasksDir = dir;

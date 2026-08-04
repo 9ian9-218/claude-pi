@@ -48,10 +48,13 @@ function colorCode(color: string): number {
 
 /** 拦截 resize 回调：先更新布局再转发给 TUI */
 class ResizeAwareTerminal implements Terminal {
-  constructor(
-    private inner: Terminal,
-    private onResize: () => void,
-  ) {}
+  private inner: Terminal;
+  private onResize: () => void;
+
+  constructor(inner: Terminal, onResize: () => void) {
+    this.inner = inner;
+    this.onResize = onResize;
+  }
 
   start(onInput: (data: string) => void, onResize: () => void): void {
     this.inner.start(onInput, () => {

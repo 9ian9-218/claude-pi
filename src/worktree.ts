@@ -7,10 +7,10 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { PROJECT_ROOT } from "./config.ts";
+import { AGENT_ROOT } from "./config.ts";
 import { getWorkdir } from "./workdir.ts";
 
-let gitRoot: string = PROJECT_ROOT;
+let gitRoot: string = AGENT_ROOT;
 
 export function setGitRoot(root: string): void {
   gitRoot = root;

@@ -6,7 +6,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { PROJECT_ROOT, resolveAgentDirs } from "./config.ts";
+import { AGENT_ROOT, resolveAgentDirs } from "./config.ts";
 import { getClient, type ChatMessage } from "./client.ts";
 import {
   formatSelectMemories,
@@ -20,7 +20,7 @@ export const MEMORY_TYPES = ["user", "feedback", "project", "reference"];
 export const CONSOLIDATE_THRESHOLD = 30;
 
 // 测试可注入（setMemoryDir）；默认 .agent/memory
-let memoryDir: string = resolveAgentDirs(PROJECT_ROOT).memoryDir;
+let memoryDir: string = resolveAgentDirs(AGENT_ROOT).memoryDir;
 
 export function setMemoryDir(dir: string): void {
   memoryDir = dir;

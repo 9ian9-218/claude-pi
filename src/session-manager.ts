@@ -9,7 +9,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { PROJECT_ROOT, resolveAgentDirs } from "./config.ts";
+import { AGENT_ROOT, resolveAgentDirs } from "./config.ts";
 import { formatCompactedUserMessage } from "./prompt.ts";
 import type { ChatMessage } from "./client.ts";
 
@@ -108,7 +108,7 @@ export function defaultSessionDir(): string {
   if (sessionRoot) return sessionRoot;
   const envRoot = process.env.CLAUDE_PI_SESSION_ROOT;
   if (envRoot) return envRoot;
-  return resolveAgentDirs(PROJECT_ROOT).sessionsDir;
+  return resolveAgentDirs(AGENT_ROOT).sessionsDir;
 }
 
 function newSessionPath(cwd: string): string {
