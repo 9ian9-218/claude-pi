@@ -14,10 +14,12 @@
     "@earendil-works/pi-tui": "0.83.0",
     "dotenv": "16.6.1",
     "glob": "^13.0.6",
-    "openai": "^7.4.0"
+    "openai": "^7.4.0",
+    "proper-lockfile": "^4.1.2"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",
+    "@types/proper-lockfile": "^4.1.4",
     "tsx": "^4.23.5",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"

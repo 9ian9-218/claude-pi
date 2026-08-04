@@ -304,7 +304,7 @@ export function startBackgroundTask(
       } else {
         // 06：仅 run_bash 后台化（executeToolCall 导入避免循环依赖）
         const { executeToolCall } = await import("./tool.ts");
-        output = executeToolCall(toolCall, args);
+        output = await executeToolCall(toolCall, args);
         exitCode = output.startsWith("Error") ? 1 : 0;
       }
     } finally {

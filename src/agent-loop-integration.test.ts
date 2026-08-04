@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -133,5 +134,83 @@ describe("agentLoop 集成（06 后台任务）", () => {
     expect(injected).toBeDefined();
     expect(String(injected?.content)).toContain("<status>completed</status>");
     expect(String(injected?.content)).toContain("bg-task-done");
+  }, 30000);
+});
+
+describe("agentLoop 集成（08 任务看板 + worktree）", () => {
+  it("create→claim→complete 全流程：任务持久化 + worktree 生命周期", async () => {
+    // 临时 git 仓库 + tasks 目录注入
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-ig-"));
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
+    execFileSync("git", ["config", "user.email", "t@t"], { cwd: repo });
+    execFileSync("git", ["config", "user.name", "t"], { cwd: repo });
+    fs.writeFileSync(path.join(repo, "a.txt"), "x");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-q", "-m", "init"], { cwd: repo });
+    const { setGitRoot } = await import("./worktree.ts");
+    const { setTasksDir } = await import("./tasks.ts");
+    const taskDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-it-"));
+    setGitRoot(repo);
+    setTasksDir(taskDir);
+
+    mock.push(() => ({
+      kind: "sse",
+      chunks: [
+        {
+          toolCalls: [
+            {
+              index: 0,
+              id: "call_c",
+              name: "create_task",
+              arguments: '{"subject":"重构模块","description":"desc","blockedBy":[]}',
+            },
+          ],
+          finishReason: "tool_calls",
+        },
+      ],
+    }));
+    mock.push(() => ({
+      kind: "sse",
+      chunks: [
+        {
+          toolCalls: [
+            { index: 0, id: "call_cl", name: "claim_task", arguments: '{"task_id":"task_1"}' },
+          ],
+          finishReason: "tool_calls",
+        },
+      ],
+    }));
+    mock.push(() => ({
+      kind: "sse",
+      chunks: [
+        {
+          toolCalls: [
+            { index: 0, id: "call_cc", name: "complete_task", arguments: '{"task_id":"task_1"}' },
+          ],
+          finishReason: "tool_calls",
+        },
+      ],
+    }));
+    mock.push(() => ({ kind: "sse", chunks: [{ content: "all done", finishReason: "stop" }] }));
+
+    try {
+      const messages: ChatMessage[] = [{ role: "user", content: "create, claim, complete" }];
+      await agentLoop(messages, { loopOptions: quiet });
+
+      // 任务状态流转
+      const taskRaw = JSON.parse(fs.readFileSync(path.join(taskDir, "task_1.json"), "utf8"));
+      expect(taskRaw.status).toBe("completed");
+      // worktree 生命周期：claim 创建 → complete 移除
+      const wt = path.join(repo, ".agent", "worktrees", "task_1");
+      expect(fs.existsSync(wt)).toBe(false);
+      // 工具结果可见
+      const all = messages.map((m) => String(m.content ?? "")).join(" ");
+      expect(all).toContain("Created task_1");
+      expect(all).toContain("Claimed task_1");
+      expect(all).toContain("Completed task_1");
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(taskDir, { recursive: true, force: true });
+    }
   }, 30000);
 });

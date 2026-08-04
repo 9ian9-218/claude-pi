@@ -61,12 +61,16 @@ describe("REPL（S4）", () => {
     const { code, stdout } = await runRepl("第一轮\n/new\n第二轮\nq\n");
     expect(code).toBe(0);
     expect(stdout.match(/reply/g)?.length).toBe(2);
-    // 第二次请求的上下文只含新会话内容，证明 /new 已清空
-    const second = mock.requests[1];
-    const userContents = second.messages
+    // 找到含 "第二轮" 的主调用请求，验证上下文不含旧消息（/new 已清空）
+    const second = mock.requests.find((r) =>
+      r.messages.some((m) => m.role === "user" && m.content === "第二轮"),
+    );
+    expect(second).toBeDefined();
+    const userContents = second!.messages
       .filter((m) => m.role === "user")
       .map((m) => m.content);
-    expect(userContents).toEqual(["第二轮"]);
+    expect(userContents).toContain("第二轮");
+    expect(userContents.join(" ")).not.toContain("第一轮");
   });
 
   it("EOF（管道结束）退出码 0", async () => {

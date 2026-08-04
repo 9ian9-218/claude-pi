@@ -18,6 +18,7 @@ import { loadMemories, findMemoryInjectionIndex, snapshotMessages } from "./memo
 import { RELEVANT_MEMORIES_OPEN } from "./prompt.ts";
 import { consumePendingNotifications } from "./message-queue.ts";
 import { shouldRunBackground, startBackgroundTask } from "./background-task.ts";
+import { getWorkdir, runWithWorkdir } from "./workdir.ts";
 
 export interface AgentLoopOptions {
   maxTurn?: number;
@@ -27,6 +28,14 @@ export interface AgentLoopOptions {
 }
 
 export async function agentLoop(
+  messages: ChatMessage[],
+  options: AgentLoopOptions = {},
+): Promise<string | null> {
+  // 为整个 loop 上下文建立 workdir（claim/complete 的 setWorktreeOverride 在此生效）
+  return runWithWorkdir(getWorkdir(), () => agentLoopInner(messages, options));
+}
+
+async function agentLoopInner(
   messages: ChatMessage[],
   options: AgentLoopOptions = {},
 ): Promise<string | null> {
@@ -115,7 +124,7 @@ export async function agentLoop(
               `Output will arrive as a <task_notification> user message ` +
               `when the task completes or stalls.`;
           } else {
-            toolResult = executeToolCall(toolCall, args as Record<string, unknown>);
+            toolResult = await executeToolCall(toolCall, args as Record<string, unknown>);
             triggerHooks("PostToolUse", block, toolResult);
           }
         }

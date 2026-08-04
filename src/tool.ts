@@ -14,8 +14,16 @@ import { globSync } from "glob";
 import { getWorkdir } from "./workdir.ts";
 import { sanitizeOpenaiTool, type OpenaiTool } from "./schema-strict.ts";
 import { getSkillContent } from "./skill-load.ts";
+import {
+  runCreateTask,
+  runListTasks,
+  runGetTask,
+  runClaimTask,
+  runCompleteTask,
+  listTasks,
+} from "./tasks.ts";
 
-export type ExecuteFn = (args: Record<string, unknown>) => unknown;
+export type ExecuteFn = (args: Record<string, unknown>) => unknown | Promise<unknown>;
 
 /** Tool 核心抽象（对齐 Python frozen dataclass） */
 export class Tool {
@@ -279,10 +287,22 @@ function formatTodoBoard(updated = false): string {
   return `Showing ${CURRENT_TODOS.length} tasks`;
 }
 
+/** 从持久化任务看板刷新 todo（对齐 _sync_todo_from_tasks） */
+function syncTodoFromTasks(): void {
+  const tasks = listTasks();
+  if (tasks.length === 0) return;
+  CURRENT_TODOS = tasks.map((t) => ({
+    content: `[${t.id}] ${t.subject}`,
+    status: t.status,
+  }));
+  formatTodoBoard();
+}
+
 function execTodoWrite(args: Record<string, unknown>): string {
   const todos = args["todos"];
   if (!Array.isArray(todos) || todos.length === 0) {
-    // 08：接入任务看板同步（_sync_todo_from_tasks）
+    syncTodoFromTasks();
+    if (CURRENT_TODOS.length > 0) return formatTodoBoard(true);
     return "No tasks yet.";
   }
   for (let i = 0; i < todos.length; i++) {
@@ -364,6 +384,144 @@ export const LOAD_SKILL_TOOL = buildTool({
   isReadOnly: true,
 });
 
+// ── 任务看板工具（08） ────────────────────────────────────────────────────
+
+function execCreateTask(args: Record<string, unknown>): string {
+  const blocked = Array.isArray(args["blockedBy"]) ? (args["blockedBy"] as string[]) : [];
+  const result = runCreateTask(
+    String(args["subject"]),
+    String(args["description"] ?? ""),
+    blocked,
+  );
+  syncTodoFromTasks();
+  return result;
+}
+
+function execListTasks(args: Record<string, unknown>): string {
+  return runListTasks(String(args["status_filter"] ?? "all"));
+}
+
+function execGetTask(args: Record<string, unknown>): string {
+  return runGetTask(String(args["task_id"]));
+}
+
+async function execClaimTask(args: Record<string, unknown>): Promise<string> {
+  const result = await runClaimTask(String(args["task_id"]));
+  syncTodoFromTasks();
+  return result;
+}
+
+async function execCompleteTask(args: Record<string, unknown>): Promise<string> {
+  const result = await runCompleteTask(String(args["task_id"]));
+  syncTodoFromTasks();
+  return result;
+}
+
+const CREATE_TASK_SCHEMA = {
+  type: "object",
+  properties: {
+    subject: { type: "string", description: "Short task title" },
+    description: {
+      type: "string",
+      description: "Detailed description; use empty string if none",
+    },
+    blockedBy: {
+      type: "array",
+      description: "Dependency task IDs; use empty array if none",
+      items: { type: "string" },
+    },
+  },
+  required: ["subject", "description", "blockedBy"],
+  additionalProperties: false,
+};
+
+const LIST_TASKS_SCHEMA = {
+  type: "object",
+  properties: {
+    status_filter: {
+      type: "string",
+      enum: ["all", "pending", "in_progress", "completed"],
+      description: "Filter by status, or 'all' for every task",
+    },
+  },
+  required: ["status_filter"],
+  additionalProperties: false,
+};
+
+const GET_TASK_SCHEMA = {
+  type: "object",
+  properties: {
+    task_id: { type: "string", description: "Task ID, e.g. task_1" },
+  },
+  required: ["task_id"],
+  additionalProperties: false,
+};
+
+const CLAIM_TASK_SCHEMA = {
+  type: "object",
+  properties: {
+    task_id: { type: "string", description: "Task ID to claim" },
+  },
+  required: ["task_id"],
+  additionalProperties: false,
+};
+
+const COMPLETE_TASK_SCHEMA = {
+  type: "object",
+  properties: {
+    task_id: { type: "string", description: "Task ID to complete" },
+  },
+  required: ["task_id"],
+  additionalProperties: false,
+};
+
+export const CREATE_TASK_TOOL = buildTool({
+  name: "create_task",
+  description:
+    "Plan phase: create a persisted task in .agent/tasks/ (use during initial planning " +
+    "for large multi-step goals). Set blockedBy for dependencies; " +
+    "blocks on upstream tasks is maintained automatically. " +
+    "Pass empty string / empty array when description or blockedBy are not needed. " +
+    "Create the full plan before claim_task or implementation tools.",
+  parameters: CREATE_TASK_SCHEMA,
+  execute: execCreateTask,
+  isReadOnly: false,
+});
+
+export const LIST_TASKS_TOOL = buildTool({
+  name: "list_tasks",
+  description: "List persisted tasks, optionally filtered by status.",
+  parameters: LIST_TASKS_SCHEMA,
+  execute: execListTasks,
+  isReadOnly: true,
+});
+
+export const GET_TASK_TOOL = buildTool({
+  name: "get_task",
+  description: "Get full details of a persisted task.",
+  parameters: GET_TASK_SCHEMA,
+  execute: execGetTask,
+  isReadOnly: true,
+});
+
+export const CLAIM_TASK_TOOL = buildTool({
+  name: "claim_task",
+  description:
+    "Resolve phase: claim a pending task (creates a git worktree for isolation " +
+    "and switches the working directory into it).",
+  parameters: CLAIM_TASK_SCHEMA,
+  execute: execClaimTask,
+  isReadOnly: false,
+});
+
+export const COMPLETE_TASK_TOOL = buildTool({
+  name: "complete_task",
+  description: "Complete a claimed task (removes its worktree and restores the working directory).",
+  parameters: COMPLETE_TASK_SCHEMA,
+  execute: execCompleteTask,
+  isReadOnly: false,
+});
+
 // ── 注册表与对外 API ──────────────────────────────────────────────────────
 
 export const BUILTIN_TOOLS: Tool[] = [
@@ -374,6 +532,11 @@ export const BUILTIN_TOOLS: Tool[] = [
   GLOB_TOOL,
   TODO_WRITE_TOOL,
   LOAD_SKILL_TOOL,
+  CREATE_TASK_TOOL,
+  LIST_TASKS_TOOL,
+  GET_TASK_TOOL,
+  CLAIM_TASK_TOOL,
+  COMPLETE_TASK_TOOL,
 ];
 
 export const TOOL_MAP: Map<string, Tool> = new Map(BUILTIN_TOOLS.map((t) => [t.name, t]));
@@ -395,10 +558,10 @@ export interface ToolCallLike {
   function: { name: string; arguments: string };
 }
 
-export function executeToolCall(
+export async function executeToolCall(
   toolCall: ToolCallLike,
   args?: Record<string, unknown>,
-): string {
+): Promise<string> {
   const name = toolCall.function.name;
 
   if (args === undefined) {
@@ -421,6 +584,7 @@ export function executeToolCall(
 
   const result = tool.run(args);
   if (typeof result === "string") return result;
+  if (result instanceof Promise) return String(await result);
   return JSON.stringify(result);
 }
 
