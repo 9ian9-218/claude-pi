@@ -145,3 +145,10 @@ _Avoid_: .claude（旧名）；例外：扩展的全局位置是 `~/.claude-pi/e
 **对拍测试 (Parity Test)**:
 同一场景脚本分别驱动 Python 版与 claude-pi（`--mode json`），比对输出以验证行为等价。
 _Avoid_: 对照测试、回归测试（对拍特指跨实现比对）
+
+**MCP 工具 (MCP Tool)**:
+经 MCP 协议接入的外部工具，以 `mcp__{server}__{tool}` 前缀命名暴露给 LLM；本地 server 暴露内置工具为 `mcp__local__{tool}`（权限/后台判定时映射回底层工具名）。
+_Avoid_: 外部工具、插件工具
+
+**扩展 (Extension)** 词条补充:
+扩展经 `ctx.ui` 与用户交互（confirm/select/input/notify/custom 组件），可注册 entry 渲染器按 customType 显示自定义会话条目。
