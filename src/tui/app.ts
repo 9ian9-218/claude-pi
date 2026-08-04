@@ -21,6 +21,8 @@ export interface TuiAppOptions {
   terminal: Terminal;
   onQuery: (query: string) => Promise<void> | void;
   onNewSession?: () => void;
+  /** 会话命令处理（15b：/tree /fork /clone /resume /name /session） */
+  onSessionCommand?: (name: string, rest: string, app: TuiApp) => Promise<void> | void;
   statusText?: () => string;
   initialText?: string;
 }
@@ -88,6 +90,7 @@ export class TuiApp {
   readonly input: Input;
   private readonly onQuery: (q: string) => Promise<void> | void;
   private readonly onNewSession?: () => void;
+  private readonly onSessionCommand?: (name: string, rest: string, app: TuiApp) => Promise<void> | void;
   private readonly statusTextFn?: () => string;
   private readonly statusLine = new Text("", 1, 0);
   private readonly root = new Container();
@@ -97,6 +100,7 @@ export class TuiApp {
   constructor(options: TuiAppOptions) {
     this.onQuery = options.onQuery;
     this.onNewSession = options.onNewSession;
+    this.onSessionCommand = options.onSessionCommand;
     this.statusTextFn = options.statusText;
     this.scrollback = new Scrollback(options.initialText ?? "");
     this.input = new Input();
@@ -277,8 +281,47 @@ export class TuiApp {
         this.appendMessage("system", this.statusTextFn?.() ?? "no status");
         break;
       default:
+        if (this.onSessionCommand) {
+          await this.onSessionCommand(name, cmd.slice(1 + name.length).trim(), this);
+          break;
+        }
         this.appendMessage("system", `未知命令：/${name}（/help 查看）`);
     }
     this.tui.setFocus(this.input);
+  }
+
+  /** 通用选择器（15b：树节点/fork 目标/会话列表），返回选中项或 null */
+  showSelector(items: SelectItem[], title: string): Promise<SelectItem | null> {
+    return new Promise((resolve) => {
+      const list = new SelectList(items, 8, {
+        selectedPrefix: (t) => `\x1b[36m▸ ${t}\x1b[0m`,
+        selectedText: (t) => `\x1b[1m${t}\x1b[0m`,
+        description: (t) => `\x1b[90m${t}\x1b[0m`,
+        scrollInfo: (t) => `\x1b[90m${t}\x1b[0m`,
+        noMatch: (t) => `\x1b[90m${t}\x1b[0m`,
+      });
+      const overlay = new Container();
+      overlay.addChild(new Text(`\x1b[36m${title}\x1b[0m\n`, 1, 1));
+      overlay.addChild(list);
+      const handle = this.tui.showOverlay(overlay, { width: "70%", anchor: "center" });
+      const removeListener = this.tui.addInputListener((data) => {
+        list.handleInput(data);
+        return { consume: true };
+      });
+      const finish = (item: SelectItem | null) => {
+        removeListener();
+        handle.hide();
+        this.tui.setFocus(this.input);
+        resolve(item);
+      };
+      list.onSelect = (item) => finish(item);
+      list.onCancel = () => finish(null);
+    });
+  }
+
+  /** 清空滚动区并显示新内容（会话切换后） */
+  refreshScrollback(text: string): void {
+    this.scrollback.setText(text);
+    this.tui.requestRender();
   }
 }

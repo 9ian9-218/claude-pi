@@ -15,6 +15,7 @@ import { triggerHooks } from "./hook.ts";
 import type { ChatMessage } from "./client.ts";
 import { SessionManager } from "./session-manager.ts";
 import { TuiApp } from "./tui/app.ts";
+import { handleSessionCommand } from "./tui/session-commands.ts";
 import { LoopOptions } from "./loop-options.ts";
 import { TEAM_LEAD_NAME } from "./teammates/constants.ts";
 import { createTeam, readTeamConfig } from "./teammates/team-helpers.ts";
@@ -178,17 +179,19 @@ function pickSession(args: string[]): SessionManager | null {
 
 /** TUI 交互模式（TTY 时默认；管道/非 TTY 走 REPL） */
 async function runTui(initialSession: SessionManager | null): Promise<void> {
-  let session = initialSession;
+  const sessionRef: { current: SessionManager | null } = { current: initialSession };
   const { ProcessTerminal } = await import("@earendil-works/pi-tui");
   const app = new TuiApp({
     terminal: new ProcessTerminal(),
     initialText: "claude-pi — 输入 /help 查看命令\n\n",
     onNewSession: () => {
-      session = SessionManager.create(process.cwd());
+      sessionRef.current = SessionManager.create(process.cwd());
     },
+    onSessionCommand: (name, rest, a) => handleSessionCommand(a, sessionRef, name, rest),
     statusText: () => `${process.env.OPENAI_MODEL ?? "?"} | ${process.cwd()}`,
     onQuery: async (query) => {
       await triggerHooks("UserPromptSubmit", query);
+      const session = sessionRef.current;
       if (session) {
         session.appendMessage({ role: "user", content: query });
         const ctx = session.buildSessionContext();
