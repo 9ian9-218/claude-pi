@@ -27,5 +27,10 @@ npm run build          # tsc 构建到 dist/
 ✅ **工单 01 仓库骨架**（Node 22 + TS + vitest + pi-tui@0.83.0 锁定 + `.agent/` 目录树 + .env 加载）
 ✅ **工单 02a 对话闭环**（openai SDK 流式客户端 + Agent Loop + Hook 注册表 + 占位 REPL + mock OpenAI 测试）
 ✅ **工单 02b 工具闭环**（Tool 抽象 + Schema 校验 + 权限黑名单/规则 + PreToolUse/PostToolUse + 6 工具 + strict 开关）
-⬜ 工单 03 错误恢复（frontier）
+✅ **工单 03 错误恢复**（429/529 退避 + fallback + max_tokens 升级/续写 + reactive compact）
+✅ **工单 04 压缩 L1–L3**（snip/micro/budget 落盘 + LLM 摘要，Python 行为对拍验证）
+✅ **工单 05 记忆**（Markdown 长期记忆 + Stop 异步提取 + 相关性注入）
+✅ **工单 06 后台任务**（子进程 + stall 看门狗 + 通知注入）
+✅ **工单 07 Skill 加载**（扫描注册表 + load_skill 工具）
+⬜ 工单 08 任务看板 + worktree 隔离（frontier）
 
