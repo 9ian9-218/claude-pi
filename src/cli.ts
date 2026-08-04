@@ -16,6 +16,8 @@ import type { ChatMessage } from "./client.ts";
 import { SessionManager } from "./session-manager.ts";
 import { TuiApp } from "./tui/app.ts";
 import { handleSessionCommand } from "./tui/session-commands.ts";
+import { getCurrentWorktreeTaskId } from "./worktree.ts";
+import { getWorkdir } from "./workdir.ts";
 import { LoopOptions } from "./loop-options.ts";
 import { TEAM_LEAD_NAME } from "./teammates/constants.ts";
 import { createTeam, readTeamConfig } from "./teammates/team-helpers.ts";

@@ -41,5 +41,6 @@ npm run build          # tsc 构建到 dist/
 ✅ **工单 14 TUI 核心**（pi-tui 滚动区 + 输入 + 状态行 + 斜杠命令，TTY 自动呈现）
 ✅ **工单 15a TUI 权限弹窗**（overlay SelectList 允许/拒绝，接入 askUser）
 ✅ **工单 15b TUI 会话命令**（/tree /fork /clone /resume /name /session 选择器）
-⬜ 工单 15c TUI 通知与状态（frontier）
+✅ **工单 15c TUI 通知与状态**（队友配色 + 后台通知 + worktree 指示器）
+⬜ 工单 16 扩展核心（frontier）
 

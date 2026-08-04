@@ -238,3 +238,24 @@ describe("权限弹窗（S15a）", () => {
     app.stop();
   });
 });
+
+describe("通知与状态（S15c）", () => {
+  it("队友消息按 color 属性染色", () => {
+    const term = new FakeTerminal();
+    const app = new TuiApp({ terminal: term, onQuery: () => {} });
+    app.appendMessage(
+      "user",
+      '<teammate-message teammate_id="worker-1" color="green">\n进度报告\n</teammate-message>',
+    );
+    const text = app.scrollback.getText();
+    expect(text).toContain("\x1b[32m"); // green ANSI
+    expect(text).toContain("进度报告");
+  });
+
+  it("后台任务通知绿色渲染", () => {
+    const term = new FakeTerminal();
+    const app = new TuiApp({ terminal: term, onQuery: () => {} });
+    app.appendMessage("user", "<task_notification>\n<status>completed</status>\n</task_notification>");
+    expect(app.scrollback.getText()).toContain("\x1b[32m");
+  });
+});

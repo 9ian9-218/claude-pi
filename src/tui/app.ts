@@ -27,6 +27,21 @@ export interface TuiAppOptions {
   initialText?: string;
 }
 
+/** AGENT_COLORS → ANSI 颜色码（10 的队友配色） */
+function colorCode(color: string): number {
+  const map: Record<string, number> = {
+    blue: 34,
+    green: 32,
+    yellow: 33,
+    purple: 35,
+    orange: 33,
+    pink: 35,
+    cyan: 36,
+    red: 31,
+  };
+  return map[color] ?? 32;
+}
+
 /** 拦截 resize 回调：先更新布局再转发给 TUI */
 class ResizeAwareTerminal implements Terminal {
   constructor(
@@ -142,15 +157,23 @@ export class TuiApp {
     this.tui.requestRender();
   }
 
-  /** 追加完整消息（user/assistant/tool 结果） */
+  /** 追加完整消息（user/assistant/tool 结果）；队友消息按 color 属性染色，后台通知绿色 */
   appendMessage(role: string, content: string): void {
+    let rendered = content;
+    if (content.includes("<teammate-message")) {
+      const colorMatch = content.match(/color=\"([^\"]+)\"/);
+      const color = colorMatch?.[1] ?? "green";
+      rendered = `\x1b[${colorCode(color)}m${content}\x1b[0m`;
+    } else if (content.includes("<task_notification>")) {
+      rendered = `\x1b[32m${content}\x1b[0m`;
+    }
     const label =
       role === "user"
         ? "\x1b[1;36mUser >\x1b[0m "
         : role === "assistant"
           ? "\x1b[1;32mModel >\x1b[0m "
           : `\x1b[1;33m${role} >\x1b[0m `;
-    this.scrollback.append(`\n${label}${content}\n`);
+    this.scrollback.append(`\n${label}${rendered}\n`);
     this.tui.requestRender();
   }
 
