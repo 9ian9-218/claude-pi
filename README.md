@@ -6,10 +6,24 @@
 
 ## 文档
 
-- [PLAN.md](./PLAN.md) — 七阶段实施计划（当前状态：规划完成，待 Phase 0）
+- [PLAN.md](./PLAN.md) — 七阶段实施计划（工单化：`.scratch/claude-pi/issues/`，当前 frontier：01 已完成）
 - [CONTEXT.md](./CONTEXT.md) — 术语表（领域语言）
 - [docs/adr/](./docs/adr/) — 架构决策记录（6 项）
 
+## 开发
+
+```bash
+npm install            # 安装依赖
+npm run dev            # tsx 开发运行（当前：版本/banner 占位入口）
+npm run typecheck      # tsc --noEmit 类型检查
+npm test               # vitest 全量测试
+npm run build          # tsc 构建到 dist/
+```
+
+运行时数据（会话/团队/记忆/任务/Skill/worktree/扩展）存于项目内 `.agent/`（gitignored）。
+
 ## 状态
 
-🚧 规划阶段——仓库骨架已建，代码未开始。决策均已与用户确认：Node 22 LTS + pi-tui + openai SDK + async-first + `.agent/` 数据根 + 树形会话 + 显式运行模式 + 扩展体系。
+✅ **工单 01 仓库骨架**（Node 22 + TS + vitest + pi-tui@0.83.0 锁定 + `.agent/` 目录树 + .env 加载）
+⬜ 工单 02a 对话闭环（frontier）
+

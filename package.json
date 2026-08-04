@@ -1,0 +1,23 @@
+{
+  "name": "claude-pi",
+  "version": "0.1.0",
+  "description": "类 Claude Code 架构的 TypeScript Agent 运行时（移植自 Claude-Code-simple）",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "dev": "tsx src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@earendil-works/pi-tui": "0.83.0",
+    "dotenv": "16.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "tsx": "^4.23.5",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}
