@@ -8,7 +8,7 @@
  * tool_calls，按未知工具产生错误结果（对齐 Python validate_hook 语义）。
  * compact（04）、memory（05）、background（06）、错误恢复（03）后续接入。
  */
-import { sendMessages, type ChatMessage } from "./client.ts";
+import { sendMessages } from "./client.ts";
 import { triggerHooks } from "./hook.ts";
 import { LoopOptions } from "./loop-options.ts";
 import { executeToolCall, getOpenaiTools } from "./tool.ts";
@@ -20,6 +20,9 @@ import { consumePendingNotifications } from "./message-queue.ts";
 import { shouldRunBackground, startBackgroundTask } from "./background-task.ts";
 import { getWorkdir, runWithWorkdir } from "./workdir.ts";
 import { getAgentContext } from "./teammates/context.ts";
+import { CONTEXT_LIMIT, estimateMessagesTokens, compactHistory, summarizeHistory } from "./compact.ts";
+import type { SessionManager } from "./session-manager.ts";
+import type { ChatMessage } from "./client.ts";
 import { consumePendingInjections, consumePendingIdleNotifications } from "./teammates/poller.ts";
 import { processPendingLeadPermissions } from "./permission-sync.ts";
 import { formatIdleNotificationInjection } from "./teammates/protocol.ts";
@@ -29,6 +32,8 @@ export interface AgentLoopOptions {
   maxTokens?: number;
   isSubagent?: boolean;
   loopOptions?: LoopOptions;
+  /** 树形会话（工单 12）：消息同步落盘，L4 写 compaction entry */
+  session?: SessionManager;
 }
 
 export async function agentLoop(
@@ -43,7 +48,7 @@ async function agentLoopInner(
   messages: ChatMessage[],
   options: AgentLoopOptions = {},
 ): Promise<string | null> {
-  const { maxTurn = 100, maxTokens = 8000, isSubagent = false, loopOptions } = options;
+  const { maxTurn = 100, maxTokens = 8000, isSubagent = false, loopOptions, session } = options;
   const opts = loopOptions ?? LoopOptions.fromLegacyIsSubagent(isSubagent);
   const recoveryState = new RecoveryState();
   let effectiveMaxTokens = maxTokens;
@@ -57,17 +62,23 @@ async function agentLoopInner(
     if (opts.injectLeadNotifications) {
       await processPendingLeadPermissions(getAgentContext().teamName ?? "");
       for (const content of consumePendingInjections()) {
-        messages.push({ role: "user", content });
+        const msg: ChatMessage = { role: "user", content };
+        messages.push(msg);
+        session?.appendMessage(msg);
         console.log(`  \x1b[33m[inject] teammate inbox message\x1b[0m`);
       }
       for (const parsed of consumePendingIdleNotifications()) {
-        messages.push({ role: "user", content: formatIdleNotificationInjection(parsed) });
+        const msg: ChatMessage = { role: "user", content: formatIdleNotificationInjection(parsed) };
+        messages.push(msg);
+        session?.appendMessage(msg);
         console.log(`  \x1b[33m[inject] teammate idle notification\x1b[0m`);
       }
     }
     if (opts.injectBackgroundNotifications) {
       for (const notif of consumePendingNotifications({ recipient: bgRecipient })) {
-        messages.push({ role: "user", content: notif });
+        const msg: ChatMessage = { role: "user", content: notif };
+        messages.push(msg);
+        session?.appendMessage(msg);
         console.log(`  \x1b[32m[inject] task_notification\x1b[0m`);
       }
     }
@@ -75,7 +86,26 @@ async function agentLoopInner(
     replaceMessages(messages, toolResultBudget(messages));
     replaceMessages(messages, snipCompact(messages));
     replaceMessages(messages, microCompact(messages));
-    // L4 auto compact（CONTEXT_LIMIT 检查 → compaction entry）归工单 12
+    // L4：会话模式写 compaction entry；非会话模式 Python 行为（LLM 摘要替换）
+    if (estimateMessagesTokens(messages) > CONTEXT_LIMIT) {
+      console.log("  \x1b[31m[auto compact]\x1b[0m");
+      if (session) {
+        const tokensBefore = estimateMessagesTokens(messages);
+        const summary = await summarizeHistory(messages);
+        // retainedTail：最近的合理大小消息（排除超限大消息）
+        const tail = messages
+          .slice(-5)
+          .filter((m) => estimateMessagesTokens([m]) <= 8_000);
+        session.appendCompaction(
+          summary,
+          tokensBefore,
+          tail.length > 0 ? tail : undefined,
+        );
+        replaceMessages(messages, session.buildSessionContext().messages);
+      } else {
+        replaceMessages(messages, await compactHistory(messages));
+      }
+    }
     const requestMessages = buildRequestMessages(messages, memoriesContent);
 
     const llmResult = await sendMessagesWithRecovery({
@@ -100,7 +130,9 @@ async function agentLoopInner(
     const message = llmResult.message;
 
     if (message.toolCalls) {
-      messages.push(message.modelDump() as unknown as ChatMessage);
+      const assistantMsg = message.modelDump() as unknown as ChatMessage;
+      messages.push(assistantMsg);
+      session?.appendMessage(assistantMsg);
       for (const toolCall of message.toolCalls) {
         let args: unknown;
         let parseError = "";
@@ -153,12 +185,15 @@ async function agentLoopInner(
           tool_call_id: toolCall.id,
           content: toolResult,
         });
+        session?.appendMessage(messages[messages.length - 1]);
       }
       continue;
     }
 
     if (message.content !== null) {
-      messages.push(message.modelDump() as unknown as ChatMessage);
+      const assistantMsg = message.modelDump() as unknown as ChatMessage;
+      messages.push(assistantMsg);
+      session?.appendMessage(assistantMsg);
       if (opts.exitOnFinalContent) {
         return message.content;
       }
@@ -170,7 +205,9 @@ async function agentLoopInner(
     // 自然结束 → Stop hook（memory 提取）
     const force = await triggerHooks("Stop", messages, preCompress, opts.skipMemoryStopHook);
     if (force) {
-      messages.push({ role: "user", content: String(force) });
+      const msg: ChatMessage = { role: "user", content: String(force) };
+      messages.push(msg);
+      session?.appendMessage(msg);
       continue;
     }
     return null;

@@ -248,3 +248,58 @@ describe("agentLoop 集成（10 队友注入）", () => {
     }
   });
 });
+
+describe("agentLoop 集成（12 会话机制）", () => {
+  it("会话模式：消息同步落盘，重开文件上下文一致（崩溃恢复）", async () => {
+    const { SessionManager, setSessionRoot } = await import("./session-manager.ts");
+    const sessDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-sessint-"));
+    setSessionRoot(sessDir);
+    try {
+      mock.always(() => ({ kind: "sse", chunks: [{ content: "回复内容", finishReason: "stop" }] }));
+      const session = SessionManager.create(process.cwd());
+      session.appendMessage({ role: "user", content: "第一问" });
+      await agentLoop(session.buildSessionContext().messages, { loopOptions: quiet, session });
+      // 模拟崩溃：丢弃内存对象，直接重开文件
+      const file = session.getSessionFile()!;
+      const recovered = SessionManager.open(file);
+      const ctx = recovered.buildSessionContext();
+      const contents = ctx.messages.map((m) => String(m.content));
+      expect(contents).toContain("第一问");
+      expect(contents).toContain("回复内容");
+    } finally {
+      fs.rmSync(sessDir, { recursive: true, force: true });
+    }
+  });
+
+  it("L4：超 CONTEXT_LIMIT 写 compaction entry（retainedTail），上下文从检查点重建", async () => {
+    const { SessionManager, setSessionRoot } = await import("./session-manager.ts");
+    const { CONTEXT_LIMIT } = await import("./compact.ts");
+    const sessDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-l4-"));
+    setSessionRoot(sessDir);
+    try {
+      // 摘要调用（非流式 json）→ 主调用（sse）
+      mock.push(() => ({ kind: "json", content: "早期对话摘要" }));
+      mock.push(() => ({ kind: "sse", chunks: [{ content: "ok", finishReason: "stop" }] }));
+      const session = SessionManager.create(process.cwd());
+      // 构造超限上下文（~480K tokens 需要约 170 万英文字符）
+      const huge = "x".repeat(2_000_000);
+      session.appendMessage({ role: "user", content: huge });
+      session.appendMessage({ role: "user", content: "最新问题" });
+      await agentLoop(session.buildSessionContext().messages, { loopOptions: quiet, session });
+      // compaction entry 已写
+      const entries = session.getEntries();
+      const comp = entries.find((e) => e.type === "compaction");
+      expect(comp).toBeDefined();
+      expect((comp as { summary: string }).summary).toContain("早期对话摘要");
+      // 上下文从检查点重建：不含巨大历史，含 retainedTail
+      const ctx = session.buildSessionContext();
+      const contents = ctx.messages.map((m) => String(m.content));
+      expect(contents.some((c) => c.includes("[Compacted]"))).toBe(true);
+      expect(contents.some((c) => c === huge)).toBe(false);
+      expect(contents).toContain("最新问题");
+      void CONTEXT_LIMIT;
+    } finally {
+      fs.rmSync(sessDir, { recursive: true, force: true });
+    }
+  }, 30000);
+});

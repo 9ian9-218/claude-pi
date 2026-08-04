@@ -1,6 +1,8 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { MockOpenAI } from "./helpers/mock-openai.ts";
 import { PROJECT_ROOT } from "../src/config.ts";
@@ -10,19 +12,30 @@ const tsxCli = require.resolve("tsx/cli");
 const cliEntry = path.join(PROJECT_ROOT, "src", "cli.ts");
 
 let mock: MockOpenAI | null = null;
+let workdirs: string[] = [];
+
+beforeEach(() => {
+  workdirs = [];
+});
 
 afterEach(async () => {
   if (mock) await mock.close();
   mock = null;
+  for (const d of workdirs) {
+    fs.rmSync(d, { recursive: true, force: true });
+  }
 });
 
 function runRepl(input: string, timeoutMs = 20000): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
+    // 每个测试独立临时 cwd：会话按 cwd 组织，天然隔离
+    const workdir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-repl-"));
+    workdirs.push(workdir);
     const child = execFile(
       process.execPath,
       [tsxCli, cliEntry],
       {
-        cwd: PROJECT_ROOT,
+        cwd: workdir,
         timeout: timeoutMs,
         env: {
           ...process.env,
@@ -70,7 +83,9 @@ describe("REPL（S4）", () => {
       .filter((m) => m.role === "user")
       .map((m) => m.content);
     expect(userContents).toContain("第二轮");
-    expect(userContents.join(" ")).not.toContain("第一轮");
+    // /new 后上下文不含旧会话消息
+    expect(userContents.some((c) => c === "第一轮")).toBe(false);
+    expect(userContents.some((c) => c === "你好")).toBe(false);
   });
 
   it("EOF（管道结束）退出码 0", async () => {
