@@ -46,7 +46,7 @@ async function runRepl(): Promise<void> {
       continue;
     }
     if (["q", "exit", ""].includes(query.trim().toLowerCase())) break;
-    triggerHooks("UserPromptSubmit", query);
+    await triggerHooks("UserPromptSubmit", query);
     messages.push({ role: "user", content: query });
     await agentLoop(messages);
     process.stdout.write(USER_PROMPT);

@@ -12,6 +12,11 @@ import { getLeaderName } from "./team-helpers.ts";
 // 注入队列（agent_loop 每轮消费）
 let pendingInjections: string[] = [];
 let pendingIdleNotifications: Record<string, unknown>[] = [];
+let pendingPermissionRequests: Array<{
+  entry: Record<string, unknown>;
+  parsed: Record<string, unknown>;
+  index: number;
+}> = [];
 
 export function consumePendingInjections(): string[] {
   const items = [...pendingInjections];
@@ -29,6 +34,17 @@ export function consumePendingIdleNotifications(): Record<string, unknown>[] {
 export function clearPollerQueues(): void {
   pendingInjections = [];
   pendingIdleNotifications = [];
+  pendingPermissionRequests = [];
+}
+
+export function consumePendingPermissionRequests(): Array<{
+  entry: Record<string, unknown>;
+  parsed: Record<string, unknown>;
+  index: number;
+}> {
+  const items = [...pendingPermissionRequests];
+  pendingPermissionRequests = [];
+  return items;
 }
 
 async function routeMessage(entry: MailboxMessage, index: number, teamName: string, leadName: string): Promise<void> {
@@ -43,7 +59,31 @@ async function routeMessage(entry: MailboxMessage, index: number, teamName: stri
     await markMessageAsReadByIndex(leadName, teamName, index);
     return;
   }
-  // permission_request / plan_approval 等归 11
+  if (msgType === "permission_request" || msgType === "sandbox_permission_request") {
+    // 去重后入队（主线程 processPendingLeadPermissions 消费）
+    const reqId = String(parsed["request_id"] ?? parsed["requestId"] ?? "");
+    if (!pendingPermissionRequests.some((i) => String(i.parsed["request_id"] ?? i.parsed["requestId"] ?? "") === reqId)) {
+      pendingPermissionRequests.push({ entry: entry as Record<string, unknown>, parsed, index });
+    }
+    return;
+  }
+  if (msgType === "plan_approval_request") {
+    const { formatPlanApprovalInjection, registerRequest } = await import("./protocol.ts");
+    const reqId = String(parsed["requestId"] ?? parsed["request_id"] ?? "");
+    const fromAgent = String(entry["from"] ?? parsed["from"] ?? "unknown");
+    registerRequest({
+      requestId: reqId,
+      type: "plan_approval",
+      sender: fromAgent,
+      target: leadName,
+      payload: String(parsed["planContent"] ?? ""),
+      status: "pending",
+      createdAt: Date.now(),
+    });
+    pendingInjections.push(formatPlanApprovalInjection(parsed));
+    await markMessageAsReadByIndex(leadName, teamName, index);
+    return;
+  }
   await markMessageAsReadByIndex(leadName, teamName, index);
 }
 

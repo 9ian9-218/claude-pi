@@ -30,32 +30,32 @@ afterEach(() => {
 });
 
 describe("PreToolUse 挂载（S3）", () => {
-  it("事件顺序：validate → permission → log", () => {
+  it("事件顺序：validate → permission → log", async () => {
     const names = HOOKS["PreToolUse"].map((h) => h.name);
-    expect(names).toEqual(["validateHook", "permissionHook", "logHook"]);
+    expect(names).toEqual(["validateHook", "permissionHookWithBubble", "logHook"]);
   });
 
-  it("未知工具被 validate 阻断（短路，log 不执行）", () => {
-    const result = triggerHooks("PreToolUse", { name: "ghost", input: {} });
+  it("未知工具被 validate 阻断（短路，log 不执行）", async () => {
+    const result = await triggerHooks("PreToolUse", { name: "ghost", input: {} });
     expect(result).toBe("Unknown tool: ghost");
     expect(logs.some((l) => l.includes("[HOOK] ghost"))).toBe(false);
   });
 
-  it("schema 校验失败阻断", () => {
-    const result = triggerHooks("PreToolUse", { name: "read_file", input: {} });
+  it("schema 校验失败阻断", async () => {
+    const result = await triggerHooks("PreToolUse", { name: "read_file", input: {} });
     expect(String(result)).toContain("Missing required parameter: path");
   });
 
-  it("黑名单命令被 permission 阻断", () => {
-    const result = triggerHooks("PreToolUse", {
+  it("黑名单命令被 permission 阻断", async () => {
+    const result = await triggerHooks("PreToolUse", {
       name: "run_bash",
       input: { command: "sudo apt update", run_in_background: false },
     });
     expect(String(result)).toContain("deny list");
   });
 
-  it("规则命中被 permission 阻断（validate 先行通过后）", () => {
-    const result = triggerHooks("PreToolUse", {
+  it("规则命中被 permission 阻断（validate 先行通过后）", async () => {
+    const result = await triggerHooks("PreToolUse", {
       name: "run_bash",
       input: { command: "rm -rf build", run_in_background: false },
     });
@@ -63,10 +63,10 @@ describe("PreToolUse 挂载（S3）", () => {
     expect(String(result)).toContain("Potentially destructive command");
   });
 
-  it("安全调用通过（返回 undefined），log 执行", () => {
-    runWithWorkdir(ws, () => {
+  it("安全调用通过（返回 undefined），log 执行", async () => {
+    await runWithWorkdir(ws, async () => {
       fs.writeFileSync(path.join(ws, "a.txt"), "x");
-      const result = triggerHooks("PreToolUse", { name: "read_file", input: { path: "a.txt" } });
+      const result = await triggerHooks("PreToolUse", { name: "read_file", input: { path: "a.txt" } });
       expect(result).toBeUndefined();
       expect(logs.some((l) => l.includes("[HOOK] read_file(...)"))).toBe(true);
     });
@@ -74,13 +74,13 @@ describe("PreToolUse 挂载（S3）", () => {
 });
 
 describe("PostToolUse 挂载（S3）", () => {
-  it("超 100k 输出触发大输出告警", () => {
-    triggerHooks("PostToolUse", { name: "read_file", input: {} }, "x".repeat(100_001));
+  it("超 100k 输出触发大输出告警", async () => {
+    await triggerHooks("PostToolUse", { name: "read_file", input: {} }, "x".repeat(100_001));
     expect(logs.some((l) => l.includes("Large output from read_file"))).toBe(true);
   });
 
-  it("小输出无告警", () => {
-    triggerHooks("PostToolUse", { name: "read_file", input: {} }, "small");
+  it("小输出无告警", async () => {
+    await triggerHooks("PostToolUse", { name: "read_file", input: {} }, "small");
     expect(logs.some((l) => l.includes("Large output"))).toBe(false);
   });
 });

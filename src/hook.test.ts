@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { registerHook, triggerHooks, HOOKS } from "./hook.ts";
 
 describe("hook 注册表（S3）", () => {
-  it("registerHook 追加回调，triggerHooks 依次执行", () => {
+  it("registerHook 追加回调，triggerHooks 依次执行", async () => {
     const calls: string[] = [];
     registerHook("test_event", (x: string) => {
       calls.push(`a:${x}`);
@@ -10,24 +10,24 @@ describe("hook 注册表（S3）", () => {
     registerHook("test_event", (x: string) => {
       calls.push(`b:${x}`);
     });
-    triggerHooks("test_event", "arg");
+    await triggerHooks("test_event", "arg");
     expect(calls).toEqual(["a:arg", "b:arg"]);
   });
 
-  it("任一回调返回非 null/undefined 则短路返回该值", () => {
+  it("任一回调返回非 null/undefined 则短路返回该值", async () => {
     registerHook("short_event", () => "first");
     registerHook("short_event", () => "second");
-    const result = triggerHooks("short_event");
+    const result = await triggerHooks("short_event");
     expect(result).toBe("first");
   });
 
-  it("全部返回 undefined 时 trigger 返回 undefined", () => {
+  it("全部返回 undefined 时 trigger 返回 undefined", async () => {
     registerHook("void_event", () => undefined);
-    expect(triggerHooks("void_event")).toBeUndefined();
+    expect(await triggerHooks("void_event")).toBeUndefined();
   });
 
-  it("未注册事件触发返回 undefined 不抛错", () => {
-    expect(triggerHooks("no_such_event", 1, 2)).toBeUndefined();
+  it("未注册事件触发返回 undefined 不抛错", async () => {
+    expect(await triggerHooks("no_such_event", 1, 2)).toBeUndefined();
   });
 
   it("内置 UserPromptSubmit 含工作目录提示 hook", () => {

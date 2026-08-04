@@ -35,5 +35,6 @@ npm run build          # tsc 构建到 dist/
 ✅ **工单 08 任务看板 + worktree 隔离**（proper-lockfile + git worktree + 依赖图 + 工具集成）
 ✅ **工单 09 Subagent**（进程内子 agent + 工具集限制）
 ✅ **工单 10 Teammates 核心**（spawn/mailbox/poller/lifecycle + 输出队列 + 队友注入 + 5 工具）
-⬜ 工单 11 Teammates 进阶（frontier）
+✅ **工单 11 Teammates 进阶**（权限冒泡 + protocol request_id + autonomous idle）
+⬜ 工单 12 会话机制（frontier）
 

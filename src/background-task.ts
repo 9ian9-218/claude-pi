@@ -310,7 +310,7 @@ export function startBackgroundTask(
     } finally {
       runningTasks.delete(bgId);
     }
-    triggerHooks("PostToolUse", block, output);
+    await triggerHooks("PostToolUse", block, output);
     const summary = buildCompletionSummary(toolName, command, exitCode);
     enqueueCompletionNotification(bgId, summary, output, toolCall.id ?? null, {
       recipient: options.recipient,

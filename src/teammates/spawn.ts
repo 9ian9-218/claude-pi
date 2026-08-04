@@ -7,6 +7,7 @@
 import { TEAM_LEAD_NAME, TEAMMATE_WORK_MAX_TURNS, getTeamsDir } from "./constants.ts";
 import { createAgentContext, runWithAgentContext } from "./context.ts";
 import { dispatchInboxBatch, maybeReinjectIdentity } from "./inbox-dispatch.ts";
+import { idlePoll } from "./autonomous.ts";
 import { sendIdleNotification, notifyTeammateTerminated, sendShutdownRequest } from "./lifecycle.ts";
 import { sendPlainMessage } from "./mailbox.ts";
 import { ensureTeammateForSpawn, readTeamConfig, getLeaderName } from "./team-helpers.ts";
@@ -101,12 +102,16 @@ async function runTeammateLoop(options: {
 
         await sendIdleNotification({ agentName: name, teamName });
 
-        // idle 阶段（10：等待 + shutdown 检查；11 接入 autonomous idle_poll）
-        const idleWait = 200;
-        for (let i = 0; i < 25; i++) {
-          if (isShutdownRequested(teamName, name, runId)) break;
-          await new Promise((r) => setTimeout(r, idleWait));
-        }
+        // idle 阶段：收件箱 + 看板 auto-claim（autonomous）
+        const idleResult = await idlePoll({
+          agentName: name,
+          teamName,
+          messages,
+          role,
+          isShutdownRequested: () => isShutdownRequested(teamName, name, runId),
+          pollIntervalMs: 200, // 测试友好（默认 5s 由常量控制）
+        });
+        if (idleResult === "shutdown" || idleResult === "timeout") break;
       }
     });
   } finally {

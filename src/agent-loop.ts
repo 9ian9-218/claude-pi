@@ -19,7 +19,10 @@ import { RELEVANT_MEMORIES_OPEN } from "./prompt.ts";
 import { consumePendingNotifications } from "./message-queue.ts";
 import { shouldRunBackground, startBackgroundTask } from "./background-task.ts";
 import { getWorkdir, runWithWorkdir } from "./workdir.ts";
-import { consumePendingInjections } from "./teammates/poller.ts";
+import { getAgentContext } from "./teammates/context.ts";
+import { consumePendingInjections, consumePendingIdleNotifications } from "./teammates/poller.ts";
+import { processPendingLeadPermissions } from "./permission-sync.ts";
+import { formatIdleNotificationInjection } from "./teammates/protocol.ts";
 
 export interface AgentLoopOptions {
   maxTurn?: number;
@@ -52,9 +55,14 @@ async function agentLoopInner(
   for (let turn = 0; turn < maxTurn; turn++) {
     // teammate/通知注入
     if (opts.injectLeadNotifications) {
+      await processPendingLeadPermissions(getAgentContext().teamName ?? "");
       for (const content of consumePendingInjections()) {
         messages.push({ role: "user", content });
         console.log(`  \x1b[33m[inject] teammate inbox message\x1b[0m`);
+      }
+      for (const parsed of consumePendingIdleNotifications()) {
+        messages.push({ role: "user", content: formatIdleNotificationInjection(parsed) });
+        console.log(`  \x1b[33m[inject] teammate idle notification\x1b[0m`);
       }
     }
     if (opts.injectBackgroundNotifications) {
@@ -119,7 +127,7 @@ async function agentLoopInner(
             input: args as Record<string, unknown>,
             id: toolCall.id,
           };
-          const blocked = triggerHooks("PreToolUse", block);
+          const blocked = await triggerHooks("PreToolUse", block);
           if (blocked !== null && blocked !== undefined) {
             toolResult = JSON.stringify({ status: "error", message: String(blocked) });
           } else if (opts.enableBackground && shouldRunBackground(toolCall.function.name, args as Record<string, unknown>)) {
@@ -132,7 +140,7 @@ async function agentLoopInner(
               `when the task completes or stalls.`;
           } else {
             toolResult = await executeToolCall(toolCall, args as Record<string, unknown>);
-            triggerHooks("PostToolUse", block, toolResult);
+            await triggerHooks("PostToolUse", block, toolResult);
           }
         }
         if (!opts.quietOutput) {
@@ -160,7 +168,7 @@ async function agentLoopInner(
     }
 
     // 自然结束 → Stop hook（memory 提取）
-    const force = triggerHooks("Stop", messages, preCompress, opts.skipMemoryStopHook);
+    const force = await triggerHooks("Stop", messages, preCompress, opts.skipMemoryStopHook);
     if (force) {
       messages.push({ role: "user", content: String(force) });
       continue;

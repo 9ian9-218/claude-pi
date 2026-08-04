@@ -10,9 +10,9 @@
  */
 
 import { getSystemPrompt, updateContext } from "./prompt.ts";
-import { permissionHook } from "./permission.ts";
 import { getToolParameters, validateArgs } from "./tool.ts";
 import { memoryStopHook } from "./memory.ts";
+import { permissionHookWithBubble } from "./permission-sync.ts";
 
 export type HookCallback = (...args: any[]) => unknown;
 
@@ -21,10 +21,10 @@ export function registerHook(event: string, callback: HookCallback): void {
   HOOKS[event].push(callback);
 }
 
-export function triggerHooks(event: string, ...args: unknown[]): unknown {
+export async function triggerHooks(event: string, ...args: unknown[]): Promise<unknown> {
   const callbacks = HOOKS[event] ?? [];
   for (const callback of callbacks) {
-    const result = callback(...args);
+    const result = await callback(...args);
     if (result !== null && result !== undefined) {
       return result;
     }
@@ -82,7 +82,7 @@ export const HOOKS: Record<string, HookCallback[]> = {
 /** 安装内置 hook（测试可调用重置） */
 export function installBuiltinHooks(): void {
   HOOKS["UserPromptSubmit"] = [contextInjectHook];
-  HOOKS["PreToolUse"] = [validateHook, permissionHook, logHook];
+  HOOKS["PreToolUse"] = [validateHook, permissionHookWithBubble, logHook];
   HOOKS["PostToolUse"] = [largeOutputHook];
   HOOKS["Stop"] = [summaryHook, memoryStopHook];
 }
