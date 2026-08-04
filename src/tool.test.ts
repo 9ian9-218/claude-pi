@@ -13,6 +13,7 @@ import {
   type ToolCallLike,
 } from "./tool.ts";
 import { runWithWorkdir } from "./workdir.ts";
+import { setSkillsDir } from "./skill-load.ts";
 
 let ws: string;
 
@@ -221,3 +222,23 @@ describe("getToolParameters / getOpenaiTools（S1）", () => {
 function mkCall(name: string, args: Record<string, unknown>): ToolCallLike {
   return { id: "call_1", type: "function", function: { name, arguments: JSON.stringify(args) } };
 }
+
+describe("load_skill 工具（S7）", () => {
+  it("按名返回 skill 全文，未知名报错", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-tool-skill-"));
+    fs.mkdirSync(path.join(dir, "pdf"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "pdf", "SKILL.md"),
+      "---\nname: pdf\ndescription: pdf 处理\n---\n\n# PDF\nfull skill body",
+    );
+    setSkillsDir(dir);
+    try {
+      const ok = executeToolCall(mkCall("load_skill", { name: "pdf" }));
+      expect(ok).toContain("full skill body");
+      const missing = executeToolCall(mkCall("load_skill", { name: "nope" }));
+      expect(missing).toContain("Skill not found: nope");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

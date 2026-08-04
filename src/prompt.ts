@@ -10,6 +10,7 @@
 
 import { PROJECT_ROOT, resolveAgentDirs } from "./config.ts";
 import { readMemoryIndex } from "./memory.ts";
+import { getSkillCatalog } from "./skill-load.ts";
 
 const TASKS_DIR = resolveAgentDirs(PROJECT_ROOT).tasksDir;
 const MEMORY_DIR = resolveAgentDirs(PROJECT_ROOT).memoryDir;
@@ -112,6 +113,10 @@ export const MEMORY_SECTION_WITH_INDEX =
 export function buildMemorySection(memoryIndex: string): string {
   if (!memoryIndex.trim()) return MEMORY_SECTION_EMPTY;
   return MEMORY_SECTION_WITH_INDEX.replace("{index}", memoryIndex);
+}
+
+export function buildSkillSection(catalog: string): string {
+  return `Skills available:\n${catalog}\nUse load_skill to get full details when needed.`;
 }
 
 // ── 消息包装（对齐 prompt.py） ─────────────────────────────────────────────
@@ -289,7 +294,7 @@ export function getSystemPrompt(
  */
 export function updateContext(_context: PromptContext, _messages: unknown[]): PromptContext {
   return {
-    skill_catalog: "",
+    skill_catalog: getSkillCatalog(),
     workspace: process.cwd(),
     memories: readMemoryIndex(),
     enabled_tools: [],

@@ -97,10 +97,10 @@ describe("getSystemPrompt 缓存", () => {
 });
 
 describe("updateContext", () => {
-  it("返回 workspace/空 skill/空 memory 结构（预留后续工单接入）", () => {
+  it("返回 workspace/skill 目录/空 memory 结构（后续工单接入）", () => {
     const ctx = updateContext({}, []);
     expect(ctx.workspace).toBe(process.cwd());
-    expect(ctx.skill_catalog).toBe("");
+    expect(ctx.skill_catalog).toContain("Skills available:");
     expect(ctx.memories).toBe("");
     expect(Array.isArray(ctx.enabled_tools)).toBe(true);
   });

@@ -13,6 +13,7 @@ import path from "node:path";
 import { globSync } from "glob";
 import { getWorkdir } from "./workdir.ts";
 import { sanitizeOpenaiTool, type OpenaiTool } from "./schema-strict.ts";
+import { getSkillContent } from "./skill-load.ts";
 
 export type ExecuteFn = (args: Record<string, unknown>) => unknown;
 
@@ -335,6 +336,34 @@ export const TODO_WRITE_TOOL = buildTool({
   isReadOnly: true,
 });
 
+// ── load_skill ─────────────────────────────────────────────────────────────
+
+function execLoadSkill(args: Record<string, unknown>): string {
+  const name = String(args["name"]);
+  const content = getSkillContent(name);
+  if (content === null) {
+    return `Skill not found: ${name}`;
+  }
+  return content;
+}
+
+const LOAD_SKILL_SCHEMA = {
+  type: "object",
+  properties: {
+    name: { type: "string", description: "The name of the skill to load" },
+  },
+  required: ["name"],
+  additionalProperties: false,
+};
+
+export const LOAD_SKILL_TOOL = buildTool({
+  name: "load_skill",
+  description: "Load the full content of a skill by name.",
+  parameters: LOAD_SKILL_SCHEMA,
+  execute: execLoadSkill,
+  isReadOnly: true,
+});
+
 // ── 注册表与对外 API ──────────────────────────────────────────────────────
 
 export const BUILTIN_TOOLS: Tool[] = [
@@ -344,6 +373,7 @@ export const BUILTIN_TOOLS: Tool[] = [
   EDIT_FILE_TOOL,
   GLOB_TOOL,
   TODO_WRITE_TOOL,
+  LOAD_SKILL_TOOL,
 ];
 
 export const TOOL_MAP: Map<string, Tool> = new Map(BUILTIN_TOOLS.map((t) => [t.name, t]));
