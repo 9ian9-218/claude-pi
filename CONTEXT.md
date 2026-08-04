@@ -112,8 +112,13 @@ _Avoid_: 待办、todo
 `.agent/skills/` 下的 SKILL.md 定义，按需加载注入系统提示。
 _Avoid_: 插件（插件是扩展）
 
-**Fallback 模型**:
-429/529 连续失败后切换的备用模型。
+**思考强度 (Thinking Level)**:
+模型推理深度档位（off / minimal / low / medium / high / xhigh / max），按模型能力裁剪；随 model_change entry 与会话模型状态一起持久化。
+_Avoid_: 推理档位、思考级别
+
+**Provider**:
+模型提供方（openai / anthropic / gemini / deepseek 等），模型以 `provider/model` 标识；鉴权用各 provider 标准环境变量或已存凭据。
+_Avoid_: 供应商、厂商
 
 ## 交互面
 
@@ -122,7 +127,7 @@ _Avoid_: 插件（插件是扩展）
 _Avoid_: 非交互模式
 
 **斜杠命令 (Slash Command)**:
-TUI 中以 `/` 开头的命令（/tree、/fork、/clone、/new、/resume、/name、/session 等），可扩展注册。
+TUI 中以 `/` 开头的命令（/tree、/fork、/clone、/new、/resume、/name、/session、/login、/logout、/model、/settings 等），可扩展注册。
 _Avoid_: 指令
 
 **扩展 (Extension)**:
@@ -140,7 +145,11 @@ _Avoid_: UI 接口
 
 **.agent/ 数据根 (.agent Data Root)**:
 项目内运行时数据目录（teams / memory / tasks / skills / worktrees / sessions / extensions），不写用户目录。
-_Avoid_: .claude（旧名）；例外：扩展的全局位置是 `~/.claude-pi/extensions/`
+_Avoid_: .claude（旧名）；例外：扩展的全局位置是 `~/.claude-pi/extensions/`；模型凭据/自定义模型/设置（auth.json / models.json / settings.json）与 pi 共享 `~/.pi/agent/`
+
+**凭据 (Credential)**:
+auth.json 中存储的 API key 或 OAuth token，与 pi 共享同一全局存储。
+_Avoid_: 密钥、token 文件
 
 **对拍测试 (Parity Test)**:
 同一场景脚本分别驱动 Python 版与 claude-pi（`--mode json`），比对输出以验证行为等价。
