@@ -64,13 +64,6 @@ export function loadEnvFile(root: string = PROJECT_ROOT): void {
   dotenv.config({ path: path.join(root, ".env"), override: false });
 }
 
-/** 布尔环境变量解析（对齐 Python 版 _env_bool：1/true/yes/on） */
-export function envBool(name: string, defaultValue: boolean): boolean {
-  const raw = process.env[name];
-  if (raw === undefined || raw === null) return defaultValue;
-  return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase());
-}
-
 /** 启动时一次性初始化：加载 .env 并确保数据目录存在 */
 export function initRuntime(root: string = AGENT_ROOT): AgentDirs {
   loadEnvFile(root);

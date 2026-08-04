@@ -164,3 +164,22 @@ describe("sendMessagesWithRecovery（S3）", () => {
     expect(String(messages[messages.length - 1].content)).toContain("[Error]");
   });
 });
+
+describe("produce 抛出非传输错误（S3 兜底）", () => {
+  it("模型未配置时 abort 并写 [Error]（不崩溃 loop）", async () => {
+    setRetryPolicyForTest({ enabled: true, maxRetries: 0, baseDelayMs: 1 });
+    // 移除 override → resolveCurrentModel 走真实路径会抛错；这里直接模拟抛错
+    const state = new RecoveryState();
+    const messages = plain();
+    // 用未知模型 spec 触发 resolveSendModel 抛错
+    const result = await sendMessagesWithRecovery({
+      requestMessages: messages,
+      messages,
+      state,
+      maxTokens: 8000,
+      model: "ghost/none",
+    });
+    expect(result.action).toBe("abort");
+    expect(String(messages[messages.length - 1].content)).toContain("[Error]");
+  });
+});

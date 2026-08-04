@@ -6,7 +6,6 @@ import {
   PROJECT_ROOT,
   resolveAgentDirs,
   ensureAgentDirs,
-  envBool,
   loadEnvFile,
 } from "./config.ts";
 
@@ -57,27 +56,6 @@ describe("ensureAgentDirs", () => {
     ensureAgentDirs(root);
     expect(() => ensureAgentDirs(root)).not.toThrow();
   });
-});
-
-describe("envBool", () => {
-  it('解析 "false" 为 false', () => {
-    process.env.TEST_FLAG = "false";
-    expect(envBool("TEST_FLAG", true)).toBe(false);
-  });
-
-  it('解析 "1" / "true" / "yes" / "on"（大小写不敏感）为 true', () => {
-    for (const v of ["1", "true", "TRUE", "Yes", "on"]) {
-      process.env.TEST_FLAG = v;
-      expect(envBool("TEST_FLAG", false)).toBe(true);
-    }
-  });
-
-  it("未设置时返回默认值", () => {
-    delete process.env.TEST_FLAG;
-    expect(envBool("TEST_FLAG", true)).toBe(true);
-    expect(envBool("TEST_FLAG", false)).toBe(false);
-  });
-
 });
 
 describe("loadEnvFile", () => {

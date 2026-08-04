@@ -76,6 +76,8 @@ export interface RecoveryOptions {
   messages: ChatMessage[];
   state: RecoveryState;
   maxTokens: number;
+  /** "provider/id"；缺省用当前模型 */
+  model?: string;
   isSubagent?: boolean;
   preserveSystem?: boolean;
   quietOutput?: boolean;
@@ -93,6 +95,7 @@ export async function sendMessagesWithRecovery(
     messages,
     state,
     maxTokens,
+    model: modelSpec,
     isSubagent = false,
     preserveSystem = false,
     quietOutput,
@@ -103,6 +106,7 @@ export async function sendMessagesWithRecovery(
   const produce = () =>
     sendMessages(requestMessages, {
       maxTokens,
+      model: modelSpec,
       isSubagent,
       preserveSystem,
       quietOutput,
@@ -111,19 +115,29 @@ export async function sendMessagesWithRecovery(
     });
 
   // 类型桥接：claude-pi 的 AssistantMessage 携带 stopReason/errorMessage，
-  // 与 pi-ai 的 isRetryableAssistantError 分类所需字段结构兼容
-  const message = (await retryAssistantCall(
-    produce as unknown as () => Promise<PiAssistantMessage>,
-    getRetryPolicy(),
-    undefined,
-    {
-      onRetryScheduled: (attempt, maxAttempts, delayMs, errorMessage) => {
-        console.log(
-          `  \x1b[33m[retry ${attempt}/${maxAttempts}] ${String(errorMessage).slice(0, 80)}, wait ${(delayMs / 1000).toFixed(1)}s\x1b[0m`,
-        );
+  // 与 pi-ai 的 isRetryableAssistantError 分类所需字段结构兼容。
+  // 注：produce 抛出的非传输错误（如模型未配置）不被 retryAssistantCall 吞掉，
+  // 在此捕获并转成不可恢复 abort（对齐旧 withRetry 的兜底语义）。
+  let message: AssistantMessage;
+  try {
+    message = (await retryAssistantCall(
+      produce as unknown as () => Promise<PiAssistantMessage>,
+      getRetryPolicy(),
+      undefined,
+      {
+        onRetryScheduled: (attempt, maxAttempts, delayMs, errorMessage) => {
+          console.log(
+            `  \x1b[33m[retry ${attempt}/${maxAttempts}] ${String(errorMessage).slice(0, 80)}, wait ${(delayMs / 1000).toFixed(1)}s\x1b[0m`,
+          );
+        },
       },
-    },
-  )) as unknown as AssistantMessage;
+    )) as unknown as AssistantMessage;
+  } catch (e) {
+    const errText = (e as Error).message ?? String(e);
+    console.log(`  \x1b[31m[unrecoverable] ${errText.slice(0, 100)}\x1b[0m`);
+    appendErrorMessage(messages, errText.slice(0, 200));
+    return { action: "abort" };
+  }
 
   // 传输错误（重试耗尽后仍失败）
   if (message.stopReason === "error" || message.stopReason === "aborted") {
