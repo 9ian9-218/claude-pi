@@ -12,6 +12,7 @@
 import { getSystemPrompt, updateContext } from "./prompt.ts";
 import { permissionHook } from "./permission.ts";
 import { getToolParameters, validateArgs } from "./tool.ts";
+import { memoryStopHook } from "./memory.ts";
 
 export type HookCallback = (...args: any[]) => unknown;
 
@@ -83,7 +84,7 @@ export function installBuiltinHooks(): void {
   HOOKS["UserPromptSubmit"] = [contextInjectHook];
   HOOKS["PreToolUse"] = [validateHook, permissionHook, logHook];
   HOOKS["PostToolUse"] = [largeOutputHook];
-  HOOKS["Stop"] = [summaryHook];
+  HOOKS["Stop"] = [summaryHook, memoryStopHook];
 }
 
 installBuiltinHooks();

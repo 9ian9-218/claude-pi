@@ -9,6 +9,7 @@
 // ── 静态片段 ──────────────────────────────────────────────────────────────
 
 import { PROJECT_ROOT, resolveAgentDirs } from "./config.ts";
+import { readMemoryIndex } from "./memory.ts";
 
 const TASKS_DIR = resolveAgentDirs(PROJECT_ROOT).tasksDir;
 const MEMORY_DIR = resolveAgentDirs(PROJECT_ROOT).memoryDir;
@@ -290,7 +291,7 @@ export function updateContext(_context: PromptContext, _messages: unknown[]): Pr
   return {
     skill_catalog: "",
     workspace: process.cwd(),
-    memories: "",
+    memories: readMemoryIndex(),
     enabled_tools: [],
     mcp_servers: [],
     mcp_tool_count: 0,

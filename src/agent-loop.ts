@@ -14,6 +14,8 @@ import { LoopOptions } from "./loop-options.ts";
 import { executeToolCall, getOpenaiTools } from "./tool.ts";
 import { toolResultBudget, snipCompact, microCompact } from "./compact.ts";
 import { RecoveryState, sendMessagesWithRecovery } from "./error-recovery.ts";
+import { loadMemories, findMemoryInjectionIndex, snapshotMessages } from "./memory.ts";
+import { RELEVANT_MEMORIES_OPEN } from "./prompt.ts";
 
 export interface AgentLoopOptions {
   maxTurn?: number;
@@ -30,17 +32,20 @@ export async function agentLoop(
   const opts = loopOptions ?? LoopOptions.fromLegacyIsSubagent(isSubagent);
   const recoveryState = new RecoveryState();
   let effectiveMaxTokens = maxTokens;
+  const preCompress = snapshotMessages(messages);
+  const memoriesContent = opts.enableMemory ? await loadMemories(messages) : "";
 
   for (let turn = 0; turn < maxTurn; turn++) {
-    // memory 注入（05）、teammate/通知注入（10）在此接入
+    // teammate/通知注入（10）在此接入
     // L3/L1/L2 压缩（对齐 agent_loop.py：每轮发送前执行）
     replaceMessages(messages, toolResultBudget(messages));
     replaceMessages(messages, snipCompact(messages));
     replaceMessages(messages, microCompact(messages));
     // L4 auto compact（CONTEXT_LIMIT 检查 → compaction entry）归工单 12
+    const requestMessages = buildRequestMessages(messages, memoriesContent);
 
     const llmResult = await sendMessagesWithRecovery({
-      requestMessages: messages,
+      requestMessages,
       messages,
       state: recoveryState,
       maxTokens: effectiveMaxTokens,
@@ -120,8 +125,8 @@ export async function agentLoop(
       return "Subagent stopped after 30 turns without final answer.";
     }
 
-    // 自然结束 → Stop hook（memory 提取归 05）
-    const force = triggerHooks("Stop", messages, undefined, opts.skipMemoryStopHook);
+    // 自然结束 → Stop hook（memory 提取）
+    const force = triggerHooks("Stop", messages, preCompress, opts.skipMemoryStopHook);
     if (force) {
       messages.push({ role: "user", content: String(force) });
       continue;
@@ -129,6 +134,23 @@ export async function agentLoop(
     return null;
   }
   return null;
+}
+
+/** 记忆注入：在最新可注入 user 消息前插入记忆（对齐 _build_request_messages） */
+function buildRequestMessages(messages: ChatMessage[], memoriesContent: string): ChatMessage[] {
+  if (!memoriesContent) return messages;
+  const memoryTurn = findMemoryInjectionIndex(messages);
+  if (memoryTurn === null) return messages;
+  const original = messages[memoryTurn].content;
+  if (typeof original === "string" && original.startsWith(RELEVANT_MEMORIES_OPEN)) {
+    return messages;
+  }
+  const requestMessages = [...messages];
+  requestMessages[memoryTurn] = {
+    ...messages[memoryTurn],
+    content: memoriesContent + "\n\n" + original,
+  };
+  return requestMessages;
 }
 
 /** 原地替换 messages 内容（对齐 Python messages[:] = ...） */

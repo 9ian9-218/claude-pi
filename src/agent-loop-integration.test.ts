@@ -76,3 +76,26 @@ describe("agentLoop 集成（03/04）", () => {
     });
   });
 });
+
+describe("agentLoop 集成（05 记忆）", () => {
+  it("记忆注入：请求体 user 消息含 <relevant_memories>", async () => {
+    // select 调用（非流式 json）→ 主调用（sse）
+    mock.push(() => ({ kind: "json", content: "[0]" }));
+    mock.push(() => ({ kind: "sse", chunks: [{ content: "ok", finishReason: "stop" }] }));
+    // Stop hook 的异步提取静默失败即可（无队列响应）
+    const memDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-memint-"));
+    const { setMemoryDir, writeMemoryFile } = await import("./memory.ts");
+    setMemoryDir(memDir);
+    try {
+      writeMemoryFile("arch-note", "project", "architecture note", "the memory body");
+      const messages: ChatMessage[] = [{ role: "user", content: "about architecture" }];
+      await agentLoop(messages, { loopOptions: quiet });
+      const mainReq = mock.requests.find((r) => r.messages.some((m) => m.role === "system"));
+      const userMsg = mainReq?.messages.find((m) => m.role === "user");
+      expect(String(userMsg?.content)).toContain("<relevant_memories>");
+      expect(String(userMsg?.content)).toContain("the memory body");
+    } finally {
+      fs.rmSync(memDir, { recursive: true, force: true });
+    }
+  });
+});
