@@ -9,6 +9,10 @@
  * memory_stop_hook 归 05。
  */
 
+import { getSystemPrompt, updateContext } from "./prompt.ts";
+import { permissionHook } from "./permission.ts";
+import { getToolParameters, validateArgs } from "./tool.ts";
+
 export type HookCallback = (...args: any[]) => unknown;
 
 export function registerHook(event: string, callback: HookCallback): void {
@@ -38,9 +42,48 @@ export function summaryHook(messages: { role?: string }[]): void {
   console.log(`\x1b[90m[HOOK] Stop: session used ${toolCount} tool calls\x1b[0m`);
 }
 
+// ── PreToolUse / PostToolUse（02b） ────────────────────────────────────────
+
+export interface ToolBlock {
+  name: string;
+  input: Record<string, unknown>;
+  id?: string;
+}
+
+/** PreToolUse：schema + 路径校验（须在 permissionHook 之前） */
+export function validateHook(block: ToolBlock): string | null {
+  const schema = getToolParameters(block.name);
+  if (schema === null) {
+    return `Unknown tool: ${block.name}`;
+  }
+  return validateArgs(block.input, schema);
+}
+
+export function logHook(block: ToolBlock): void {
+  console.log(`\x1b[90m[HOOK] ${block.name}(...)\x1b[0m`);
+}
+
+export function largeOutputHook(block: ToolBlock, output: unknown): void {
+  if (String(output).length > 100_000) {
+    console.log(`\x1b[33m[HOOK] ⚠ Large output from ${block.name}\x1b[0m`);
+  }
+}
+
 // ── 注册表 ────────────────────────────────────────────────────────────────
 
 export const HOOKS: Record<string, HookCallback[]> = {
-  UserPromptSubmit: [contextInjectHook],
-  Stop: [summaryHook],
+  UserPromptSubmit: [],
+  PreToolUse: [],
+  PostToolUse: [],
+  Stop: [],
 };
+
+/** 安装内置 hook（测试可调用重置） */
+export function installBuiltinHooks(): void {
+  HOOKS["UserPromptSubmit"] = [contextInjectHook];
+  HOOKS["PreToolUse"] = [validateHook, permissionHook, logHook];
+  HOOKS["PostToolUse"] = [largeOutputHook];
+  HOOKS["Stop"] = [summaryHook];
+}
+
+installBuiltinHooks();

@@ -11,6 +11,7 @@
 import { sendMessages, type ChatMessage } from "./client.ts";
 import { triggerHooks } from "./hook.ts";
 import { LoopOptions } from "./loop-options.ts";
+import { executeToolCall, getOpenaiTools } from "./tool.ts";
 
 export interface AgentLoopOptions {
   maxTurn?: number;
@@ -33,6 +34,7 @@ export async function agentLoop(
       isSubagent: opts.exitOnFinalContent && !opts.preserveSystem,
       preserveSystem: opts.preserveSystem,
       quietOutput: opts.quietOutput,
+      tools: getOpenaiTools(opts.exitOnFinalContent && !opts.preserveSystem),
     });
     const message = llmResult;
 
@@ -59,11 +61,18 @@ export async function agentLoop(
             message: "Arguments must be a JSON object",
           });
         } else {
-          // 02b：替换为 PreToolUse → execute → PostToolUse 管线
-          toolResult = JSON.stringify({
-            status: "error",
-            message: `Unknown tool: ${toolCall.function.name}`,
-          });
+          const block = {
+            name: toolCall.function.name,
+            input: args as Record<string, unknown>,
+            id: toolCall.id,
+          };
+          const blocked = triggerHooks("PreToolUse", block);
+          if (blocked !== null && blocked !== undefined) {
+            toolResult = JSON.stringify({ status: "error", message: String(blocked) });
+          } else {
+            toolResult = executeToolCall(toolCall, args as Record<string, unknown>);
+            triggerHooks("PostToolUse", block, toolResult);
+          }
         }
         if (!opts.quietOutput) {
           console.log(
