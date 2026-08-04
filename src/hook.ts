@@ -16,9 +16,16 @@ import { permissionHookWithBubble } from "./permission-sync.ts";
 
 export type HookCallback = (...args: any[]) => unknown;
 
-export function registerHook(event: string, callback: HookCallback): void {
+export function registerHook(event: string, callback: HookCallback): () => void {
   if (!HOOKS[event]) HOOKS[event] = [];
   HOOKS[event].push(callback);
+  return () => {
+    const list = HOOKS[event];
+    if (list) {
+      const idx = list.indexOf(callback);
+      if (idx >= 0) list.splice(idx, 1);
+    }
+  };
 }
 
 export async function triggerHooks(event: string, ...args: unknown[]): Promise<unknown> {

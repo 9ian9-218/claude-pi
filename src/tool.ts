@@ -800,8 +800,14 @@ export const BUILTIN_TOOLS: Tool[] = [
 
 export const TOOL_MAP: Map<string, Tool> = new Map(BUILTIN_TOOLS.map((t) => [t.name, t]));
 
+/** 扩展注册工具（16）：动态加入注册表 */
+export function registerExtensionTool(tool: Tool): void {
+  TOOL_MAP.set(tool.name, tool);
+}
+
 export function getOpenaiTools(isSubagent = false): OpenaiTool[] {
-  return BUILTIN_TOOLS.filter((t) => !(isSubagent && SUBAGENT_EXCLUDED.has(t.name)))
+  return [...TOOL_MAP.values()]
+    .filter((t) => !(isSubagent && SUBAGENT_EXCLUDED.has(t.name)))
     .map((t) => sanitizeOpenaiTool(t.name, t.toOpenaiSchema()));
 }
 

@@ -14,6 +14,7 @@ import {
   type SelectItem,
 } from "@earendil-works/pi-tui";
 import { Scrollback } from "./scrollback.ts";
+import { getSlashCommand } from "../commands.ts";
 import type { SwarmPermissionRequest, PermissionResolution } from "../permission-sync.ts";
 
 export interface TuiAppOptions {
@@ -23,6 +24,8 @@ export interface TuiAppOptions {
   onNewSession?: () => void;
   /** 会话命令处理（15b：/tree /fork /clone /resume /name /session） */
   onSessionCommand?: (name: string, rest: string, app: TuiApp) => Promise<void> | void;
+  /** 扩展重载（16：/reload） */
+  onReload?: () => void;
   statusText?: () => string;
   initialText?: string;
 }
@@ -106,6 +109,7 @@ export class TuiApp {
   private readonly onQuery: (q: string) => Promise<void> | void;
   private readonly onNewSession?: () => void;
   private readonly onSessionCommand?: (name: string, rest: string, app: TuiApp) => Promise<void> | void;
+  private readonly onReload?: () => void;
   private readonly statusTextFn?: () => string;
   private readonly statusLine = new Text("", 1, 0);
   private readonly root = new Container();
@@ -116,6 +120,7 @@ export class TuiApp {
     this.onQuery = options.onQuery;
     this.onNewSession = options.onNewSession;
     this.onSessionCommand = options.onSessionCommand;
+    this.onReload = options.onReload;
     this.statusTextFn = options.statusText;
     this.scrollback = new Scrollback(options.initialText ?? "");
     this.input = new Input();
@@ -303,12 +308,28 @@ export class TuiApp {
       case "status":
         this.appendMessage("system", this.statusTextFn?.() ?? "no status");
         break;
-      default:
+      case "reload":
+        this.onReload?.();
+        this.appendMessage("system", "扩展已重载。");
+        break;
+      default: {
+        // 扩展命令注册表（16）
+        const ext = getSlashCommand(name);
+        if (ext) {
+          try {
+            const result = await ext.handler(cmd.slice(1 + name.length).trim());
+            this.appendMessage("system", String(result));
+          } catch (e) {
+            this.appendMessage("system", `扩展命令错误：${String((e as Error).message)}`);
+          }
+          break;
+        }
         if (this.onSessionCommand) {
           await this.onSessionCommand(name, cmd.slice(1 + name.length).trim(), this);
           break;
         }
         this.appendMessage("system", `未知命令：/${name}（/help 查看）`);
+      }
     }
     this.tui.setFocus(this.input);
   }

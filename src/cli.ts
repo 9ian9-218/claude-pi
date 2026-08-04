@@ -18,6 +18,9 @@ import { TuiApp } from "./tui/app.ts";
 import { handleSessionCommand } from "./tui/session-commands.ts";
 import { getCurrentWorktreeTaskId } from "./worktree.ts";
 import { getWorkdir } from "./workdir.ts";
+import { ExtensionManager } from "./extensions/loader.ts";
+import { registerExtensionTool, buildTool } from "./tool.ts";
+import { registerSlashCommand, clearSlashCommands } from "./commands.ts";
 import { LoopOptions } from "./loop-options.ts";
 import { TEAM_LEAD_NAME } from "./teammates/constants.ts";
 import { createTeam, readTeamConfig } from "./teammates/team-helpers.ts";
@@ -25,6 +28,38 @@ import { startLeadInboxPoller } from "./teammates/poller.ts";
 import { createAgentContext } from "./teammates/context.ts";
 
 const USER_PROMPT = "\x1b[36mUser >\t \x1b[0m";
+
+/** 扩展 CLI 路径（-e <path>） */
+function cliExtensionPaths(args: string[]): string[] {
+  const paths: string[] = [];
+  for (let i = 0; i < args.length - 1; i++) {
+    if (args[i] === "-e") paths.push(args[i + 1]);
+  }
+  return paths;
+}
+
+/** 创建扩展管理器（16）：工具/命令/appendEntry 接线 */
+function createExtensionManager(sessionRef: { current: SessionManager | null }) {
+  return new ExtensionManager({
+    registerTool: (t) => {
+      registerExtensionTool(
+        buildTool({
+          name: t.name,
+          description: t.description,
+          parameters: t.parameters,
+          execute: t.execute,
+        }),
+      );
+    },
+    registerCommand: (n, h) => {
+      registerSlashCommand({ name: n, description: "", handler: (args) => h(args, {}) });
+    },
+    appendEntry: (t, d) => sessionRef.current?.appendCustom(t, d) ?? "",
+    beforeLoad: () => {
+      clearSlashCommands();
+    },
+  });
+}
 
 function readVersion(): string {
   const pkg = JSON.parse(
@@ -54,6 +89,7 @@ async function runRepl(initialSession: SessionManager | null): Promise<void> {
     }
     if (["q", "exit", ""].includes(query.trim().toLowerCase())) break;
     await triggerHooks("UserPromptSubmit", query);
+    void triggerHooks("user_prompt_submit", query);
     if (session) {
       session.appendMessage({ role: "user", content: query });
       const ctx = session.buildSessionContext();
@@ -180,7 +216,11 @@ function pickSession(args: string[]): SessionManager | null {
 }
 
 /** TUI 交互模式（TTY 时默认；管道/非 TTY 走 REPL） */
-async function runTui(initialSession: SessionManager | null): Promise<void> {
+async function runTui(
+  initialSession: SessionManager | null,
+  extManager: ExtensionManager,
+  cliPaths: string[],
+): Promise<void> {
   const sessionRef: { current: SessionManager | null } = { current: initialSession };
   const { ProcessTerminal } = await import("@earendil-works/pi-tui");
   const app = new TuiApp({
@@ -190,6 +230,9 @@ async function runTui(initialSession: SessionManager | null): Promise<void> {
       sessionRef.current = SessionManager.create(process.cwd());
     },
     onSessionCommand: (name, rest, a) => handleSessionCommand(a, sessionRef, name, rest),
+    onReload: () => {
+      void extManager.reload(cliPaths);
+    },
     statusText: () => `${process.env.OPENAI_MODEL ?? "?"} | ${process.cwd()}`,
     onQuery: async (query) => {
       await triggerHooks("UserPromptSubmit", query);
@@ -210,6 +253,8 @@ async function runTui(initialSession: SessionManager | null): Promise<void> {
       app.appendMessage("assistant", "");
     },
   });
+  // 16：会话生命周期事件
+  void triggerHooks("session_start", { sessionId: sessionRef.current?.getSessionId() ?? null });
   // 15a：TUI 权限弹窗接入 askUser（非 TUI 模式保持默认拒绝）
   const { setAskUserImpl } = await import("./permission-sync.ts");
   setAskUserImpl((req, label) => app.askPermission(req, label));
@@ -263,6 +308,9 @@ async function main(): Promise<void> {
   initLeadTeam();
 
   const session = pickSession(args);
+  const sessionRef: { current: SessionManager | null } = { current: session };
+  const extManager = createExtensionManager(sessionRef);
+  void extManager.load(cliExtensionPaths(args));
   if (session?.isPersisted()) {
     const file = session.getSessionFile();
     process.stdout.write(`会话 ${session.getSessionId().slice(0, 8)}（${file}）已恢复\n`);
@@ -270,12 +318,14 @@ async function main(): Promise<void> {
 
   // 交互呈现层：TTY → TUI；管道/非 TTY → 行式 REPL（ADR-0003：显式模式不变）
   if (process.stdout.isTTY && process.stdin.isTTY && !args.includes("--repl")) {
-    await runTui(session);
+    await runTui(session, extManager, cliExtensionPaths(args));
+    void triggerHooks("session_end", {});
     return;
   }
   process.stdout.write(`claude-pi ${readVersion()} — 类 Claude Code 架构的 TS Agent 运行时\n`);
   process.stdout.write("输入 /new 开新会话，q/exit 退出。\n");
   await runRepl(session);
+  void triggerHooks("session_end", {});
 }
 
 void main();
