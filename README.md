@@ -32,5 +32,7 @@ npm run build          # tsc 构建到 dist/
 ✅ **工单 05 记忆**（Markdown 长期记忆 + Stop 异步提取 + 相关性注入）
 ✅ **工单 06 后台任务**（子进程 + stall 看门狗 + 通知注入）
 ✅ **工单 07 Skill 加载**（扫描注册表 + load_skill 工具）
-⬜ 工单 08 任务看板 + worktree 隔离（frontier）
+✅ **工单 08 任务看板 + worktree 隔离**（proper-lockfile + git worktree + 依赖图 + 工具集成）
+✅ **工单 09 Subagent**（进程内子 agent + 工具集限制）
+⬜ 工单 10 Teammates 核心（frontier）
 

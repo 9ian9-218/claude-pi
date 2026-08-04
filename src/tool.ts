@@ -10,10 +10,13 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 import { globSync } from "glob";
 import { getWorkdir } from "./workdir.ts";
 import { sanitizeOpenaiTool, type OpenaiTool } from "./schema-strict.ts";
 import { getSkillContent } from "./skill-load.ts";
+import { SUBAGENT_IDENTITY } from "./prompt.ts";
+import type { ChatMessage } from "./client.ts";
 import {
   runCreateTask,
   runListTasks,
@@ -522,6 +525,71 @@ export const COMPLETE_TASK_TOOL = buildTool({
   isReadOnly: false,
 });
 
+// ── subagent（09） ─────────────────────────────────────────────────────────
+
+/** 子 agent 禁用工具（对齐 Python SUBAGENT_EXCLUDED_UNDERLYING） */
+export const SUBAGENT_EXCLUDED: Set<string> = new Set([
+  "todo_write",
+  "subagent_task",
+  "create_task",
+  "claim_task",
+  "complete_task",
+  "spawn_teammate",
+  "create_team",
+  "send_message",
+  "list_teammates",
+  "shutdown_teammate",
+  "review_plan",
+  "connect_mcp",
+  "disconnect_mcp",
+  "list_mcp_servers",
+  "kill_bg_task",
+]);
+
+/** 子 agent：独立 messages，返回最终文本摘要（对齐 _spawn_subagent） */
+export async function spawnSubagent(description: string): Promise<string> {
+  const { agentLoop } = await import("./agent-loop.ts");
+  const subId = `subagent-${randomBytes(4).toString("hex")}`;
+  console.log(`\n\x1b[35m[Subagent spawned: ${subId}]\x1b[0m`);
+  const messages: ChatMessage[] = [
+    { role: "system", content: SUBAGENT_IDENTITY.replace("{workspace}", getWorkdir()) },
+    { role: "user", content: description },
+  ];
+  const result = await agentLoop(messages, { maxTurn: 30, maxTokens: 6000, isSubagent: true });
+  if (result) {
+    console.log("\x1b[35m[Subagent done]\x1b[0m");
+    return result;
+  }
+  return "Subagent stopped after 30 turns without final answer.";
+}
+
+function execSubagentTask(args: Record<string, unknown>): Promise<string> {
+  return spawnSubagent(String(args["description"]));
+}
+
+const SUBAGENT_TASK_SCHEMA = {
+  type: "object",
+  properties: {
+    description: {
+      type: "string",
+      description: "What the subagent should accomplish",
+    },
+  },
+  required: ["description"],
+  additionalProperties: false,
+};
+
+export const SUBAGENT_TASK_TOOL = buildTool({
+  name: "subagent_task",
+  description:
+    "Launch a subagent for deep research, a large self-contained subtask, " +
+    "or one of multiple independent work items. " +
+    "Subagents return a text summary when done.",
+  parameters: SUBAGENT_TASK_SCHEMA,
+  execute: execSubagentTask,
+  isReadOnly: false,
+});
+
 // ── 注册表与对外 API ──────────────────────────────────────────────────────
 
 export const BUILTIN_TOOLS: Tool[] = [
@@ -537,13 +605,14 @@ export const BUILTIN_TOOLS: Tool[] = [
   GET_TASK_TOOL,
   CLAIM_TASK_TOOL,
   COMPLETE_TASK_TOOL,
+  SUBAGENT_TASK_TOOL,
 ];
 
 export const TOOL_MAP: Map<string, Tool> = new Map(BUILTIN_TOOLS.map((t) => [t.name, t]));
 
-export function getOpenaiTools(_isSubagent = false): OpenaiTool[] {
-  // 09：子 agent 工具限制在此接入
-  return BUILTIN_TOOLS.map((t) => sanitizeOpenaiTool(t.name, t.toOpenaiSchema()));
+export function getOpenaiTools(isSubagent = false): OpenaiTool[] {
+  return BUILTIN_TOOLS.filter((t) => !(isSubagent && SUBAGENT_EXCLUDED.has(t.name)))
+    .map((t) => sanitizeOpenaiTool(t.name, t.toOpenaiSchema()));
 }
 
 export function getToolParameters(name: string): Record<string, unknown> | null {
