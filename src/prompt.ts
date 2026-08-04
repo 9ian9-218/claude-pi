@@ -113,6 +113,101 @@ export function buildMemorySection(memoryIndex: string): string {
   return MEMORY_SECTION_WITH_INDEX.replace("{index}", memoryIndex);
 }
 
+// ── 消息包装（对齐 prompt.py） ─────────────────────────────────────────────
+
+export const RELEVANT_MEMORIES_OPEN = "<relevant_memories>";
+export const RELEVANT_MEMORIES_CLOSE = "</relevant_memories>";
+
+export function wrapRelevantMemories(memoriesBody: string): string {
+  return `${RELEVANT_MEMORIES_OPEN}\n\n${memoriesBody}\n\n${RELEVANT_MEMORIES_CLOSE}`;
+}
+
+export function formatCompactedUserMessage(summary: string): string {
+  return `[Compacted]\n\n${summary}`;
+}
+
+export function formatReactiveCompactedUserMessage(summary: string): string {
+  return `[Reactive compact]\n\n${summary}`;
+}
+
+export function formatSnippedUserMessage(count: number): string {
+  return `[snipped ${count} messages]`;
+}
+
+// ── 错误恢复 prompt（03） ──────────────────────────────────────────────────
+
+export const CONTINUATION_PROMPT =
+  "Output token limit hit. Resume directly — " +
+  "no apology, no recap. Pick up mid-thought.";
+
+// ── Compact LLM 总结 prompt（04） ──────────────────────────────────────────
+
+export const COMPACT_SUMMARY_TEMPLATE =
+  "Summarize this coding-agent conversation so work can continue.\n" +
+  "Preserve: 1. current goal, 2. key findings/decisions, 3. files read/changed, " +
+  "4. remaining work, 5. user constraints.\n" +
+  "Be compact but concrete.\n\n{conversation}";
+
+export function formatCompactSummary(conversation: string): string {
+  return COMPACT_SUMMARY_TEMPLATE.replace("{conversation}", conversation);
+}
+
+// ── Memory LLM 任务 prompt（05） ───────────────────────────────────────────
+
+export const SELECT_MEMORIES_TEMPLATE =
+  "Given the recent conversation and the memory catalog below, " +
+  "select ONLY the indices of memories that are directly and critically relevant " +
+  "to the current task. A memory is worth including only if ignoring it would " +
+  "cause a materially wrong answer. " +
+  "Return ONLY a JSON array of integers, e.g. [0, 3]. " +
+  "If none are relevant, return [].\n\n" +
+  "Recent conversation:\n{recent}\n\nMemory catalog:\n{catalog}";
+
+export const EXTRACT_MEMORIES_TEMPLATE =
+  "Extract memories ONLY if they meet ANY of these criteria:\n" +
+  "1. Established facts or important conclusions about the project or user\n" +
+  "2. Overall project goals, architecture decisions, or strategic direction\n" +
+  "3. Information that will significantly impact future work across multiple sessions\n" +
+  "4. Repeated user instructions or preferences that appear more than once\n" +
+  "5. User explicitly asked to remember something\n\n" +
+  "Do NOT extract:\n" +
+  "- Transient questions about file locations, simple clarifications, or one-off status checks\n" +
+  "- Minor preferences stated once without emphasis\n" +
+  "- Anything the user is likely to figure out again from context in the next turn\n\n" +
+  "If nothing meets the criteria, return [].\n\n" +
+  "Return a JSON array. Each item: {name, type, description, body}.\n" +
+  "- name: short kebab-case identifier (e.g. 'project-architecture-pattern')\n" +
+  "- type: one of 'user' (role/goals), 'feedback' (guidance), " +
+  "'project' (project fact), 'reference' (external pointer)\n" +
+  "- description: one-line summary for index lookup\n" +
+  "- body: full detail in markdown\n\n" +
+  "Existing memories:\n{existing}\n\nDialogue:\n{dialogue}";
+
+export const CONSOLIDATE_MEMORIES_TEMPLATE =
+  "Consolidate the following memory files. Rules:\n" +
+  "1. Merge duplicates into one\n" +
+  "2. Remove outdated/contradicted memories\n" +
+  "3. Remove transient or low-value memories (one-off questions, minor clarifications)\n" +
+  "4. Keep the total under {threshold} memories\n" +
+  "5. Preserve high-value memories above all: project goals, architecture decisions, " +
+  "repeated user preferences, explicit \"remember\" requests\n" +
+  "Return a JSON array. Each item: {name, type, description, body}.\n\n{catalog}";
+
+export function formatSelectMemories(recent: string, catalog: string): string {
+  return SELECT_MEMORIES_TEMPLATE.replace("{recent}", recent).replace("{catalog}", catalog);
+}
+
+export function formatExtractMemories(existing: string, dialogue: string): string {
+  return EXTRACT_MEMORIES_TEMPLATE.replace("{existing}", existing).replace("{dialogue}", dialogue);
+}
+
+export function formatConsolidateMemories(catalog: string, threshold: number): string {
+  return CONSOLIDATE_MEMORIES_TEMPLATE.replace("{threshold}", String(threshold)).replace(
+    "{catalog}",
+    catalog,
+  );
+}
+
 // ── 组装与缓存 ────────────────────────────────────────────────────────────
 
 export interface PromptContext {

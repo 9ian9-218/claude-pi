@@ -12,6 +12,8 @@ import { sendMessages, type ChatMessage } from "./client.ts";
 import { triggerHooks } from "./hook.ts";
 import { LoopOptions } from "./loop-options.ts";
 import { executeToolCall, getOpenaiTools } from "./tool.ts";
+import { toolResultBudget, snipCompact, microCompact } from "./compact.ts";
+import { RecoveryState, sendMessagesWithRecovery } from "./error-recovery.ts";
 
 export interface AgentLoopOptions {
   maxTurn?: number;
@@ -26,17 +28,37 @@ export async function agentLoop(
 ): Promise<string | null> {
   const { maxTurn = 100, maxTokens = 8000, isSubagent = false, loopOptions } = options;
   const opts = loopOptions ?? LoopOptions.fromLegacyIsSubagent(isSubagent);
+  const recoveryState = new RecoveryState();
+  let effectiveMaxTokens = maxTokens;
 
   for (let turn = 0; turn < maxTurn; turn++) {
-    // memory 注入（05）、teammate/通知注入（10）、压缩（04）在此接入
-    const llmResult = await sendMessages(messages, {
-      maxTokens,
+    // memory 注入（05）、teammate/通知注入（10）在此接入
+    // L3/L1/L2 压缩（对齐 agent_loop.py：每轮发送前执行）
+    replaceMessages(messages, toolResultBudget(messages));
+    replaceMessages(messages, snipCompact(messages));
+    replaceMessages(messages, microCompact(messages));
+    // L4 auto compact（CONTEXT_LIMIT 检查 → compaction entry）归工单 12
+
+    const llmResult = await sendMessagesWithRecovery({
+      requestMessages: messages,
+      messages,
+      state: recoveryState,
+      maxTokens: effectiveMaxTokens,
       isSubagent: opts.exitOnFinalContent && !opts.preserveSystem,
       preserveSystem: opts.preserveSystem,
       quietOutput: opts.quietOutput,
       tools: getOpenaiTools(opts.exitOnFinalContent && !opts.preserveSystem),
     });
-    const message = llmResult;
+    if (llmResult.action === "retry") {
+      if (llmResult.maxTokens !== undefined) {
+        effectiveMaxTokens = llmResult.maxTokens;
+      }
+      continue;
+    }
+    if (llmResult.action === "abort") {
+      return null;
+    }
+    const message = llmResult.message;
 
     if (message.toolCalls) {
       messages.push(message.modelDump() as unknown as ChatMessage);
@@ -107,4 +129,9 @@ export async function agentLoop(
     return null;
   }
   return null;
+}
+
+/** 原地替换 messages 内容（对齐 Python messages[:] = ...） */
+function replaceMessages(messages: ChatMessage[], next: ChatMessage[]): void {
+  messages.splice(0, messages.length, ...next);
 }
