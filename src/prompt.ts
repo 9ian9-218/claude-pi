@@ -11,6 +11,7 @@
 import { PROJECT_ROOT, resolveAgentDirs } from "./config.ts";
 import { readMemoryIndex } from "./memory.ts";
 import { getSkillCatalog } from "./skill-load.ts";
+import { getMCPHub } from "./mcp/hub.ts";
 
 const TASKS_DIR = resolveAgentDirs(PROJECT_ROOT).tasksDir;
 const MEMORY_DIR = resolveAgentDirs(PROJECT_ROOT).memoryDir;
@@ -293,12 +294,21 @@ export function getSystemPrompt(
  * 02a：workspace + 空占位；skill（07）、memory（05）、mcp（19）逐步接入。
  */
 export function updateContext(_context: PromptContext, _messages: unknown[]): PromptContext {
+  let mcpServers: string[] = [];
+  let mcpToolCount = 0;
+  try {
+    const hub = getMCPHub();
+    mcpServers = hub.listServers();
+    mcpToolCount = hub.listTools().length;
+  } catch {
+    // hub 不可用时保持空
+  }
   return {
     skill_catalog: getSkillCatalog(),
     workspace: process.cwd(),
     memories: readMemoryIndex(),
     enabled_tools: [],
-    mcp_servers: [],
-    mcp_tool_count: 0,
+    mcp_servers: mcpServers,
+    mcp_tool_count: mcpToolCount,
   };
 }

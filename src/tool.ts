@@ -16,6 +16,8 @@ import { getWorkdir } from "./workdir.ts";
 import { sanitizeOpenaiTool, type OpenaiTool } from "./schema-strict.ts";
 import { getSkillContent } from "./skill-load.ts";
 import { SUBAGENT_IDENTITY } from "./prompt.ts";
+import { getMCPHub } from "./mcp/hub.ts";
+import { isMcpTool, underlyingToolName } from "./mcp/names.ts";
 import type { ChatMessage } from "./client.ts";
 import {
   runCreateTask,
@@ -806,12 +808,28 @@ export function registerExtensionTool(tool: Tool): void {
 }
 
 export function getOpenaiTools(isSubagent = false): OpenaiTool[] {
-  return [...TOOL_MAP.values()]
+  const builtin = [...TOOL_MAP.values()]
     .filter((t) => !(isSubagent && SUBAGENT_EXCLUDED.has(t.name)))
     .map((t) => sanitizeOpenaiTool(t.name, t.toOpenaiSchema()));
+  // MCP 工具（19）：子 agent 排除本地工具以外的外部 server（对齐 Python）
+  let excluded: Set<string> | undefined;
+  if (isSubagent) {
+    excluded = new Set(
+      getMCPHub()
+        .listTools()
+        .filter((reg) => reg.serverName !== "local")
+        .map((reg) => reg.prefixedName),
+    );
+  }
+  return [...builtin, ...getMCPHub().toOpenaiTools(excluded)];
 }
 
 export function getToolParameters(name: string): Record<string, unknown> | null {
+  if (isMcpTool(name)) {
+    const reg = getMCPHub().getTool(name);
+    if (!reg) return null;
+    return reg.parameters;
+  }
   const tool = TOOL_MAP.get(name);
   if (!tool) return null;
   return tool.parameters;
@@ -840,6 +858,15 @@ export async function executeToolCall(
       return JSON.stringify({ status: "error", message: "Arguments must be a JSON object" });
     }
     args = parsed as Record<string, unknown>;
+  }
+
+  // MCP 工具（19）：hub 调用
+  if (isMcpTool(name)) {
+    try {
+      return await getMCPHub().callPrefixedTool(name, args);
+    } catch (e) {
+      return JSON.stringify({ status: "error", message: `MCP error: ${String((e as Error).message)}` });
+    }
   }
 
   const tool = TOOL_MAP.get(name);

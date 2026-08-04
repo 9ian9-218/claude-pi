@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-tui": "0.83.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "dotenv": "16.6.1",
     "glob": "^13.0.6",
     "jiti": "^2.7.0",

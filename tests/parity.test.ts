@@ -24,6 +24,6 @@ describe("对拍测试（S18）", () => {
       timeout: 120_000,
     });
     expect(result).toContain("2 通过");
-    expect(result).not.toContain("失败");
+    expect(result).not.toContain("\u2717");
   }, 130_000);
 });

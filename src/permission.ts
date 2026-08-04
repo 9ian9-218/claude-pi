@@ -9,6 +9,7 @@
  */
 import path from "node:path";
 import { getWorkdir } from "./workdir.ts";
+import { underlyingToolName } from "./mcp/names.ts";
 
 export const DENY_LIST = ["rm -rf /", "sudo", "shutdown", "reboot", "mkfs", "dd if=", "> /dev/sda"];
 
@@ -76,7 +77,8 @@ export function askUser(toolName: string, args: Record<string, unknown>, reason:
 
 /** 三道门权限管线：返回 null 通过，返回字符串拒绝原因 */
 export function checkPermission(toolName: string, args: Record<string, unknown>): string | null {
-  if (toolName === "run_bash") {
+  const effectiveName = underlyingToolName(toolName);
+  if (effectiveName === "run_bash") {
     const reason = checkDenyList(typeof args["command"] === "string" ? args["command"] : "");
     if (reason) {
       console.log(`\n\x1b[31m⛔ ${reason}\x1b[0m`);

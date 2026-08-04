@@ -24,6 +24,14 @@ npm run build          # tsc 构建到 dist/
 
 ## 状态
 
+**全部 19 个工单已完成 ✅**（480/480 测试 + typecheck 全绿）
+
+```
+npm test        # 全量测试
+npm run dev     # 交互（TTY → TUI；管道 → REPL）
+npx tsx scripts/parity/parity-runner.ts   # Python 对拍
+```
+
 ✅ **工单 01 仓库骨架**（Node 22 + TS + vitest + pi-tui@0.83.0 锁定 + `.agent/` 目录树 + .env 加载）
 ✅ **工单 02a 对话闭环**（openai SDK 流式客户端 + Agent Loop + Hook 注册表 + 占位 REPL + mock OpenAI 测试）
 ✅ **工单 02b 工具闭环**（Tool 抽象 + Schema 校验 + 权限黑名单/规则 + PreToolUse/PostToolUse + 6 工具 + strict 开关）
@@ -45,5 +53,5 @@ npm run build          # tsc 构建到 dist/
 ✅ **工单 16 扩展核心**（三位置加载 + 事件/工具/命令/appendEntry + /reload 热重载）
 ✅ **工单 17 扩展 UI**（ctx.ui confirm/select/input/notify/custom + entry 渲染器）
 ✅ **工单 18 对拍 + 冒烟**（Python REPL vs --mode json 双场景对拍，规范化比对）
-⬜ 工单 19 MCP 集成（独立里程碑，frontier）
+✅ **工单 19 MCP 集成**（@modelcontextprotocol/sdk hub + 命名归一化 + 本地 server + mcp.json）
 

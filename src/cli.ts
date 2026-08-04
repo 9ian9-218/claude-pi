@@ -17,6 +17,7 @@ import { SessionManager } from "./session-manager.ts";
 import { TuiApp } from "./tui/app.ts";
 import { handleSessionCommand } from "./tui/session-commands.ts";
 import { setTuiApp } from "./tui/ui-provider.ts";
+import { getMCPHub } from "./mcp/hub.ts";
 import { getCurrentWorktreeTaskId } from "./worktree.ts";
 import { getWorkdir } from "./workdir.ts";
 import { ExtensionManager } from "./extensions/loader.ts";
@@ -328,6 +329,7 @@ async function main(): Promise<void> {
   process.stdout.write("输入 /new 开新会话，q/exit 退出。\n");
   await runRepl(session);
   void triggerHooks("session_end", {});
+  await getMCPHub().shutdown();
 }
 
 void main();

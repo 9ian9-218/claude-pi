@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -125,6 +125,12 @@ describe("agentLoop 集成（06 后台任务）", () => {
     await agentLoop(messages, { loopOptions: quiet });
     // 第一轮：占位 tool 结果
     expect(String(messages[3].content)).toContain("[Background task bg_");
+    // 等后台完成通知入队后再进入第二轮
+    const { hasPendingNotifications } = await import("./message-queue.ts");
+    await vi.waitFor(() => expect(hasPendingNotifications()).toBe(true), {
+      timeout: 10000,
+      interval: 50,
+    });
     // 第二轮对话：通知在轮首注入
     messages.push({ role: "user", content: "next" });
     await agentLoop(messages, { loopOptions: quiet });
