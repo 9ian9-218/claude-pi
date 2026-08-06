@@ -60,33 +60,22 @@ export interface ThemeColors {
 
 const THEMES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)));
 
-// ── hex → ANSI 256 转换 ────────────────────────────────────────────────
-
-function hexToRgb(hex: string): [number, number, number] {
-  const h = hex.replace("#", "");
-  return [
-    parseInt(h.slice(0, 2), 16),
-    parseInt(h.slice(2, 4), 16),
-    parseInt(h.slice(4, 6), 16),
-  ];
-}
-
-function rgbToAnsi256([r, g, b]: [number, number, number]): number {
-  if (r === g && g === b) {
-    if (r < 8) return 16;
-    if (r > 248) return 231;
-    return Math.round(((r - 8) / 247) * 24) + 232;
-  }
-  const toIndex = (v: number): number => (v >= 248 ? 5 : Math.max(0, Math.round((v - 55) / 40)));
-  return 16 + 36 * toIndex(r) + 6 * toIndex(g) + toIndex(b);
-}
+// ── hex → 24-bit 真彩 ANSI（对齐 pi 的 chalk 真彩输出） ────────────────
 
 function fgAnsi(hex: string): string {
-  return `\x1b[38;5;${rgbToAnsi256(hexToRgb(hex))}m`;
+  const h = hex.replace("#", "");
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `\x1b[38;2;${r};${g};${b}m`;
 }
 
 function bgAnsi(hex: string): string {
-  return `\x1b[48;5;${rgbToAnsi256(hexToRgb(hex))}m`;
+  const h = hex.replace("#", "");
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `\x1b[48;2;${r};${g};${b}m`;
 }
 
 // ── Theme ───────────────────────────────────────────────────────────────

@@ -250,9 +250,11 @@ async function runTui(
             loopOptions: new LoopOptions({
               quietOutput: true,
               onStream: (d) => {
-                // 03：结构化流事件；thinking 暂不渲染（05 接入）
-                if (d.kind === "text") app.appendStream(d.delta);
+                // 05：thinking 增量进 thinking 区，正文进正文区
+                if (d.kind === "thinking") app.appendThinking(d.delta);
+                else app.appendStream(d.delta);
               },
+              onToolEvent: (e) => app.handleToolEvent(e),
             }),
           });
         } else {
@@ -261,8 +263,10 @@ async function runTui(
             loopOptions: new LoopOptions({
               quietOutput: true,
               onStream: (d) => {
-                if (d.kind === "text") app.appendStream(d.delta);
+                if (d.kind === "thinking") app.appendThinking(d.delta);
+                else app.appendStream(d.delta);
               },
+              onToolEvent: (e) => app.handleToolEvent(e),
             }),
           });
         }

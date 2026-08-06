@@ -19,20 +19,19 @@ export class MessageList extends Container {
     return this.viewportHeight;
   }
 
-  /** 向上滚动一行（返回是否已到顶） */
-  scrollUp(): boolean {
+  /** 向上滚动 lines 行（默认 1；PgUp 传视口高度）；返回是否已到顶 */
+  scrollUp(lines = 1): boolean {
     const all = super.render(80);
     if (all.length <= this.viewportHeight) return true;
     const max = all.length - this.viewportHeight;
-    if (this.offset >= max) return true;
-    this.offset = Math.min(this.offset + 1, max);
+    this.offset = Math.min(this.offset + lines, max);
     return this.offset >= max;
   }
 
-  /** 向下滚动一行（返回是否已到底部） */
-  scrollDown(): boolean {
+  /** 向下滚动 lines 行（默认 1；PgDn 传视口高度）；返回是否已到底部 */
+  scrollDown(lines = 1): boolean {
     if (this.offset <= 0) return true;
-    this.offset -= 1;
+    this.offset = Math.max(0, this.offset - lines);
     return this.offset <= 0;
   }
 

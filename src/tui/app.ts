@@ -20,9 +20,10 @@ import { MessageList } from "./messages/message-list.ts";
 import { UserMessageComponent } from "./messages/user-message.ts";
 import { AssistantMessageComponent } from "./messages/assistant-message.ts";
 import { SystemMessageComponent } from "./messages/system-message.ts";
+import { ToolExecutionComponent } from "./messages/tool-execution.ts";
 import { getSlashCommand } from "../commands.ts";
 import type { SwarmPermissionRequest, PermissionResolution } from "../permission-sync.ts";
-import type { TurnEndEvent } from "../ui-events.ts";
+import type { ToolUiEvent, TurnEndEvent } from "../ui-events.ts";
 
 export interface TuiAppOptions {
   /** 测试注入 FakeTerminal；生产传 ProcessTerminal */
@@ -112,6 +113,10 @@ export class TuiApp {
   private running = true;
   /** 当前流式助手块（beginAssistantTurn → endAssistantTurn） */
   private streamingComponent: AssistantMessageComponent | null = null;
+  /** 工具执行块注册表（04）：id → 组件 */
+  private readonly toolComponents = new Map<string, ToolExecutionComponent>();
+  /** 工具块折叠偏好：新块跟随此状态，Ctrl+O 切换全部（对齐 pi app.tools.expand） */
+  private toolOutputExpanded = false;
 
   constructor(options: TuiAppOptions) {
     this.onQuery = options.onQuery;
@@ -137,6 +142,37 @@ export class TuiApp {
       // 08：Esc 中断生成；空闲无操作
     };
 
+    // 04：Ctrl+O 折叠/展开全部工具输出（对齐 pi app.tools.expand）
+    this.tui.addInputListener((data) => {
+      if (data === "\x0f") {
+        this.toggleToolExpansion();
+        return { consume: true };
+      }
+      return { consume: false };
+    });
+    // 05：Ctrl+T 折叠/展开 thinking 块（对齐 pi app.thinking.toggle）
+    this.tui.addInputListener((data) => {
+      if (data === "\x14") {
+        this.toggleThinkingExpansion();
+        return { consume: true };
+      }
+      return { consume: false };
+    });
+    // 05：PgUp/PgDn 整页滚动聊天区
+    this.tui.addInputListener((data) => {
+      if (data === "\x1b[5~") {
+        this.chat.scrollUp(this.chat.getViewportHeight());
+        this.tui.requestRender();
+        return { consume: true };
+      }
+      if (data === "\x1b[6~") {
+        this.chat.scrollDown(this.chat.getViewportHeight());
+        this.tui.requestRender();
+        return { consume: true };
+      }
+      return { consume: false };
+    });
+
     if (options.initialText) {
       this.appendSystem(options.initialText.trim(), "accent");
     }
@@ -160,6 +196,61 @@ export class TuiApp {
   /** 聊天区全部文本（测试断言用） */
   getChatText(): string {
     return this.chat.getText();
+  }
+
+  /** 工具事件（04）：start 创建灰底块，result 更新绿/红底 */
+  handleToolEvent(event: ToolUiEvent): void {
+    if (event.phase === "start") {
+      let component = this.toolComponents.get(event.id);
+      if (!component) {
+        component = new ToolExecutionComponent(event.name, event.id, event.args);
+        component.setExpanded(this.toolOutputExpanded);
+        this.toolComponents.set(event.id, component);
+        this.chat.addChild(component);
+      }
+    } else if (event.phase === "result") {
+      let component = this.toolComponents.get(event.id);
+      if (!component) {
+        component = new ToolExecutionComponent(event.name, event.id, event.args);
+        component.setExpanded(this.toolOutputExpanded);
+        this.toolComponents.set(event.id, component);
+        this.chat.addChild(component);
+      }
+      component.updateResult(event.result ?? "", event.isError ?? false);
+    }
+    this.tui.requestRender();
+  }
+
+  /** Ctrl+O：切换全部工具块展开/折叠（对齐 pi app.tools.expand） */
+  toggleToolExpansion(): void {
+    this.toolOutputExpanded = !this.toolOutputExpanded;
+    for (const component of this.toolComponents.values()) {
+      component.setExpanded(this.toolOutputExpanded);
+    }
+    this.tui.requestRender();
+  }
+
+  /** 工具块折叠状态（测试用） */
+  getToolOutputExpanded(): boolean {
+    return this.toolOutputExpanded;
+  }
+
+  /** thinking 增量（05）：追加到当前助手块 thinking 区 */
+  appendThinking(delta: string): void {
+    if (!this.streamingComponent) {
+      this.beginAssistantTurn();
+    }
+    this.streamingComponent!.appendThinking(delta);
+    this.tui.requestRender();
+  }
+
+  /** Ctrl+T：折叠/展开当前助手块 thinking（对齐 pi app.thinking.toggle） */
+  toggleThinkingExpansion(): void {
+    if (this.streamingComponent) {
+      const next = !this.streamingComponent.isThinkingExpanded();
+      this.streamingComponent.setThinkingExpanded(next);
+    }
+    this.tui.requestRender();
   }
 
   /** 开始助手回合：创建流式块，后续 appendStream 增量进该块 */
