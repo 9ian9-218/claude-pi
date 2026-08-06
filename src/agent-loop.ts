@@ -118,6 +118,7 @@ async function agentLoopInner(
       quietOutput: opts.quietOutput,
       tools: getOpenaiTools(opts.exitOnFinalContent && !opts.preserveSystem),
       onStream: opts.onStream,
+      signal: opts.signal,
     });
     if (llmResult.action === "retry") {
       if (llmResult.maxTokens !== undefined) {
@@ -126,9 +127,15 @@ async function agentLoopInner(
       continue;
     }
     if (llmResult.action === "abort") {
+      // ADR-0008：中断（Esc）/不可恢复错误 → 回合结束事件（UI 显示中止态）
+      opts.onTurnEnd?.({
+        stopReason: llmResult.reason === "interrupted" ? "aborted" : "error",
+        errorMessage: llmResult.errorMessage,
+      });
       return null;
     }
     const message = llmResult.message;
+    opts.onTurnEnd?.({ stopReason: message.stopReason, errorMessage: message.errorMessage });
 
     if (message.toolCalls) {
       const assistantMsg = message.modelDump() as unknown as ChatMessage;
@@ -143,17 +150,27 @@ async function agentLoopInner(
           args = null;
           parseError = String(e);
         }
+        // ADR-0008：无论参数是否合法都广播工具事件，UI 据此渲染执行块
+        opts.onToolEvent?.({
+          phase: "start",
+          name: toolCall.function.name,
+          id: toolCall.id,
+          args,
+        });
         let toolResult: string;
+        let toolError = false;
         if (args === null) {
           toolResult = JSON.stringify({
             status: "error",
             message: `Invalid arguments JSON: ${parseError}`,
           });
+          toolError = true;
         } else if (typeof args !== "object" || Array.isArray(args)) {
           toolResult = JSON.stringify({
             status: "error",
             message: "Arguments must be a JSON object",
           });
+          toolError = true;
         } else {
           const block = {
             name: toolCall.function.name,
@@ -163,6 +180,7 @@ async function agentLoopInner(
           const blocked = await triggerHooks("PreToolUse", block);
           if (blocked !== null && blocked !== undefined) {
             toolResult = JSON.stringify({ status: "error", message: String(blocked) });
+            toolError = true;
           } else if (opts.enableBackground && shouldRunBackground(toolCall.function.name, args as Record<string, unknown>)) {
             const bgId = startBackgroundTask(toolCall, args as Record<string, unknown>);
             const command = String((args as Record<string, unknown>)["command"] ?? "");
@@ -176,6 +194,14 @@ async function agentLoopInner(
             await triggerHooks("PostToolUse", block, toolResult);
           }
         }
+        opts.onToolEvent?.({
+          phase: "result",
+          name: toolCall.function.name,
+          id: toolCall.id,
+          args,
+          result: toolResult,
+          isError: toolError,
+        });
         if (!opts.quietOutput) {
           console.log(
             `Tool >\t ${toolCall.function.name}(${toolCall.function.arguments}) -> ${toolResult}`,

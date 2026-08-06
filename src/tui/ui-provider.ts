@@ -51,9 +51,9 @@ export const ui = {
   notify(message: string, options: UiNotifyOptions = {}): void {
     const a = app;
     if (a) {
-      const color =
-        options.level === "error" ? "1;31" : options.level === "warning" ? "1;33" : "1;34";
-      a.appendMessage("system", `\x1b[${color}m${message}\x1b[0m`);
+      const kind =
+        options.level === "error" ? "error" : options.level === "warning" ? "warning" : "accent";
+      a.appendSystem(message, kind);
     } else {
       console.log(`[notify] ${message}`);
     }

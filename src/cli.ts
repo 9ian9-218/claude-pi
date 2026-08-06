@@ -240,20 +240,35 @@ async function runTui(
     onQuery: async (query) => {
       await triggerHooks("UserPromptSubmit", query);
       const session = sessionRef.current;
-      if (session) {
-        session.appendMessage({ role: "user", content: query });
-        const ctx = session.buildSessionContext();
-        await agentLoop(ctx.messages, {
-          session,
-          loopOptions: new LoopOptions({ quietOutput: true, onStream: (t) => app.appendStream(t) }),
-        });
-      } else {
-        const messages: ChatMessage[] = [{ role: "user", content: query }];
-        await agentLoop(messages, {
-          loopOptions: new LoopOptions({ quietOutput: true, onStream: (t) => app.appendStream(t) }),
-        });
+      app.beginAssistantTurn();
+      try {
+        if (session) {
+          session.appendMessage({ role: "user", content: query });
+          const ctx = session.buildSessionContext();
+          await agentLoop(ctx.messages, {
+            session,
+            loopOptions: new LoopOptions({
+              quietOutput: true,
+              onStream: (d) => {
+                // 03：结构化流事件；thinking 暂不渲染（05 接入）
+                if (d.kind === "text") app.appendStream(d.delta);
+              },
+            }),
+          });
+        } else {
+          const messages: ChatMessage[] = [{ role: "user", content: query }];
+          await agentLoop(messages, {
+            loopOptions: new LoopOptions({
+              quietOutput: true,
+              onStream: (d) => {
+                if (d.kind === "text") app.appendStream(d.delta);
+              },
+            }),
+          });
+        }
+      } finally {
+        app.endAssistantTurn();
       }
-      app.appendMessage("assistant", "");
     },
   });
   setTuiApp(app);

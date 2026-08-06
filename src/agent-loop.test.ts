@@ -88,4 +88,41 @@ describe("agentLoop（S2）", () => {
     expect(result).toBe("done");
     expect(messages).toHaveLength(3);
   });
+
+  it("onToolEvent（ADR-0008）：工具调用 start→result 顺序广播", async () => {
+    mock.always(() => ({
+      kind: "sse",
+      chunks: [
+        {
+          toolCalls: [{ index: 0, id: "call_1", name: "ghost_tool", arguments: "{ \"q\": 1 }" }],
+          finishReason: "tool_calls",
+        },
+      ],
+    }));
+    const events: Array<{ phase: string; name: string; id: string; result?: string }> = [];
+    const messages: ChatMessage[] = [{ role: "user", content: "go" }];
+    await agentLoop(messages, {
+      maxTurn: 1,
+      loopOptions: new LoopOptions({
+        quietOutput: true,
+        onToolEvent: (e) => events.push({ phase: e.phase, name: e.name, id: e.id, result: e.result }),
+      }),
+    });
+    expect(events).toHaveLength(2);
+    expect(events[0]).toEqual({ phase: "start", name: "ghost_tool", id: "call_1" });
+    expect(events[1].phase).toBe("result");
+    // 未知工具 → 错误结果
+    expect(String((events[1] as { result?: string }).result)).toContain("Unknown tool");
+  });
+
+  it("onTurnEnd（ADR-0008）：每回合结束广播 stopReason", async () => {
+    mock.always(() => ({ kind: "sse", chunks: [{ content: "Hello!", finishReason: "stop" }] }));
+    const turns: Array<{ stopReason?: string }> = [];
+    const messages: ChatMessage[] = [{ role: "user", content: "hi" }];
+    await agentLoop(messages, {
+      loopOptions: new LoopOptions({ quietOutput: true, onTurnEnd: (e) => turns.push(e) }),
+    });
+    expect(turns.length).toBeGreaterThanOrEqual(1);
+    expect(turns[0].stopReason).toBe("stop");
+  });
 });

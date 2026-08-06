@@ -1,8 +1,10 @@
 /**
- * app.ts — TUI 宿主（pi-tui）
+ * app.ts — TUI 宿主（03 重构：组件化聊天区，对齐 pi）
  *
- * 布局：顶部 Markdown 滚动区 + 底部输入行 + 状态行。
- * 事件流：Input 提交 → 斜杠命令或 onQuery；流式输出经 appendStream 进滚动区。
+ * 布局：顶部 MessageList（消息块）+ 底部输入行 + 状态行（07 换 footer）。
+ * 事件流：Input 提交 → 斜杠命令或 onQuery；流式增量经 appendStream 进
+ * 当前助手块（beginAssistantTurn/endAssistantTurn 管理生命周期）。
+ * 角色前缀已移除（ADR：消息以分块+背景色区分，对齐 pi）。
  */
 import {
   TUI,
@@ -14,9 +16,13 @@ import {
   type SelectItem,
   type Component,
 } from "@earendil-works/pi-tui";
-import { Scrollback } from "./scrollback.ts";
+import { MessageList } from "./messages/message-list.ts";
+import { UserMessageComponent } from "./messages/user-message.ts";
+import { AssistantMessageComponent } from "./messages/assistant-message.ts";
+import { SystemMessageComponent } from "./messages/system-message.ts";
 import { getSlashCommand } from "../commands.ts";
 import type { SwarmPermissionRequest, PermissionResolution } from "../permission-sync.ts";
+import type { TurnEndEvent } from "../ui-events.ts";
 
 export interface TuiAppOptions {
   /** 测试注入 FakeTerminal；生产传 ProcessTerminal */
@@ -29,21 +35,6 @@ export interface TuiAppOptions {
   onReload?: () => void;
   statusText?: () => string;
   initialText?: string;
-}
-
-/** AGENT_COLORS → ANSI 颜色码（10 的队友配色） */
-function colorCode(color: string): number {
-  const map: Record<string, number> = {
-    blue: 34,
-    green: 32,
-    yellow: 33,
-    purple: 35,
-    orange: 33,
-    pink: 35,
-    cyan: 36,
-    red: 31,
-  };
-  return map[color] ?? 32;
 }
 
 /** 拦截 resize 回调：先更新布局再转发给 TUI */
@@ -108,7 +99,7 @@ class ResizeAwareTerminal implements Terminal {
 
 export class TuiApp {
   readonly tui: TUI;
-  readonly scrollback: Scrollback;
+  readonly chat: MessageList;
   readonly input: Input;
   private readonly onQuery: (q: string) => Promise<void> | void;
   private readonly onNewSession?: () => void;
@@ -119,6 +110,8 @@ export class TuiApp {
   private readonly root = new Container();
   private busy = false;
   private running = true;
+  /** 当前流式助手块（beginAssistantTurn → endAssistantTurn） */
+  private streamingComponent: AssistantMessageComponent | null = null;
 
   constructor(options: TuiAppOptions) {
     this.onQuery = options.onQuery;
@@ -126,14 +119,14 @@ export class TuiApp {
     this.onSessionCommand = options.onSessionCommand;
     this.onReload = options.onReload;
     this.statusTextFn = options.statusText;
-    this.scrollback = new Scrollback(options.initialText ?? "");
+    this.chat = new MessageList();
     this.input = new Input();
-    this.statusLine.setText(`\x1b[90mclaude-pi\x1b[0m`);
+    this.statusLine.setText(`claude-pi`);
 
     const resizeAware = new ResizeAwareTerminal(options.terminal, () => this.layout());
     this.tui = new TUI(resizeAware);
     this.tui.addChild(this.root);
-    this.root.addChild(this.scrollback);
+    this.root.addChild(this.chat);
     this.root.addChild(this.input);
     this.root.addChild(this.statusLine);
 
@@ -141,8 +134,12 @@ export class TuiApp {
       void this.handleSubmit(value);
     };
     this.input.onEscape = () => {
-      this.running = false;
+      // 08：Esc 中断生成；空闲无操作
     };
+
+    if (options.initialText) {
+      this.appendSystem(options.initialText.trim(), "accent");
+    }
 
     this.layout();
     this.tui.setFocus(this.input);
@@ -160,40 +157,74 @@ export class TuiApp {
     return this.running;
   }
 
-  /** 流式输出追加到滚动区 */
-  appendStream(text: string): void {
-    this.scrollback.append(text);
+  /** 聊天区全部文本（测试断言用） */
+  getChatText(): string {
+    return this.chat.getText();
+  }
+
+  /** 开始助手回合：创建流式块，后续 appendStream 增量进该块 */
+  beginAssistantTurn(): void {
+    this.endAssistantTurn();
+    this.streamingComponent = new AssistantMessageComponent();
+    this.chat.addChild(this.streamingComponent);
     this.tui.requestRender();
   }
 
-  /** 追加完整消息（user/assistant/tool 结果）；队友消息按 color 属性染色，后台通知绿色 */
-  appendMessage(role: string, content: string): void {
-    let rendered = content;
-    if (content.includes("<teammate-message")) {
-      const colorMatch = content.match(/color=\"([^\"]+)\"/);
-      const color = colorMatch?.[1] ?? "green";
-      rendered = `\x1b[${colorCode(color)}m${content}\x1b[0m`;
-    } else if (content.includes("<task_notification>")) {
-      rendered = `\x1b[32m${content}\x1b[0m`;
+  /** 结束助手回合：固化当前块，后续流式增量自动开新块 */
+  endAssistantTurn(): void {
+    this.streamingComponent = null;
+  }
+
+  /** 回合结束状态（08：中止/错误显示在助手块底部） */
+  finishAssistantTurn(event: TurnEndEvent): void {
+    this.streamingComponent?.setTurnEnd(event);
+    this.streamingComponent = null;
+    this.tui.requestRender();
+  }
+
+  /** 流式增量：追加到当前助手块（无块时自动创建） */
+  appendStream(delta: string): void {
+    if (!this.streamingComponent) {
+      this.beginAssistantTurn();
     }
-    const label =
-      role === "user"
-        ? "\x1b[1;36mUser >\x1b[0m "
-        : role === "assistant"
-          ? "\x1b[1;32mModel >\x1b[0m "
-          : `\x1b[1;33m${role} >\x1b[0m `;
-    this.scrollback.append(`\n${label}${rendered}\n`);
+    this.streamingComponent!.appendDelta(delta);
+    this.tui.requestRender();
+  }
+
+  /** 追加完整消息（user/assistant/system）；消息以分块渲染，无角色前缀 */
+  appendMessage(role: string, content: string): void {
+    if (content.includes("<teammate-message")) {
+      this.chat.addChild(new SystemMessageComponent(content, "accent"));
+    } else if (content.includes("<task_notification>")) {
+      this.chat.addChild(new SystemMessageComponent(content, "success"));
+    } else if (role === "user") {
+      this.chat.addChild(new UserMessageComponent(content));
+    } else if (role === "assistant") {
+      if (content) {
+        this.beginAssistantTurn();
+        this.streamingComponent?.setText(content);
+        this.endAssistantTurn();
+      }
+    } else {
+      this.chat.addChild(new SystemMessageComponent(content));
+    }
+    this.tui.requestRender();
+  }
+
+  /** 系统消息（命令回显等） */
+  appendSystem(content: string, kind: "muted" | "accent" | "success" | "warning" | "error" = "muted"): void {
+    this.chat.addChild(new SystemMessageComponent(content, kind));
     this.tui.requestRender();
   }
 
   private layout(): void {
     const rows = this.tui.terminal.rows;
-    this.scrollback.setViewportHeight(Math.max(3, rows - 3));
+    this.chat.setViewportHeight(Math.max(3, rows - 3));
   }
 
   private updateStatus(): void {
     const extra = this.statusTextFn ? ` | ${this.statusTextFn()}` : "";
-    this.statusLine.setText(`\x1b[90mclaude-pi${extra}\x1b[0m`);
+    this.statusLine.setText(`claude-pi${extra}`);
     this.tui.requestRender();
   }
 
@@ -237,7 +268,7 @@ export class TuiApp {
         },
       ];
       const list = new SelectList(items, 5, {
-        selectedPrefix: (t) => `\x1b[36m▸ ${t}\x1b[0m`,
+        selectedPrefix: (t) => `▸ ${t}`,
         selectedText: (t) => `\x1b[1m${t}\x1b[0m`,
         description: (t) => `\x1b[90m${t}\x1b[0m`,
         scrollInfo: (t) => `\x1b[90m${t}\x1b[0m`,
@@ -294,13 +325,13 @@ export class TuiApp {
       case "new":
       case "n":
         this.onNewSession?.();
-        this.scrollback.clear();
-        this.appendMessage("system", "新会话已开始。输入 /help 查看命令。");
+        this.chat.clear();
+        this.appendSystem("新会话已开始。输入 /help 查看命令。", "accent");
         break;
       case "help":
-        this.appendMessage(
-          "system",
+        this.appendSystem(
           ["/new 开新会话", "/help 显示帮助", "/quit 退出", "/status 显示状态", "Ctrl+C / Esc 退出"].join("\n"),
+          "accent",
         );
         break;
       case "quit":
@@ -310,11 +341,11 @@ export class TuiApp {
         this.tui.stop();
         break;
       case "status":
-        this.appendMessage("system", this.statusTextFn?.() ?? "no status");
+        this.appendSystem(this.statusTextFn?.() ?? "no status");
         break;
       case "reload":
         this.onReload?.();
-        this.appendMessage("system", "扩展已重载。");
+        this.appendSystem("扩展已重载。", "success");
         break;
       default: {
         // 扩展命令注册表（16）
@@ -322,9 +353,9 @@ export class TuiApp {
         if (ext) {
           try {
             const result = await ext.handler(cmd.slice(1 + name.length).trim());
-            this.appendMessage("system", String(result));
+            this.appendSystem(String(result));
           } catch (e) {
-            this.appendMessage("system", `扩展命令错误：${String((e as Error).message)}`);
+            this.appendSystem(`扩展命令错误：${String((e as Error).message)}`, "error");
           }
           break;
         }
@@ -332,7 +363,7 @@ export class TuiApp {
           await this.onSessionCommand(name, cmd.slice(1 + name.length).trim(), this);
           break;
         }
-        this.appendMessage("system", `未知命令：/${name}（/help 查看）`);
+        this.appendSystem(`未知命令：/${name}（/help 查看）`, "warning");
       }
     }
     this.tui.setFocus(this.input);
@@ -342,7 +373,7 @@ export class TuiApp {
   showSelector(items: SelectItem[], title: string): Promise<SelectItem | null> {
     return new Promise((resolve) => {
       const list = new SelectList(items, 8, {
-        selectedPrefix: (t) => `\x1b[36m▸ ${t}\x1b[0m`,
+        selectedPrefix: (t) => `▸ ${t}`,
         selectedText: (t) => `\x1b[1m${t}\x1b[0m`,
         description: (t) => `\x1b[90m${t}\x1b[0m`,
         scrollInfo: (t) => `\x1b[90m${t}\x1b[0m`,
@@ -367,10 +398,10 @@ export class TuiApp {
     });
   }
 
-  /** 清空滚动区并显示新内容（会话切换后） */
-  refreshScrollback(text: string): void {
-    this.scrollback.setText(text);
-    this.tui.requestRender();
+  /** 清空聊天区并显示系统消息（会话切换后） */
+  refreshChat(text: string): void {
+    this.chat.clear();
+    this.appendSystem(text);
   }
 
   /** 输入对话框（17 ctx.ui.input）：overlay + Input 组件 */

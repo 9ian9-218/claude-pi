@@ -182,4 +182,26 @@ describe("produce 抛出非传输错误（S3 兜底）", () => {
     expect(result.action).toBe("abort");
     expect(String(messages[messages.length - 1].content)).toContain("[Error]");
   });
+
+  it("用户中断（signal.aborted，ADR-0008）：abort 不写 [Error]、reason=interrupted", async () => {
+    setRetryPolicyForTest({ enabled: true, maxRetries: 0, baseDelayMs: 1 });
+    const state = new RecoveryState();
+    const messages = plain();
+    const controller = new AbortController();
+    controller.abort();
+    const result = await sendMessagesWithRecovery({
+      requestMessages: messages,
+      messages,
+      state,
+      maxTokens: 8000,
+      model: "ghost/none",
+      signal: controller.signal,
+    });
+    expect(result.action).toBe("abort");
+    if (result.action === "abort") {
+      expect(result.reason).toBe("interrupted");
+    }
+    // 不落脏数据：无 [Error] 消息追加
+    expect(messages.some((m) => String(m.content ?? "").includes("[Error]"))).toBe(false);
+  });
 });

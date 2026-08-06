@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { TuiApp } from "./app.ts";
-import { Scrollback } from "./scrollback.ts";
+import { MessageList } from "./messages/message-list.ts";
+import { UserMessageComponent } from "./messages/user-message.ts";
+import { SystemMessageComponent } from "./messages/system-message.ts";
+import { theme } from "./theme/theme.ts";
 import type { Terminal } from "@earendil-works/pi-tui";
 
 class FakeTerminal implements Terminal {
@@ -35,12 +38,14 @@ class FakeTerminal implements Terminal {
 
 const nextTick = () => new Promise<void>((r) => setTimeout(r, 10));
 
-describe("Scrollback（S14）", () => {
+describe("MessageList（03，替代 Scrollback）", () => {
   it("视口截取：超过高度时从底部显示", () => {
-    const sb = new Scrollback();
-    sb.setViewportHeight(3);
-    sb.append("line1\nline2\nline3\nline4\nline5");
-    const lines = sb.render(80);
+    const list = new MessageList();
+    list.setViewportHeight(3);
+    for (const t of ["line1", "line2", "line3", "line4", "line5"]) {
+      list.addChild(new SystemMessageComponent(t));
+    }
+    const lines = list.render(80);
     expect(lines.length).toBe(3);
     expect(lines.join("")).toContain("line3");
     expect(lines.join("")).toContain("line5");
@@ -48,32 +53,43 @@ describe("Scrollback（S14）", () => {
   });
 
   it("scrollUp/scrollDown 调整偏移", () => {
-    const sb = new Scrollback();
-    sb.setViewportHeight(2);
-    sb.append("a\nb\nc\nd");
-    sb.scrollUp();
-    const up = sb.render(80).join("");
+    const list = new MessageList();
+    list.setViewportHeight(2);
+    for (const t of ["a", "b", "c", "d"]) {
+      list.addChild(new SystemMessageComponent(t));
+    }
+    list.scrollUp();
+    const up = list.render(80).join("");
     expect(up).toContain("b");
     expect(up).toContain("c");
-    sb.scrollDown();
-    const down = sb.render(80).join("");
+    list.scrollDown();
+    const down = list.render(80).join("");
     expect(down).toContain("c");
     expect(down).toContain("d");
   });
 
-  it("append 自动滚到底部", () => {
-    const sb = new Scrollback();
-    sb.setViewportHeight(2);
-    sb.append("a\nb\nc");
-    sb.scrollUp();
-    sb.append("d");
-    const lines = sb.render(80).join("");
-    expect(lines).toContain("c");
-    expect(lines).toContain("d");
+  it("上翻后追加新消息不打断位置；scrollToBottom 回到底部", () => {
+    const list = new MessageList();
+    list.setViewportHeight(2);
+    for (const t of ["a", "b", "c"]) {
+      list.addChild(new SystemMessageComponent(t));
+    }
+    list.scrollUp();
+    list.scrollUp();
+    list.addChild(new SystemMessageComponent("d"));
+    // 上翻位置保持：仍看到 b/c
+    const stayed = list.render(80).join("");
+    expect(stayed).toContain("b");
+    expect(stayed).toContain("c");
+    expect(stayed).not.toContain("d");
+    list.scrollToBottom();
+    const bottom = list.render(80).join("");
+    expect(bottom).toContain("c");
+    expect(bottom).toContain("d");
   });
 });
 
-describe("TuiApp（S14）", () => {
+describe("TuiApp（S14 重构）", () => {
   it("Input 提交触发 onQuery，输入清空", async () => {
     const queries: string[] = [];
     const term = new FakeTerminal();
@@ -90,7 +106,7 @@ describe("TuiApp（S14）", () => {
     expect(app.input.getValue()).toBe("");
   });
 
-  it("斜杠命令分发：/new 触发 onNewSession 并清空滚动区", async () => {
+  it("斜杠命令分发：/new 触发 onNewSession 并清空聊天区", async () => {
     let newCount = 0;
     const term = new FakeTerminal();
     const app = new TuiApp({
@@ -100,19 +116,19 @@ describe("TuiApp（S14）", () => {
         newCount += 1;
       },
     });
-    app.scrollback.append("旧内容");
+    app.appendMessage("user", "旧内容");
     app.input.onSubmit?.("/new");
     await nextTick();
     expect(newCount).toBe(1);
-    expect(app.scrollback.getText()).not.toContain("旧内容");
+    expect(app.getChatText()).not.toContain("旧内容");
   });
 
-  it("/help 显示帮助到滚动区", async () => {
+  it("/help 显示帮助到聊天区", async () => {
     const term = new FakeTerminal();
     const app = new TuiApp({ terminal: term, onQuery: () => {} });
     app.input.onSubmit?.("/help");
     await nextTick();
-    expect(app.scrollback.getText()).toContain("/new 开新会话");
+    expect(app.getChatText()).toContain("/new 开新会话");
   });
 
   it("未知命令提示", async () => {
@@ -120,17 +136,34 @@ describe("TuiApp（S14）", () => {
     const app = new TuiApp({ terminal: term, onQuery: () => {} });
     app.input.onSubmit?.("/nope");
     await nextTick();
-    expect(app.scrollback.getText()).toContain("未知命令");
+    expect(app.getChatText()).toContain("未知命令");
   });
 
-  it("appendMessage 带角色标签渲染", () => {
+  it("用户消息渲染为背景块，无角色前缀", () => {
     const term = new FakeTerminal();
     const app = new TuiApp({ terminal: term, onQuery: () => {} });
     app.appendMessage("user", "问题");
-    app.appendMessage("assistant", "回答");
-    const text = app.scrollback.getText();
-    expect(text).toContain("User >");
-    expect(text).toContain("Model >");
+    const lines = app.chat.render(80);
+    expect(lines.join("")).toContain(theme.getBgAnsi("userMessageBg"));
+    expect(lines.join("")).toContain("问题");
+    expect(app.getChatText()).not.toContain("User >");
+    expect(app.getChatText()).not.toContain("Model >");
+    expect(app.getChatText()).not.toContain("user >");
+  });
+
+  it("流式助手消息无前缀、增量合并到同一块", async () => {
+    const term = new FakeTerminal();
+    const app = new TuiApp({ terminal: term, onQuery: () => {} });
+    app.beginAssistantTurn();
+    app.appendStream("你");
+    app.appendStream("好");
+    app.endAssistantTurn();
+    const text = app.getChatText();
+    expect(text).toBe("你好");
+    expect(text).not.toContain("Model >");
+    const lines = app.chat.render(80);
+    // 助手块非背景块（与用户块区分）
+    expect(lines.join("")).not.toContain(theme.getBgAnsi("userMessageBg"));
   });
 
   it("busy 期间忽略提交", async () => {
@@ -151,7 +184,7 @@ describe("TuiApp（S14）", () => {
 });
 
 describe("TuiApp + agentLoop 流式集成（S14）", () => {
-  it("onStream 流式内容进滚动区", async () => {
+  it("onStream 流式内容进助手块", async () => {
     const { MockOpenAI } = await import("../../tests/helpers/mock-openai.ts");
     const { installMockModels } = await import("../../tests/helpers/test-client.ts");
     const { resetClient } = await import("../client.ts");
@@ -176,14 +209,21 @@ describe("TuiApp + agentLoop 流式集成（S14）", () => {
       const app = new TuiApp({ terminal: term, onQuery: () => {} });
       const session = SessionManager.create(process.cwd());
       session.appendMessage({ role: "user", content: "测试" });
-      await agentLoop(session.buildSessionContext().messages, {
-        session,
-        loopOptions: new LoopOptions({
-          quietOutput: true,
-          onStream: (t) => app.appendStream(t),
-        }),
-      });
-      expect(app.scrollback.getText()).toContain("流式回复");
+      app.beginAssistantTurn();
+      try {
+        await agentLoop(session.buildSessionContext().messages, {
+          session,
+          loopOptions: new LoopOptions({
+            quietOutput: true,
+            onStream: (d) => {
+              if (d.kind === "text") app.appendStream(d.delta);
+            },
+          }),
+        });
+      } finally {
+        app.endAssistantTurn();
+      }
+      expect(app.getChatText()).toContain("流式回复");
     } finally {
       await mock.close();
       fs.rmSync(sessDir, { recursive: true, force: true });
@@ -237,22 +277,24 @@ describe("权限弹窗（S15a）", () => {
 });
 
 describe("通知与状态（S15c）", () => {
-  it("队友消息按 color 属性染色", () => {
+  it("队友消息 accent 着色渲染", () => {
     const term = new FakeTerminal();
     const app = new TuiApp({ terminal: term, onQuery: () => {} });
     app.appendMessage(
       "user",
       '<teammate-message teammate_id="worker-1" color="green">\n进度报告\n</teammate-message>',
     );
-    const text = app.scrollback.getText();
-    expect(text).toContain("\x1b[32m"); // green ANSI
-    expect(text).toContain("进度报告");
+    const lines = app.chat.render(80).join("");
+    expect(lines).toContain(theme.getFgAnsi("accent"));
+    expect(lines).toContain("进度报告");
   });
 
-  it("后台任务通知绿色渲染", () => {
+  it("后台任务通知 success 着色渲染", () => {
     const term = new FakeTerminal();
     const app = new TuiApp({ terminal: term, onQuery: () => {} });
     app.appendMessage("user", "<task_notification>\n<status>completed</status>\n</task_notification>");
-    expect(app.scrollback.getText()).toContain("\x1b[32m");
+    const lines = app.chat.render(80).join("");
+    expect(lines).toContain(theme.getFgAnsi("success"));
+    expect(lines).toContain("completed");
   });
 });

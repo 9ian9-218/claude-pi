@@ -23,6 +23,7 @@ import {
 import { getSystemPrompt, updateContext } from "./prompt.ts";
 import { parseModelSpec, resolveCurrentModel, resetAiRuntime } from "./ai-runtime.ts";
 import { resetSettingsCache } from "./settings.ts";
+import type { UiStreamDelta } from "./ui-events.ts";
 
 export type ChatRole = "system" | "user" | "assistant" | "tool";
 
@@ -59,8 +60,10 @@ export interface SendOptions {
   preserveSystem?: boolean;
   quietOutput?: boolean;
   tools?: unknown[];
-  /** 流式内容回调（TUI 渲染路径；quietOutput 时也触发） */
-  onStream?: (text: string) => void;
+  /** 流式内容回调（TUI 渲染路径；quietOutput 时也触发）——结构化增量：text/thinking */
+  onStream?: (delta: UiStreamDelta) => void;
+  /** 用户中断信号（Esc）；中断时流以 stopReason="aborted" 结束 */
+  signal?: AbortSignal;
   /** 思考强度（P4 接入；off 不发 thinking 参数） */
   thinkingLevel?: ModelThinkingLevel;
 }
@@ -276,6 +279,7 @@ export async function sendMessages(
     quietOutput,
     tools,
     onStream,
+    signal,
     thinkingLevel,
   } = options;
   const quiet = quietOutput ?? isSubagent;
@@ -295,6 +299,7 @@ export async function sendMessages(
     maxTokens,
     ...(piTools ? { toolChoice: "auto" as const } : {}),
     ...(thinkingLevel && thinkingLevel !== "off" ? { reasoningEffort: thinkingLevel } : {}),
+    ...(signal ? { signal } : {}),
   });
 
   if (!quiet) {
@@ -304,7 +309,9 @@ export async function sendMessages(
   for await (const event of stream) {
     if (event.type === "text_delta") {
       if (!quiet) process.stdout.write(event.delta);
-      onStream?.(event.delta);
+      onStream?.({ kind: "text", delta: event.delta });
+    } else if (event.type === "thinking_delta") {
+      onStream?.({ kind: "thinking", delta: event.delta });
     }
   }
 

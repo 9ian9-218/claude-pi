@@ -19,6 +19,7 @@ import {
 import { reactiveCompact } from "./compact.ts";
 import { CONTINUATION_PROMPT } from "./prompt.ts";
 import { readPiSettings, setSettingsOverrideForTest } from "./settings.ts";
+import type { UiStreamDelta } from "./ui-events.ts";
 
 export { DEFAULT_MAX_TOKENS };
 
@@ -69,7 +70,7 @@ function appendErrorMessage(messages: ChatMessage[], text: string): void {
 export type LLMInvokeResult =
   | { action: "success"; message: AssistantMessage }
   | { action: "retry"; maxTokens?: number }
-  | { action: "abort" };
+  | { action: "abort"; reason?: "interrupted" | "error"; errorMessage?: string };
 
 export interface RecoveryOptions {
   requestMessages: ChatMessage[];
@@ -82,7 +83,9 @@ export interface RecoveryOptions {
   preserveSystem?: boolean;
   quietOutput?: boolean;
   tools?: unknown[];
-  onStream?: (text: string) => void;
+  onStream?: (delta: UiStreamDelta) => void;
+  /** 用户中断信号（ADR-0008）：中断时跳过 appendErrorMessage，不落脏数据 */
+  signal?: AbortSignal;
 }
 
 export async function sendMessagesWithRecovery(
@@ -101,6 +104,7 @@ export async function sendMessagesWithRecovery(
     quietOutput,
     tools,
     onStream,
+    signal,
   } = options;
 
   const produce = () =>
@@ -112,6 +116,7 @@ export async function sendMessagesWithRecovery(
       quietOutput,
       tools,
       onStream,
+      signal,
     });
 
   // 类型桥接：claude-pi 的 AssistantMessage 携带 stopReason/errorMessage，
@@ -123,7 +128,7 @@ export async function sendMessagesWithRecovery(
     message = (await retryAssistantCall(
       produce as unknown as () => Promise<PiAssistantMessage>,
       getRetryPolicy(),
-      undefined,
+      signal,
       {
         onRetryScheduled: (attempt, maxAttempts, delayMs, errorMessage) => {
           console.log(
@@ -135,13 +140,23 @@ export async function sendMessagesWithRecovery(
   } catch (e) {
     const errText = (e as Error).message ?? String(e);
     console.log(`  \x1b[31m[unrecoverable] ${errText.slice(0, 100)}\x1b[0m`);
-    appendErrorMessage(messages, errText.slice(0, 200));
-    return { action: "abort" };
+    // ADR-0008：用户中断不落脏数据；仅真实错误才 appendErrorMessage
+    if (!signal?.aborted) {
+      appendErrorMessage(messages, errText.slice(0, 200));
+    }
+    return signal?.aborted
+      ? { action: "abort", reason: "interrupted" as const }
+      : { action: "abort", reason: "error" as const, errorMessage: errText.slice(0, 200) };
   }
 
   // 传输错误（重试耗尽后仍失败）
   if (message.stopReason === "error" || message.stopReason === "aborted") {
     const errText = message.errorMessage ?? `LLM request failed (${message.stopReason})`;
+
+    // ADR-0008：用户中断（Esc）→ 直接 abort，不落脏数据、不触发 reactive compact
+    if (signal?.aborted) {
+      return { action: "abort", reason: "interrupted" };
+    }
 
     // Path 2: context overflow → reactive compact（一次）
     if (isContextOverflow(message as unknown as PiAssistantMessage)) {
@@ -153,12 +168,12 @@ export async function sendMessagesWithRecovery(
       }
       console.log("  \x1b[31m[unrecoverable] still too long after compact\x1b[0m");
       appendErrorMessage(messages, "Context too large, cannot continue.");
-      return { action: "abort" };
+      return { action: "abort", reason: "error", errorMessage: "Context too large, cannot continue." };
     }
 
     console.log(`  \x1b[31m[unrecoverable] ${errText.slice(0, 100)}\x1b[0m`);
     appendErrorMessage(messages, errText.slice(0, 200));
-    return { action: "abort" };
+    return { action: "abort", reason: "error", errorMessage: errText.slice(0, 200) };
   }
 
   // Path 1: 输出截断
@@ -179,7 +194,7 @@ export async function sendMessagesWithRecovery(
       return { action: "retry", maxTokens };
     }
     console.log("  \x1b[31m[max_tokens] recovery limit reached\x1b[0m");
-    return { action: "abort" };
+    return { action: "abort", reason: "error", errorMessage: "Max tokens recovery limit reached." };
   }
 
   return { action: "success", message };

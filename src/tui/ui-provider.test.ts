@@ -94,7 +94,7 @@ describe("ctx.ui（S17）", () => {
 
   it("notify 追加到滚动区", () => {
     ui.notify("扩展通知", { level: "warning" });
-    expect(app.scrollback.getText()).toContain("扩展通知");
+    expect(app.getChatText()).toContain("扩展通知");
   });
 
   it("custom 挂载自定义组件（渲染输出）", () => {

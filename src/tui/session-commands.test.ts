@@ -67,7 +67,7 @@ describe("会话命令（S15b）", () => {
     const ref = { current: session };
     const app = makeApp(session, ref);
     await handleSessionCommand(app, ref, "session", "");
-    const text = app.scrollback.getText();
+    const text = app.getChatText();
     expect(text).toContain("ID:");
     expect(text).toContain("我的会话");
     expect(text).toContain("Entries: 2");
@@ -92,7 +92,7 @@ describe("会话命令（S15b）", () => {
     expect(newSession.getSessionFile()).not.toBe(session.getSessionFile());
     expect(newSession.getHeader().parentSession).toBe(session.getSessionFile());
     expect(newSession.buildSessionContext().messages).toHaveLength(2);
-    expect(app.scrollback.getText()).toContain("已clone到新会话");
+    expect(app.getChatText()).toContain("已clone到新会话");
   });
 
   it("/resume 列出会话（取消路径）", async () => {
@@ -113,7 +113,7 @@ describe("会话命令（S15b）", () => {
     const ref = { current: session };
     const app = makeApp(session, ref);
     await handleSessionCommand(app, ref, "nope", "");
-    expect(app.scrollback.getText()).toContain("未知命令");
+    expect(app.getChatText()).toContain("未知命令");
   });
 
   it("/tree 空会话提示", async () => {
@@ -121,7 +121,7 @@ describe("会话命令（S15b）", () => {
     const ref = { current: session };
     const app = makeApp(session, ref);
     await handleSessionCommand(app, ref, "tree", "");
-    expect(app.scrollback.getText()).toContain("会话为空");
+    expect(app.getChatText()).toContain("会话为空");
   });
 
   it("/fork 取消路径", async () => {
@@ -179,7 +179,7 @@ describe("会话命令键盘驱动（S15b）", () => {
     });
     app.input.onSubmit?.("/session");
     await nextTick();
-    expect(app.scrollback.getText()).toContain("文件:");
+    expect(app.getChatText()).toContain("文件:");
     app.stop();
   });
 });

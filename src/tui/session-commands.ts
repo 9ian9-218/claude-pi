@@ -43,7 +43,7 @@ export async function handleSessionCommand(
       const fromLeaf = session.getLeafId();
       session.branchWithSummary(picked.value, `[branch switch] 从 ${fromLeaf ?? "根"} 切换到 ${picked.value}`);
       const ctx = session.buildSessionContext();
-      app.refreshScrollback(
+      app.refreshChat(
         ctx.messages
           .slice(-8)
           .map((m) => `${m.role}: ${String(m.content ?? "").slice(0, 100)}`)

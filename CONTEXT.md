@@ -141,6 +141,22 @@ _Avoid_: UI 接口
 **appendEntry**:
 扩展向会话树追加自定义 entry（custom）以实现跨重启状态持久化。
 
+**消息块 (Message Block)**:
+聊天区中按消息类型分块渲染的 UI 元素（用户块/助手块/工具块/thinking 块），用背景色区分状态，不显示角色前缀。
+_Avoid_: 行、文本行
+
+**工具执行块 (Tool Execution Block)**:
+工具调用的三态显示块（pending 灰底 → success 绿底 / error 红底），超长输出自动折叠，Ctrl+O 展开。
+_Avoid_: 工具日志
+
+**中断 (Interrupt)**:
+生成回合进行中按 Esc 中止（AbortSignal 链路），回合不落盘；与退出（/quit、Ctrl+D）不同。
+_Avoid_: 停止、取消（中断特指 Esc 中止当前回合）
+
+**UI 事件通道 (UI Event Channel)**:
+agent-loop 面向 UI 的可选回调集合（结构化 onStream / onToolEvent / onTurnEnd / signal），核心机制不感知 UI，不传参时行为与无 UI 完全一致。
+_Avoid_: 事件总线、消息队列
+
 ## 数据与测试
 
 **.agent/ 数据根 (.agent Data Root)**:
