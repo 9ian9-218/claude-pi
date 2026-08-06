@@ -255,6 +255,8 @@ async function runTui(
     onQuery: async (query) => {
       await triggerHooks("UserPromptSubmit", query);
       const session = sessionRef.current;
+      // 08：Esc 可中断回合（controller 由 handleSubmit 创建）
+      const signal = app.getTurnSignal() ?? undefined;
       app.beginAssistantTurn();
       try {
         if (session) {
@@ -270,6 +272,8 @@ async function runTui(
                 else app.appendStream(d.delta);
               },
               onToolEvent: (e) => app.handleToolEvent(e),
+              onTurnEnd: (e) => app.finishAssistantTurn(e),
+              signal,
             }),
           });
         } else {
@@ -282,11 +286,14 @@ async function runTui(
                 else app.appendStream(d.delta);
               },
               onToolEvent: (e) => app.handleToolEvent(e),
+              onTurnEnd: (e) => app.finishAssistantTurn(e),
+              signal,
             }),
           });
         }
       } finally {
         app.endAssistantTurn();
+        app.endTurn();
       }
     },
   });

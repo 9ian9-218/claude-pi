@@ -135,6 +135,8 @@ export class TuiApp {
   private running = true;
   /** 当前流式助手块（beginAssistantTurn → endAssistantTurn） */
   private streamingComponent: AssistantMessageComponent | null = null;
+  /** 08：当前回合的中断控制器（Esc → abort → signal 链路） */
+  private abortController: AbortController | null = null;
   /** 工具执行块注册表（04）：id → 组件 */
   private readonly toolComponents = new Map<string, ToolExecutionComponent>();
   /** 工具块折叠偏好：新块跟随此状态，Ctrl+O 切换全部（对齐 pi app.tools.expand） */
@@ -177,6 +179,17 @@ export class TuiApp {
       this.editor.addToHistory(value);
       void this.handleSubmit(value);
     };
+
+    // 08：Esc 中断当前生成（对齐 pi app.interrupt）；空闲时放行（编辑器取消补全等）
+    this.tui.addInputListener((data) => {
+      if (data === "\x1b") {
+        if (this.busy) {
+          this.interrupt();
+          return { consume: true };
+        }
+      }
+      return { consume: false };
+    });
 
     // 06：Ctrl+C 清空输入框（对齐 pi app.clear）；空输入时 Ctrl+D 退出（app.exit）
     this.tui.addInputListener((data) => {
@@ -319,6 +332,30 @@ export class TuiApp {
     this.tui.requestRender();
   }
 
+  /** 08：开启可中断回合，返回 AbortSignal（Esc 中止）；handleSubmit 自动调用 */
+  beginTurn(): AbortSignal {
+    this.abortController?.abort();
+    this.abortController = new AbortController();
+    return this.abortController.signal;
+  }
+
+  /** 08：当前回合的 AbortSignal（onQuery 内取用；空闲时 null） */
+  getTurnSignal(): AbortSignal | null {
+    return this.abortController?.signal ?? null;
+  }
+
+  /** 08：回合结束，清理中断控制器 */
+  endTurn(): void {
+    this.abortController = null;
+  }
+
+  /** 08：Esc 中断当前生成（busy 时）；空闲无操作 */
+  private interrupt(): void {
+    if (this.busy) {
+      this.abortController?.abort();
+    }
+  }
+
   /** 开始助手回合：创建流式块，后续 appendStream 增量进该块 */
   beginAssistantTurn(): void {
     this.endAssistantTurn();
@@ -408,9 +445,11 @@ export class TuiApp {
     this.updateStatus();
     this.setWorking(true);
     this.appendMessage("user", trimmed);
+    this.beginTurn();
     try {
       await this.onQuery(trimmed);
     } finally {
+      this.endTurn();
       this.setWorking(false);
       this.busy = false;
       this.updateStatus();
