@@ -99,11 +99,11 @@ describe("TuiApp（S14 重构）", () => {
         queries.push(q);
       },
     });
-    app.input.setValue("你好世界");
-    app.input.onSubmit?.("你好世界");
+    app.editor.setText("你好世界");
+    app.editor.onSubmit?.("你好世界");
     await nextTick();
     expect(queries).toEqual(["你好世界"]);
-    expect(app.input.getValue()).toBe("");
+    expect(app.editor.getText()).toBe("");
   });
 
   it("斜杠命令分发：/new 触发 onNewSession 并清空聊天区", async () => {
@@ -117,7 +117,7 @@ describe("TuiApp（S14 重构）", () => {
       },
     });
     app.appendMessage("user", "旧内容");
-    app.input.onSubmit?.("/new");
+    app.editor.onSubmit?.("/new");
     await nextTick();
     expect(newCount).toBe(1);
     expect(app.getChatText()).not.toContain("旧内容");
@@ -126,7 +126,7 @@ describe("TuiApp（S14 重构）", () => {
   it("/help 显示帮助到聊天区", async () => {
     const term = new FakeTerminal();
     const app = new TuiApp({ terminal: term, onQuery: () => {} });
-    app.input.onSubmit?.("/help");
+    app.editor.onSubmit?.("/help");
     await nextTick();
     expect(app.getChatText()).toContain("/new 开新会话");
   });
@@ -134,7 +134,7 @@ describe("TuiApp（S14 重构）", () => {
   it("未知命令提示", async () => {
     const term = new FakeTerminal();
     const app = new TuiApp({ terminal: term, onQuery: () => {} });
-    app.input.onSubmit?.("/nope");
+    app.editor.onSubmit?.("/nope");
     await nextTick();
     expect(app.getChatText()).toContain("未知命令");
   });
@@ -175,9 +175,9 @@ describe("TuiApp（S14 重构）", () => {
         calls += 1;
       },
     });
-    app.input.onSubmit?.("/help"); // 命令不置 busy
+    app.editor.onSubmit?.("/help"); // 命令不置 busy
     app["busy"] = true;
-    app.input.onSubmit?.("第二条");
+    app.editor.onSubmit?.("第二条");
     await nextTick();
     expect(calls).toBe(0);
   });

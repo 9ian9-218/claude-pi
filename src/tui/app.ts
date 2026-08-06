@@ -9,21 +9,40 @@
 import {
   TUI,
   Container,
+  Editor,
   Input,
   Text,
   SelectList,
+  CombinedAutocompleteProvider,
   type Terminal,
   type SelectItem,
   type Component,
+  type AutocompleteItem,
+  type SlashCommand,
 } from "@earendil-works/pi-tui";
 import { MessageList } from "./messages/message-list.ts";
 import { UserMessageComponent } from "./messages/user-message.ts";
 import { AssistantMessageComponent } from "./messages/assistant-message.ts";
 import { SystemMessageComponent } from "./messages/system-message.ts";
 import { ToolExecutionComponent } from "./messages/tool-execution.ts";
-import { getSlashCommand } from "../commands.ts";
+import { getSlashCommand, listSlashCommands } from "../commands.ts";
+import { theme } from "./theme/theme.ts";
 import type { SwarmPermissionRequest, PermissionResolution } from "../permission-sync.ts";
 import type { ToolUiEvent, TurnEndEvent } from "../ui-events.ts";
+
+const BUILTIN_COMMANDS: Array<AutocompleteItem | SlashCommand> = [
+  { name: "new", description: "开新会话" },
+  { name: "help", description: "显示帮助" },
+  { name: "quit", description: "退出" },
+  { name: "status", description: "显示状态" },
+  { name: "reload", description: "重载扩展" },
+  { name: "tree", description: "会话树导航" },
+  { name: "fork", description: "Fork 当前会话" },
+  { name: "clone", description: "Clone 当前会话" },
+  { name: "resume", description: "恢复历史会话" },
+  { name: "name", description: "设置会话名" },
+  { name: "session", description: "显示会话信息" },
+];
 
 export interface TuiAppOptions {
   /** 测试注入 FakeTerminal；生产传 ProcessTerminal */
@@ -36,6 +55,8 @@ export interface TuiAppOptions {
   onReload?: () => void;
   statusText?: () => string;
   initialText?: string;
+  /** 自动补全附加命令（06）：扩展命令 + /model 模型名等动态项 */
+  autocompleteCommands?: () => Array<AutocompleteItem | SlashCommand>;
 }
 
 /** 拦截 resize 回调：先更新布局再转发给 TUI */
@@ -101,7 +122,7 @@ class ResizeAwareTerminal implements Terminal {
 export class TuiApp {
   readonly tui: TUI;
   readonly chat: MessageList;
-  readonly input: Input;
+  readonly editor: Editor;
   private readonly onQuery: (q: string) => Promise<void> | void;
   private readonly onNewSession?: () => void;
   private readonly onSessionCommand?: (name: string, rest: string, app: TuiApp) => Promise<void> | void;
@@ -117,6 +138,7 @@ export class TuiApp {
   private readonly toolComponents = new Map<string, ToolExecutionComponent>();
   /** 工具块折叠偏好：新块跟随此状态，Ctrl+O 切换全部（对齐 pi app.tools.expand） */
   private toolOutputExpanded = false;
+  private readonly autocompleteCommands?: () => Array<AutocompleteItem | SlashCommand>;
 
   constructor(options: TuiAppOptions) {
     this.onQuery = options.onQuery;
@@ -124,23 +146,52 @@ export class TuiApp {
     this.onSessionCommand = options.onSessionCommand;
     this.onReload = options.onReload;
     this.statusTextFn = options.statusText;
+    this.autocompleteCommands = options.autocompleteCommands;
     this.chat = new MessageList();
-    this.input = new Input();
     this.statusLine.setText(`claude-pi`);
 
     const resizeAware = new ResizeAwareTerminal(options.terminal, () => this.layout());
     this.tui = new TUI(resizeAware);
-    this.tui.addChild(this.root);
+    this.editor = new Editor(
+      this.tui,
+      {
+        borderColor: (s) => theme.fg("border", s),
+        selectList: {
+          selectedPrefix: (t) => theme.fg("accent", `▸ ${t}`),
+          selectedText: (t) => theme.bold(t),
+          description: (t) => theme.fg("dim", t),
+          scrollInfo: (t) => theme.fg("dim", t),
+          noMatch: (t) => theme.fg("dim", t),
+        },
+      },
+      { paddingX: 1 },
+    );
+    this.refreshAutocomplete();
     this.root.addChild(this.chat);
-    this.root.addChild(this.input);
+    this.root.addChild(this.editor);
     this.root.addChild(this.statusLine);
 
-    this.input.onSubmit = (value) => {
+    this.editor.onSubmit = (value) => {
+      this.editor.addToHistory(value);
       void this.handleSubmit(value);
     };
-    this.input.onEscape = () => {
-      // 08：Esc 中断生成；空闲无操作
-    };
+
+    // 06：Ctrl+C 清空输入框（对齐 pi app.clear）；空输入时 Ctrl+D 退出（app.exit）
+    this.tui.addInputListener((data) => {
+      if (data === "\x03") {
+        this.editor.setText("");
+        this.tui.requestRender();
+        return { consume: true };
+      }
+      if (data === "\x04") {
+        if (!this.editor.getText()) {
+          this.running = false;
+          this.tui.stop();
+        }
+        return { consume: false };
+      }
+      return { consume: false };
+    });
 
     // 04：Ctrl+O 折叠/展开全部工具输出（对齐 pi app.tools.expand）
     this.tui.addInputListener((data) => {
@@ -178,7 +229,20 @@ export class TuiApp {
     }
 
     this.layout();
-    this.tui.setFocus(this.input);
+    this.tui.setFocus(this.editor);
+  }
+
+  /** 06：重建自动补全（/reload 后扩展命令变化时调用） */
+  refreshAutocomplete(): void {
+    const extra = this.autocompleteCommands?.() ?? [];
+    const commands: Array<AutocompleteItem | SlashCommand> = [
+      ...BUILTIN_COMMANDS,
+      ...listSlashCommands().map((c) => ({ name: c.name, description: c.description })),
+      ...extra,
+    ];
+    this.editor.setAutocompleteProvider(
+      new CombinedAutocompleteProvider(commands, process.cwd()),
+    );
   }
 
   start(): void {
@@ -322,7 +386,7 @@ export class TuiApp {
   private async handleSubmit(value: string): Promise<void> {
     if (this.busy) return;
     const trimmed = value.trim();
-    this.input.setValue("");
+    this.editor.setText("");
     if (trimmed.startsWith("/")) {
       await this.handleCommand(trimmed);
       return;
@@ -336,7 +400,7 @@ export class TuiApp {
     } finally {
       this.busy = false;
       this.updateStatus();
-      this.tui.setFocus(this.input);
+      this.tui.setFocus(this.editor);
     }
   }
 
@@ -386,7 +450,7 @@ export class TuiApp {
       const finish = (resolution: PermissionResolution) => {
         removeListener();
         handle.hide();
-        this.tui.setFocus(this.input);
+        this.tui.setFocus(this.editor);
         resolve(resolution);
       };
       list.onSelect = (item) => {
@@ -436,6 +500,7 @@ export class TuiApp {
         break;
       case "reload":
         this.onReload?.();
+        this.refreshAutocomplete();
         this.appendSystem("扩展已重载。", "success");
         break;
       default: {
@@ -457,7 +522,7 @@ export class TuiApp {
         this.appendSystem(`未知命令：/${name}（/help 查看）`, "warning");
       }
     }
-    this.tui.setFocus(this.input);
+    this.tui.setFocus(this.editor);
   }
 
   /** 通用选择器（15b：树节点/fork 目标/会话列表），返回选中项或 null */
@@ -481,7 +546,7 @@ export class TuiApp {
       const finish = (item: SelectItem | null) => {
         removeListener();
         handle.hide();
-        this.tui.setFocus(this.input);
+        this.tui.setFocus(this.editor);
         resolve(item);
       };
       list.onSelect = (item) => finish(item);
@@ -510,7 +575,7 @@ export class TuiApp {
       const finish = (value: string | null) => {
         removeListener();
         handle.hide();
-        this.tui.setFocus(this.input);
+        this.tui.setFocus(this.editor);
         resolve(value);
       };
       input.onSubmit = (value) => finish(value);
@@ -531,7 +596,7 @@ export class TuiApp {
     const close = () => {
       removeListener();
       handle.hide();
-      this.tui.setFocus(this.input);
+      this.tui.setFocus(this.editor);
     };
     // Esc 关闭
     const esc = this.tui.addInputListener((data) => {

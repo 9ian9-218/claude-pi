@@ -152,7 +152,7 @@ describe("会话命令键盘驱动（S15b）", () => {
       onSessionCommand: (n, r, a) => handleSessionCommand(a, ref, n, r),
     });
     app.tui.start();
-    app.input.onSubmit?.("/tree");
+    app.editor.onSubmit?.("/tree");
     await nextTick();
     // SelectList 默认选中第一条（根 user 消息）→ 回车
     term.onInput?.("\r");
@@ -177,7 +177,7 @@ describe("会话命令键盘驱动（S15b）", () => {
       onQuery: () => {},
       onSessionCommand: (n, r, a) => handleSessionCommand(a, ref, n, r),
     });
-    app.input.onSubmit?.("/session");
+    app.editor.onSubmit?.("/session");
     await nextTick();
     expect(app.getChatText()).toContain("文件:");
     app.stop();

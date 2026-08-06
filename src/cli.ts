@@ -229,6 +229,21 @@ async function runTui(
   const app = new TuiApp({
     terminal: new ProcessTerminal(),
     initialText: "claude-pi — 输入 /help 查看命令\n\n",
+    autocompleteCommands: () => [
+      {
+        name: "model",
+        description: "切换模型",
+        getArgumentCompletions: async () => {
+          const { getModelRuntime } = await import("./ai-runtime.ts");
+          const runtime = await getModelRuntime();
+          const models = runtime.getAvailableSnapshot();
+          return models.map((m) => ({
+            value: `${m.provider}/${m.id}`,
+            label: `${m.provider}/${m.id}`,
+          }));
+        },
+      },
+    ],
     onNewSession: () => {
       sessionRef.current = SessionManager.create(process.cwd());
     },
