@@ -25,6 +25,7 @@ import { UserMessageComponent } from "./messages/user-message.ts";
 import { AssistantMessageComponent } from "./messages/assistant-message.ts";
 import { SystemMessageComponent } from "./messages/system-message.ts";
 import { ToolExecutionComponent } from "./messages/tool-execution.ts";
+import { Footer } from "./footer.ts";
 import { getSlashCommand, listSlashCommands } from "../commands.ts";
 import { theme } from "./theme/theme.ts";
 import type { SwarmPermissionRequest, PermissionResolution } from "../permission-sync.ts";
@@ -128,7 +129,7 @@ export class TuiApp {
   private readonly onSessionCommand?: (name: string, rest: string, app: TuiApp) => Promise<void> | void;
   private readonly onReload?: () => void;
   private readonly statusTextFn?: () => string;
-  private readonly statusLine = new Text("", 1, 0);
+  private readonly footer: Footer;
   private readonly root = new Container();
   private busy = false;
   private running = true;
@@ -148,10 +149,10 @@ export class TuiApp {
     this.statusTextFn = options.statusText;
     this.autocompleteCommands = options.autocompleteCommands;
     this.chat = new MessageList();
-    this.statusLine.setText(`claude-pi`);
 
     const resizeAware = new ResizeAwareTerminal(options.terminal, () => this.layout());
     this.tui = new TUI(resizeAware);
+    this.footer = new Footer(this.tui);
     this.editor = new Editor(
       this.tui,
       {
@@ -169,7 +170,8 @@ export class TuiApp {
     this.refreshAutocomplete();
     this.root.addChild(this.chat);
     this.root.addChild(this.editor);
-    this.root.addChild(this.statusLine);
+    this.root.addChild(this.footer);
+    this.updateFooter();
 
     this.editor.onSubmit = (value) => {
       this.editor.addToHistory(value);
@@ -372,14 +374,24 @@ export class TuiApp {
     this.tui.requestRender();
   }
 
+  private updateFooter(): void {
+    const status = this.statusTextFn?.() ?? "";
+    const [model = "?", ...rest] = status.split(" | ");
+    this.footer.setInfo(model, rest.join(" | ") || process.cwd());
+  }
+
+  /** Working 状态（07）：agent-loop 运行时显示 spinner */
+  setWorking(working: boolean, message = "Working…"): void {
+    this.footer.setWorking(working, message);
+  }
+
   private layout(): void {
     const rows = this.tui.terminal.rows;
     this.chat.setViewportHeight(Math.max(3, rows - 3));
   }
 
   private updateStatus(): void {
-    const extra = this.statusTextFn ? ` | ${this.statusTextFn()}` : "";
-    this.statusLine.setText(`claude-pi${extra}`);
+    this.updateFooter();
     this.tui.requestRender();
   }
 
@@ -394,10 +406,12 @@ export class TuiApp {
     if (!trimmed) return;
     this.busy = true;
     this.updateStatus();
+    this.setWorking(true);
     this.appendMessage("user", trimmed);
     try {
       await this.onQuery(trimmed);
     } finally {
+      this.setWorking(false);
       this.busy = false;
       this.updateStatus();
       this.tui.setFocus(this.editor);
