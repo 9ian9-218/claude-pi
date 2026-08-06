@@ -26,6 +26,7 @@ import { AssistantMessageComponent } from "./messages/assistant-message.ts";
 import { SystemMessageComponent } from "./messages/system-message.ts";
 import { ToolExecutionComponent } from "./messages/tool-execution.ts";
 import { Footer } from "./footer.ts";
+import { SELECT_LIST_THEME, overlayTitle } from "./select-style.ts";
 import { getSlashCommand, listSlashCommands } from "../commands.ts";
 import { theme } from "./theme/theme.ts";
 import type { SwarmPermissionRequest, PermissionResolution } from "../permission-sync.ts";
@@ -159,13 +160,7 @@ export class TuiApp {
       this.tui,
       {
         borderColor: (s) => theme.fg("border", s),
-        selectList: {
-          selectedPrefix: (t) => theme.fg("accent", `▸ ${t}`),
-          selectedText: (t) => theme.bold(t),
-          description: (t) => theme.fg("dim", t),
-          scrollInfo: (t) => theme.fg("dim", t),
-          noMatch: (t) => theme.fg("dim", t),
-        },
+        selectList: SELECT_LIST_THEME,
       },
       { paddingX: 1 },
     );
@@ -234,6 +229,16 @@ export class TuiApp {
       if (data === "\x1b[6~") {
         this.chat.scrollDown(this.chat.getViewportHeight());
         this.tui.requestRender();
+        return { consume: true };
+      }
+      return { consume: false };
+    });
+    // 09：Ctrl+L 打开模型选择器（对齐 pi app.model.select）
+    this.tui.addInputListener((data) => {
+      if (data === "\x0c") {
+        if (!this.busy) {
+          void this.openModelSelector();
+        }
         return { consume: true };
       }
       return { consume: false };
@@ -475,17 +480,11 @@ export class TuiApp {
           description: "拒绝本次调用",
         },
       ];
-      const list = new SelectList(items, 5, {
-        selectedPrefix: (t) => `▸ ${t}`,
-        selectedText: (t) => `\x1b[1m${t}\x1b[0m`,
-        description: (t) => `\x1b[90m${t}\x1b[0m`,
-        scrollInfo: (t) => `\x1b[90m${t}\x1b[0m`,
-        noMatch: (t) => `\x1b[90m${t}\x1b[0m`,
-      });
+      const list = new SelectList(items, 5, SELECT_LIST_THEME);
       const overlay = new Container();
       overlay.addChild(
         new Text(
-          `\x1b[33m⚠  Permission request from ${label}\x1b[0m\n` +
+          `${theme.fg("warning", `⚠ Permission request from ${label}`)}\n` +
             `   Tool: ${request.toolName}\n` +
             `   Reason: ${request.description}\n` +
             `   Input: ${JSON.stringify(request.input).slice(0, 200)}\n`,
@@ -578,18 +577,48 @@ export class TuiApp {
     this.tui.setFocus(this.editor);
   }
 
+  /** 09：模型选择器（Ctrl+L；对齐 pi app.model.select） */
+  private async openModelSelector(): Promise<void> {
+    const { getModelRuntime } = await import("../ai-runtime.ts");
+    let models: Array<{ provider: string; id: string }> = [];
+    try {
+      const runtime = await getModelRuntime();
+      models = runtime
+        .getAvailableSnapshot()
+        .map((m) => ({ provider: m.provider, id: m.id }));
+    } catch {
+      models = [];
+    }
+    if (models.length === 0) {
+      this.appendSystem("无可用模型（/login 或配置 models.json）", "warning");
+      return;
+    }
+    const items: SelectItem[] = models.map((m) => ({
+      value: `${m.provider}/${m.id}`,
+      label: `${m.provider}/${m.id}`,
+      description: m.provider,
+    }));
+    const picked = await this.showSelector(items, "选择模型");
+    if (!picked) return;
+    const { setCurrentModel } = await import("../ai-runtime.ts");
+    const found = models.find((m) => `${m.provider}/${m.id}` === picked.value);
+    if (found) {
+      const runtime = await getModelRuntime();
+      const model = runtime.getModel(found.provider, found.id);
+      if (model) {
+        setCurrentModel(model);
+        this.appendSystem(`已切换模型：${picked.value}`, "success");
+        this.updateFooter();
+      }
+    }
+  }
+
   /** 通用选择器（15b：树节点/fork 目标/会话列表），返回选中项或 null */
   showSelector(items: SelectItem[], title: string): Promise<SelectItem | null> {
     return new Promise((resolve) => {
-      const list = new SelectList(items, 8, {
-        selectedPrefix: (t) => `▸ ${t}`,
-        selectedText: (t) => `\x1b[1m${t}\x1b[0m`,
-        description: (t) => `\x1b[90m${t}\x1b[0m`,
-        scrollInfo: (t) => `\x1b[90m${t}\x1b[0m`,
-        noMatch: (t) => `\x1b[90m${t}\x1b[0m`,
-      });
+      const list = new SelectList(items, 8, SELECT_LIST_THEME);
       const overlay = new Container();
-      overlay.addChild(new Text(`\x1b[36m${title}\x1b[0m\n`, 1, 1));
+      overlay.addChild(new Text(`${overlayTitle(title)}\n`, 1, 1));
       overlay.addChild(list);
       const handle = this.tui.showOverlay(overlay, { width: "70%", anchor: "center" });
       const removeListener = this.tui.addInputListener((data) => {
@@ -618,7 +647,7 @@ export class TuiApp {
     return new Promise((resolve) => {
       const input = new Input();
       const overlay = new Container();
-      overlay.addChild(new Text(`\x1b[36m${message}\x1b[0m\n`, 1, 1));
+      overlay.addChild(new Text(`${overlayTitle(message)}\n`, 1, 1));
       overlay.addChild(input);
       const handle = this.tui.showOverlay(overlay, { width: "70%", anchor: "center" });
       const removeListener = this.tui.addInputListener((data) => {
