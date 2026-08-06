@@ -315,6 +315,9 @@ async function runTui(
       }
     }, 100);
   });
+  // TTY raw-mode stdin 的读请求会永久保持事件循环存活（Node 行为）；
+  // 对齐 pi：显式退出。
+  process.exit(0);
 }
 
 async function main(): Promise<void> {
