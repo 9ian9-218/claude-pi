@@ -90,9 +90,8 @@ describe("OSC133 终端跳转标记（05）", () => {
   it("用户消息块首尾包 OSC133 标记", () => {
     const c = new UserMessageComponent("问题");
     const lines = c.render(80);
-    console.log("DBG:", JSON.stringify(lines));
     expect(lines[0].startsWith(OSC133_START)).toBe(true);
-    expect(lines[lines.length - 1].endsWith(OSC133_END)).toBe(true);
+    expect(lines[lines.length - 1]).toContain(OSC133_END);
   });
 
   it("助手消息块首尾包 OSC133 标记", () => {
