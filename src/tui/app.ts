@@ -25,6 +25,7 @@ import { UserMessageComponent } from "./messages/user-message.ts";
 import { AssistantMessageComponent } from "./messages/assistant-message.ts";
 import { SystemMessageComponent } from "./messages/system-message.ts";
 import { ToolExecutionComponent } from "./messages/tool-execution.ts";
+import { StartupMessageComponent } from "./messages/startup-message.ts";
 import { Footer } from "./footer.ts";
 import { SELECT_LIST_THEME, overlayTitle } from "./select-style.ts";
 import { getSlashCommand, listSlashCommands } from "../commands.ts";
@@ -142,6 +143,8 @@ export class TuiApp {
   private readonly toolComponents = new Map<string, ToolExecutionComponent>();
   /** 工具块折叠偏好：新块跟随此状态，Ctrl+O 切换全部（对齐 pi app.tools.expand） */
   private toolOutputExpanded = false;
+  /** 启动帮助消息（10）：Ctrl+O 同步展开/折叠 */
+  private startupMessage: StartupMessageComponent | null = null;
   private readonly autocompleteCommands?: () => Array<AutocompleteItem | SlashCommand>;
 
   constructor(options: TuiAppOptions) {
@@ -245,7 +248,8 @@ export class TuiApp {
     });
 
     if (options.initialText) {
-      this.appendSystem(options.initialText.trim(), "accent");
+      this.startupMessage = new StartupMessageComponent(options.initialText.trim());
+      this.chat.addChild(this.startupMessage);
     }
 
     this.layout();
@@ -305,12 +309,13 @@ export class TuiApp {
     this.tui.requestRender();
   }
 
-  /** Ctrl+O：切换全部工具块展开/折叠（对齐 pi app.tools.expand） */
+  /** Ctrl+O：切换全部工具块展开/折叠（对齐 pi app.tools.expand）；启动帮助同步 */
   toggleToolExpansion(): void {
     this.toolOutputExpanded = !this.toolOutputExpanded;
     for (const component of this.toolComponents.values()) {
       component.setExpanded(this.toolOutputExpanded);
     }
+    this.startupMessage?.setExpanded(this.toolOutputExpanded);
     this.tui.requestRender();
   }
 
@@ -536,10 +541,14 @@ export class TuiApp {
         this.appendSystem("新会话已开始。输入 /help 查看命令。", "accent");
         break;
       case "help":
-        this.appendSystem(
-          ["/new 开新会话", "/help 显示帮助", "/quit 退出", "/status 显示状态", "Ctrl+C / Esc 退出"].join("\n"),
-          "accent",
-        );
+        if (this.startupMessage) {
+          this.startupMessage.setExpanded(true);
+        } else {
+          this.appendSystem(
+            ["/new 开新会话", "/help 显示帮助", "/quit 退出", "/status 显示状态", "Ctrl+C / Esc 退出"].join("\n"),
+            "accent",
+          );
+        }
         break;
       case "quit":
       case "exit":
