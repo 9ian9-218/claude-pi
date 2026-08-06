@@ -1,7 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { TuiApp } from "./app.ts";
+import { MessageList } from "./messages/message-list.ts";
 import { AssistantMessageComponent } from "./messages/assistant-message.ts";
 import { UserMessageComponent } from "./messages/user-message.ts";
+import { SystemMessageComponent } from "./messages/system-message.ts";
+import { OSC133_END, OSC133_START } from "./messages/osc133.ts";
 import { theme } from "./theme/theme.ts";
 import type { Terminal } from "@earendil-works/pi-tui";
 
@@ -35,8 +38,6 @@ class FakeTerminal implements Terminal {
   onInput?: (data: string) => void;
 }
 
-const OSC133_START = "\x1b]133;A\x07";
-const OSC133_END = "\x1b]133;B\x07\x1b]133;C\x07";
 
 describe("thinking 块（05）", () => {
   it("thinking 增量渲染为斜体灰字，位于正文之前", () => {
@@ -131,5 +132,45 @@ describe("PgUp/PgDn 滚动（05）", () => {
     } finally {
       app.stop();
     }
+  });
+});
+
+
+describe("OSC133 窗口裁剪补偿（review 修复）", () => {
+  it("从 zone 中间切入时补 START 标记", () => {
+    const list = new MessageList();
+    list.setViewportHeight(2);
+    for (const t of ["s1", "s2"]) {
+      list.addChild(new SystemMessageComponent(t));
+    }
+    list.addChild(new UserMessageComponent("长内容"));
+    // 4 行总长，视口 2 → 窗口从用户消息（zone）内部切入
+    const lines = list.render(80);
+    expect(lines).toHaveLength(2);
+    expect(lines[0].startsWith(OSC133_START)).toBe(true);
+    expect(lines.join("")).toContain(OSC133_END);
+  });
+
+  it("从 zone 中间切出时补 END+FINAL 标记", () => {
+    const list = new MessageList();
+    list.setViewportHeight(2);
+    list.addChild(new UserMessageComponent("开头内容"));
+    for (const t of ["s1", "s2"]) {
+      list.addChild(new SystemMessageComponent(t));
+    }
+    list.scrollUp();
+    list.scrollUp();
+    const lines = list.render(80);
+    expect(lines.join("")).toContain(OSC133_END);
+  });
+
+  it("窗口完整落在 zone 内时标记不重复叠加", () => {
+    const list = new MessageList();
+    list.setViewportHeight(5);
+    list.addChild(new UserMessageComponent("短"));
+    const first = list.render(80).join("");
+    expect(first.split(OSC133_START).length - 1).toBe(1);
+    const again = list.render(80).join("");
+    expect(again.split(OSC133_START).length - 1).toBe(1);
   });
 });

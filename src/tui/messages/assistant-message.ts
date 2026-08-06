@@ -8,10 +8,7 @@
 import { Container, Markdown, Text } from "@earendil-works/pi-tui";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import type { TurnEndEvent } from "../../ui-events.ts";
-
-const OSC133_ZONE_START = "\x1b]133;A\x07";
-const OSC133_ZONE_END = "\x1b]133;B\x07";
-const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
+import { wrapOsc133Zone } from "./osc133.ts";
 
 export class AssistantMessageComponent extends Container {
   private mainMarkdown: Markdown;
@@ -128,15 +125,6 @@ export class AssistantMessageComponent extends Container {
   // ── OSC133 终端跳转标记（05）────────────────────────────────────────
 
   render(width: number): string[] {
-    const lines = super.render(width);
-    if (lines.length === 0) return lines;
-    if (lines.length === 1) {
-      lines[0] = OSC133_ZONE_START + lines[0] + OSC133_ZONE_END + OSC133_ZONE_FINAL;
-    } else {
-      lines[0] = OSC133_ZONE_START + lines[0];
-      lines[lines.length - 1] =
-        OSC133_ZONE_END + OSC133_ZONE_FINAL + lines[lines.length - 1];
-    }
-    return lines;
+    return wrapOsc133Zone(super.render(width));
   }
 }
