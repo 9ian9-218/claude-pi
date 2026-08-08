@@ -583,6 +583,16 @@ export class TuiApp {
       case "login":
         await handleLoginCommand(this, cmd.slice(1 + "login".length).trim());
         break;
+      case "model": {
+        // /model：无参数开选择器（同 Ctrl+L）；带参数按 provider/id 切换
+        const spec = cmd.slice(1 + "model".length).trim();
+        if (spec) {
+          await this.setModelBySpec(spec);
+        } else {
+          await this.openModelSelector();
+        }
+        break;
+      }
       case "quit":
       case "exit":
       case "q":
@@ -617,6 +627,47 @@ export class TuiApp {
       }
     }
     this.tui.setFocus(this.editor);
+  }
+
+  /** /model <spec>：解析 provider/id 或裸 id（跨 provider 搜索）并切换 */
+  private async setModelBySpec(spec: string): Promise<void> {
+    const { getModelRuntime, setCurrentModel, parseModelSpec } = await import("../ai-runtime.ts");
+    let runtime;
+    try {
+      runtime = await getModelRuntime();
+    } catch (e) {
+      this.appendSystem(`模型运行时加载失败：${String((e as Error).message)}`, "error");
+      return;
+    }
+    const { provider, id } = parseModelSpec(spec);
+    const found = provider
+      ? runtime.getModel(provider, id)
+      : runtime
+          .getProviders()
+          .map((p) => runtime.getModel(p.id, id))
+          .find((m) => m !== undefined);
+    if (found) {
+      setCurrentModel(found);
+      this.appendSystem(`已切换模型：${found.provider}/${found.id}`, "success");
+      this.updateFooter();
+      return;
+    }
+    let available: Array<{ provider: string; id: string }> = [];
+    try {
+      available = runtime
+        .getAvailableSnapshot()
+        .map((m) => ({ provider: m.provider, id: m.id }));
+    } catch {
+      available = [];
+    }
+    if (available.length === 0) {
+      this.appendSystem(`未找到模型 ${spec}（当前无可用模型，Ctrl+L 查看）`, "warning");
+    } else {
+      this.appendSystem(
+        `未找到模型 ${spec}。可用模型：\n${available.map((m) => `  ${m.provider}/${m.id}`).join("\n")}`,
+        "warning",
+      );
+    }
   }
 
   /** 09：模型选择器（Ctrl+L；对齐 pi app.model.select） */

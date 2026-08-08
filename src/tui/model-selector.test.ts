@@ -94,3 +94,109 @@ describe("模型选择器（09）", () => {
     }
   });
 });
+
+describe("/model 命令（回归：命令缺失，仅补全/帮助提示存在）", () => {
+  beforeEach(() => {
+    resetClient();
+  });
+
+  afterEach(() => {
+    resetClient();
+  });
+
+  function stubWithModels(models: ReturnType<typeof makeCompletionsModel>[]) {
+    const stub = {
+      getAvailableSnapshot: () => models,
+      getModel: (provider: string, id: string) =>
+        models.find((m) => m.provider === provider && m.id === id),
+      getProviders: () => [
+        {
+          id: "openai",
+          name: "OpenAI",
+          auth: {},
+          getModels: () => models,
+          stream: () => {
+            throw new Error("n/a");
+          },
+          streamSimple: () => {
+            throw new Error("n/a");
+          },
+        },
+      ],
+    } as unknown as ModelRuntime;
+    setModelRuntimeOverride(stub);
+  }
+
+  it("无参数打开模型选择器（overlay）", async () => {
+    stubWithModels([makeCompletionsModel("gpt-test", "http://localhost:9")]);
+    const term = new FakeTerminal();
+    const app = new TuiApp({ terminal: term, onQuery: () => {} });
+    app.tui.start();
+    try {
+      app.editor.onSubmit?.("/model");
+      await nextTick();
+      expect(term.writes.join("")).toContain("选择模型");
+    } finally {
+      app.stop();
+    }
+  });
+
+  it("/model <provider/id> 切换当前模型", async () => {
+    stubWithModels([makeCompletionsModel("gpt-test", "http://localhost:9")]);
+    const term = new FakeTerminal();
+    const app = new TuiApp({ terminal: term, onQuery: () => {} });
+    app.tui.start();
+    try {
+      app.editor.onSubmit?.("/model openai/gpt-test");
+      await nextTick();
+      expect(currentModelLabel()).toBe("openai/gpt-test");
+      expect(app.getChatText()).toContain("已切换模型");
+    } finally {
+      app.stop();
+    }
+  });
+
+  it("/model <裸 id> 跨 provider 搜索", async () => {
+    stubWithModels([makeCompletionsModel("gpt-test", "http://localhost:9")]);
+    const term = new FakeTerminal();
+    const app = new TuiApp({ terminal: term, onQuery: () => {} });
+    app.tui.start();
+    try {
+      app.editor.onSubmit?.("/model gpt-test");
+      await nextTick();
+      expect(currentModelLabel()).toBe("openai/gpt-test");
+    } finally {
+      app.stop();
+    }
+  });
+
+  it("/model <未知> 提示未找到并列出可用模型", async () => {
+    stubWithModels([makeCompletionsModel("gpt-test", "http://localhost:9")]);
+    const term = new FakeTerminal();
+    const app = new TuiApp({ terminal: term, onQuery: () => {} });
+    app.tui.start();
+    try {
+      app.editor.onSubmit?.("/model nope/x");
+      await nextTick();
+      expect(app.getChatText()).toContain("未找到模型 nope/x");
+      expect(app.getChatText()).toContain("openai/gpt-test");
+    } finally {
+      app.stop();
+    }
+  });
+
+  it("/model 无可用模型时提示", async () => {
+    stubWithModels([]);
+    const term = new FakeTerminal();
+    const app = new TuiApp({ terminal: term, onQuery: () => {} });
+    app.tui.start();
+    try {
+      app.editor.onSubmit?.("/model nope/x");
+      await nextTick();
+      expect(app.getChatText()).toContain("未找到模型");
+      expect(app.getChatText()).toContain("无可用模型");
+    } finally {
+      app.stop();
+    }
+  });
+});
