@@ -118,6 +118,7 @@ async function agentLoopInner(
       quietOutput: opts.quietOutput,
       tools: getOpenaiTools(opts.exitOnFinalContent && !opts.preserveSystem),
       uiEvents: opts.uiEvents,
+      thinkingLevel: opts.thinkingLevel,
       signal: opts.signal,
     });
     if (llmResult.action === "retry") {

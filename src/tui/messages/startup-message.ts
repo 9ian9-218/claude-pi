@@ -10,6 +10,7 @@ import { theme } from "../theme/theme.ts";
 const KEY_HINTS = [
   "Ctrl+O 折叠/展开工具输出与帮助",
   "Ctrl+T 折叠/展开 thinking",
+  "Shift+Tab 切换思考强度",
   "Esc 中断生成",
   "Ctrl+C 清空输入框",
   "Ctrl+D 空输入退出",
@@ -27,6 +28,7 @@ const COMMANDS = [
   "/name 设置会话名",
   "/session 会话信息",
   "/model 切换模型",
+  "/thinking 设置思考强度",
   "/status 显示状态",
   "/reload 重载扩展",
   "/help 显示帮助",

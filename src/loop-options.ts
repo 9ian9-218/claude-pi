@@ -4,6 +4,7 @@
  * 解耦身份（主/子/队友）、I/O 与特性开关。
  */
 import type { UiEventSink } from "./ui-events.ts";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 export class LoopOptions {
   readonly preserveSystem: boolean;
   readonly injectLeadNotifications: boolean;
@@ -15,6 +16,8 @@ export class LoopOptions {
   readonly skipMemoryStopHook: boolean;
   /** UI 事件通道（ADR-0008，架构 C）：单一广播出口（stream/tool/turnEnd） */
   readonly uiEvents?: UiEventSink;
+  /** 思考强度（/thinking、Shift+Tab 设置；off 不发 thinking 参数） */
+  readonly thinkingLevel?: ModelThinkingLevel;
   /** 用户中断信号（Esc 中止当前回合；不传则不可中断） */
   readonly signal?: AbortSignal;
 
@@ -28,6 +31,7 @@ export class LoopOptions {
     this.exitOnFinalContent = init.exitOnFinalContent ?? false;
     this.skipMemoryStopHook = init.skipMemoryStopHook ?? false;
     this.uiEvents = init.uiEvents;
+    this.thinkingLevel = init.thinkingLevel;
     this.signal = init.signal;
   }
 

@@ -22,7 +22,13 @@ import { getMCPHub } from "./mcp/hub.ts";
 import { getCurrentWorktreeTaskId } from "./worktree.ts";
 import { getWorkdir } from "./workdir.ts";
 import { ExtensionManager } from "./extensions/loader.ts";
-import { currentModelLabel } from "./ai-runtime.ts";
+import { currentModelLabel, getThinkingLevel } from "./ai-runtime.ts";
+
+/** 状态行思考强度后缀：非 off 时显示 `:level`（对齐 pi footer model:level） */
+function thinkingLabel(): string {
+  const level = getThinkingLevel();
+  return level === "off" ? "" : `:${level}`;
+}
 import { registerExtensionTool, buildTool } from "./tool.ts";
 import { registerSlashCommand, clearSlashCommands } from "./commands.ts";
 import { LoopOptions } from "./loop-options.ts";
@@ -257,7 +263,7 @@ async function runTui(
     onReload: () => {
       void extManager.reload(cliPaths);
     },
-    statusText: () => `${currentModelLabel()} | ${process.cwd()}`,
+    statusText: () => `${currentModelLabel()}${thinkingLabel()} | ${process.cwd()}`,
     onQuery: async (query) => {
       await triggerHooks("UserPromptSubmit", query);
       const session = sessionRef.current;
@@ -279,12 +285,22 @@ async function runTui(
           const ctx = session.buildSessionContext();
           await agentLoop(ctx.messages, {
             session,
-            loopOptions: new LoopOptions({ quietOutput: true, uiEvents: sink, signal }),
+            loopOptions: new LoopOptions({
+              quietOutput: true,
+              uiEvents: sink,
+              signal,
+              thinkingLevel: getThinkingLevel(),
+            }),
           });
         } else {
           const messages: ChatMessage[] = [{ role: "user", content: query }];
           await agentLoop(messages, {
-            loopOptions: new LoopOptions({ quietOutput: true, uiEvents: sink, signal }),
+            loopOptions: new LoopOptions({
+              quietOutput: true,
+              uiEvents: sink,
+              signal,
+              thinkingLevel: getThinkingLevel(),
+            }),
           });
         }
       } finally {

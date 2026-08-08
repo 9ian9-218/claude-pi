@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { MockOpenAI } from "../tests/helpers/mock-openai.ts";
 import { installMockModels } from "../tests/helpers/test-client.ts";
-import { sendMessages, resetClient, type ChatMessage } from "./client.ts";
+import { sendMessages, resetClient, setClientModels, type ChatMessage } from "./client.ts";
 
 let mock: MockOpenAI;
 
@@ -134,5 +134,54 @@ describe("sendMessages 流式（S1）", () => {
     expect(tc[0].function.arguments).toBe('{"pattern":"*.ts"}');
     expect(toolMsg).toBeDefined();
     expect((toolMsg as { tool_call_id?: string }).tool_call_id).toBe("call_1");
+  });
+});
+
+describe("thinkingLevel → stream options 透传（thinking 强度）", () => {
+  /** 包装当前 Models：抓 stream options（body 映射属 pi-ai provider 职责） */
+  function spyStream() {
+    const models = installMockModels(mock.baseUrl);
+    const seen: unknown[] = [];
+    const orig = models.stream.bind(models);
+    (models as unknown as { stream: unknown }).stream = (
+      m: unknown,
+      c: unknown,
+      o: unknown,
+    ) => {
+      seen.push(o);
+      return orig(m as never, c as never, o as never);
+    };
+    setClientModels(models);
+    return seen;
+  }
+
+  it("high → stream options.reasoningEffort = high", async () => {
+    const seen = spyStream();
+    mock.always(() => ({
+      kind: "sse",
+      chunks: [{ content: "ok", finishReason: "stop" }],
+    }));
+    await sendMessages(plainMessages(), { quietOutput: true, thinkingLevel: "high" });
+    expect((seen[0] as Record<string, unknown>).reasoningEffort).toBe("high");
+  });
+
+  it("off → stream options 无 reasoningEffort", async () => {
+    const seen = spyStream();
+    mock.always(() => ({
+      kind: "sse",
+      chunks: [{ content: "ok", finishReason: "stop" }],
+    }));
+    await sendMessages(plainMessages(), { quietOutput: true, thinkingLevel: "off" });
+    expect((seen[0] as Record<string, unknown>).reasoningEffort).toBeUndefined();
+  });
+
+  it("未设置 → stream options 无 reasoningEffort", async () => {
+    const seen = spyStream();
+    mock.always(() => ({
+      kind: "sse",
+      chunks: [{ content: "ok", finishReason: "stop" }],
+    }));
+    await sendMessages(plainMessages(), { quietOutput: true });
+    expect((seen[0] as Record<string, unknown>).reasoningEffort).toBeUndefined();
   });
 });

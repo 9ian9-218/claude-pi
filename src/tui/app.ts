@@ -211,6 +211,10 @@ export class TuiApp {
       // 04：Ctrl+O 折叠/展开全部工具输出（对齐 pi app.tools.expand）
       this.toggleToolExpansion();
     });
+    this.keymap.bind("\x1b[Z", () => {
+      // 对齐 pi app.thinking.cycle：Shift+Tab 循环思考强度
+      void this.cycleThinkingLevel();
+    });
     this.keymap.bind("\x14", () => {
       // 05：Ctrl+T 折叠/展开 thinking 块（对齐 pi app.thinking.toggle）
       this.toggleThinkingExpansion();
@@ -595,6 +599,16 @@ export class TuiApp {
         }
         break;
       }
+      case "thinking": {
+        // /thinking [level]：无参数显示当前；带参数显式设置
+        const spec = cmd.slice(1 + "thinking".length).trim();
+        if (spec) {
+          await this.setThinkingBySpec(spec);
+        } else {
+          await this.showThinkingStatus();
+        }
+        break;
+      }
       case "quit":
       case "exit":
       case "q":
@@ -629,6 +643,50 @@ export class TuiApp {
       }
     }
     this.tui.setFocus(this.editor);
+  }
+
+  /** /thinking 实现（Shift+Tab 与 /thinking 共用） */
+  private async cycleThinkingLevel(): Promise<void> {
+    const { cycleThinkingLevel, getThinkingLevel } = await import("../ai-runtime.ts");
+    const level = await cycleThinkingLevel();
+    if (level === null) {
+      this.appendSystem("当前模型不支持思考（或未选择模型）", "warning");
+      return;
+    }
+    this.appendSystem(`Thinking level: ${level}`, "success");
+    this.updateFooter();
+  }
+
+  private async setThinkingBySpec(spec: string): Promise<void> {
+    const {
+      setThinkingLevelFromSpec,
+      getSupportedThinkingLevels,
+      getThinkingLevel,
+    } = await import("../ai-runtime.ts");
+    const ok = await setThinkingLevelFromSpec(spec);
+    if (!ok) {
+      this.appendSystem(
+        `未知级别：${spec}（可用：off / minimal / low / medium / high / xhigh / max）`,
+        "warning",
+      );
+      return;
+    }
+    const supported = await getSupportedThinkingLevels();
+    const hint = supported ? `（模型支持：${supported.join(" / ")}）` : "";
+    this.appendSystem(`Thinking level: ${getThinkingLevel()}${hint}`, "success");
+    this.updateFooter();
+  }
+
+  private async showThinkingStatus(): Promise<void> {
+    const {
+      getThinkingLevel,
+      getSupportedThinkingLevels,
+    } = await import("../ai-runtime.ts");
+    const supported = await getSupportedThinkingLevels();
+    this.appendSystem(
+      `当前思考强度：${getThinkingLevel()}。${supported ? `可用：${supported.join(" / ")}` : "当前模型不支持思考"}（Shift+Tab 循环）`,
+      "accent",
+    );
   }
 
   /** /model <spec>：解析 provider/id 或裸 id（跨 provider 搜索）并切换 */

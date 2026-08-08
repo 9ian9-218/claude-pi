@@ -20,6 +20,7 @@ import { reactiveCompact } from "./compact.ts";
 import { CONTINUATION_PROMPT } from "./prompt.ts";
 import { readPiSettings, setSettingsOverrideForTest } from "./settings.ts";
 import type { UiEventSink } from "./ui-events.ts";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 
 export { DEFAULT_MAX_TOKENS };
 
@@ -85,6 +86,8 @@ export interface RecoveryOptions {
   tools?: unknown[];
   /** UI 事件通道（架构 C）：透传给 client 的 stream 广播 */
   uiEvents?: UiEventSink;
+  /** 思考强度：透传给 client（/thinking、Shift+Tab 设置） */
+  thinkingLevel?: ModelThinkingLevel;
   /** 用户中断信号（ADR-0008）：中断时跳过 appendErrorMessage，不落脏数据 */
   signal?: AbortSignal;
 }
@@ -105,6 +108,7 @@ export async function sendMessagesWithRecovery(
     quietOutput,
     tools,
     uiEvents,
+    thinkingLevel,
     signal,
   } = options;
 
@@ -117,6 +121,7 @@ export async function sendMessagesWithRecovery(
       quietOutput,
       tools,
       uiEvents,
+      thinkingLevel,
       signal,
     });
 
