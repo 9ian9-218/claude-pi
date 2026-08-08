@@ -176,7 +176,7 @@ describe("TuiApp（S14 重构）", () => {
       },
     });
     app.editor.onSubmit?.("/help"); // 命令不置 busy
-    app["busy"] = true;
+    app["turns"].setBusy(true);
     app.editor.onSubmit?.("第二条");
     await nextTick();
     expect(calls).toBe(0);

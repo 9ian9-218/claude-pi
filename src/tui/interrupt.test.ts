@@ -68,12 +68,12 @@ describe("Esc 中断（08）", () => {
       app.editor.setText("问题");
       app.editor.onSubmit?.("问题");
       await nextTick();
-      expect(app["busy"]).toBe(true);
+      expect(app["turns"].isBusy()).toBe(true);
       term.onInput?.("\x1b"); // Esc
-      expect(app["abortController"]?.signal.aborted).toBe(true);
+      expect(app.getTurnSignal()?.aborted).toBe(true);
       release();
       await nextTick();
-      expect(app["busy"]).toBe(false);
+      expect(app["turns"].isBusy()).toBe(false);
     } finally {
       app.stop();
     }
@@ -86,7 +86,7 @@ describe("Esc 中断（08）", () => {
     try {
       term.onInput?.("\x1b");
       expect(app.isRunning()).toBe(true);
-      expect(app["abortController"]).toBeNull();
+      expect(app.getTurnSignal()).toBeNull();
     } finally {
       app.stop();
     }

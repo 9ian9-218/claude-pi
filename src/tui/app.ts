@@ -28,6 +28,9 @@ import { ToolExecutionComponent } from "./messages/tool-execution.ts";
 import { StartupMessageComponent } from "./messages/startup-message.ts";
 import { Footer } from "./footer.ts";
 import { SELECT_LIST_THEME, overlayTitle } from "./select-style.ts";
+import { TurnController } from "./turn-controller.ts";
+import { ToolBlockRegistry } from "./tool-registry.ts";
+import { Keymap } from "./keymap.ts";
 import { getSlashCommand, listSlashCommands } from "../commands.ts";
 import { theme } from "./theme/theme.ts";
 import type { SwarmPermissionRequest, PermissionResolution } from "../permission-sync.ts";
@@ -133,16 +136,13 @@ export class TuiApp {
   private readonly statusTextFn?: () => string;
   private readonly footer: Footer;
   private readonly root = new Container();
-  private busy = false;
+  /** 架构 B：职责拆分 */
+  private readonly turns = new TurnController();
+  private readonly keymap = new Keymap();
+  private readonly tools: ToolBlockRegistry;
   private running = true;
   /** 当前流式助手块（beginAssistantTurn → endAssistantTurn） */
   private streamingComponent: AssistantMessageComponent | null = null;
-  /** 08：当前回合的中断控制器（Esc → abort → signal 链路） */
-  private abortController: AbortController | null = null;
-  /** 工具执行块注册表（04）：id → 组件 */
-  private readonly toolComponents = new Map<string, ToolExecutionComponent>();
-  /** 工具块折叠偏好：新块跟随此状态，Ctrl+O 切换全部（对齐 pi app.tools.expand） */
-  private toolOutputExpanded = false;
   /** 启动帮助消息（10）：Ctrl+O 同步展开/折叠 */
   private startupMessage: StartupMessageComponent | null = null;
   private readonly autocompleteCommands?: () => Array<AutocompleteItem | SlashCommand>;
@@ -155,6 +155,7 @@ export class TuiApp {
     this.statusTextFn = options.statusText;
     this.autocompleteCommands = options.autocompleteCommands;
     this.chat = new MessageList();
+    this.tools = new ToolBlockRegistry((c) => this.chat.addChild(c));
 
     const resizeAware = new ResizeAwareTerminal(options.terminal, () => this.layout());
     this.tui = new TUI(resizeAware);
@@ -180,72 +181,57 @@ export class TuiApp {
     };
 
     // 08：Esc 中断当前生成（对齐 pi app.interrupt）；空闲时放行（编辑器取消补全等）
-    this.tui.addInputListener((data) => {
-      if (data === "\x1b") {
-        if (this.busy) {
-          this.interrupt();
-          return { consume: true };
-        }
-      }
-      return { consume: false };
+    // 架构 B：全部键位经 Keymap 注册，单个全局监听器转发
+    this.keymap.bind("\x1b", () => {
+      // 08：Esc 中断生成（busy 时）；空闲时放行（编辑器取消补全等）
+      this.turns.interrupt();
     });
-
-    // 06：Ctrl+C 清空输入框（对齐 pi app.clear）；空输入时 Ctrl+D 退出（app.exit）
-    this.tui.addInputListener((data) => {
-      if (data === "\x03") {
-        this.editor.setText("");
-        this.tui.requestRender();
-        return { consume: true };
-      }
-      if (data === "\x04") {
-        if (!this.editor.getText()) {
-          this.running = false;
-          this.tui.stop();
-        }
-        return { consume: false };
-      }
-      return { consume: false };
+    this.keymap.bind("\x03", () => {
+      // 06：Ctrl+C 清空输入框（对齐 pi app.clear）
+      this.editor.setText("");
+      this.tui.requestRender();
     });
-
-    // 04：Ctrl+O 折叠/展开全部工具输出（对齐 pi app.tools.expand）
-    this.tui.addInputListener((data) => {
-      if (data === "\x0f") {
-        this.toggleToolExpansion();
-        return { consume: true };
+    this.keymap.bind("\x04", () => {
+      // 06：Ctrl+D 空输入时退出（对齐 pi app.exit）；非空放行给编辑器
+      if (!this.editor.getText()) {
+        this.exitApp();
       }
-      return { consume: false };
     });
-    // 05：Ctrl+T 折叠/展开 thinking 块（对齐 pi app.thinking.toggle）
-    this.tui.addInputListener((data) => {
-      if (data === "\x14") {
-        this.toggleThinkingExpansion();
-        return { consume: true };
-      }
-      return { consume: false };
+    this.keymap.bind("\x0f", () => {
+      // 04：Ctrl+O 折叠/展开全部工具输出（对齐 pi app.tools.expand）
+      this.toggleToolExpansion();
     });
-    // 05：PgUp/PgDn 整页滚动聊天区
-    this.tui.addInputListener((data) => {
-      if (data === "\x1b[5~") {
-        this.chat.scrollUp(this.chat.getViewportHeight());
-        this.tui.requestRender();
-        return { consume: true };
-      }
-      if (data === "\x1b[6~") {
-        this.chat.scrollDown(this.chat.getViewportHeight());
-        this.tui.requestRender();
-        return { consume: true };
-      }
-      return { consume: false };
+    this.keymap.bind("\x14", () => {
+      // 05：Ctrl+T 折叠/展开 thinking 块（对齐 pi app.thinking.toggle）
+      this.toggleThinkingExpansion();
     });
-    // 09：Ctrl+L 打开模型选择器（对齐 pi app.model.select）
-    this.tui.addInputListener((data) => {
-      if (data === "\x0c") {
-        if (!this.busy) {
-          void this.openModelSelector();
-        }
-        return { consume: true };
+    this.keymap.bind("\x1b[5~", () => {
+      // 05：PgUp 整页上翻
+      this.chat.scrollUp(this.chat.getViewportHeight());
+      this.tui.requestRender();
+    });
+    this.keymap.bind("\x1b[6~", () => {
+      // 05：PgDn 整页下翻
+      this.chat.scrollDown(this.chat.getViewportHeight());
+      this.tui.requestRender();
+    });
+    this.keymap.bind("\x0c", () => {
+      // 09：Ctrl+L 打开模型选择器（对齐 pi app.model.select）
+      if (!this.turns.isBusy()) {
+        void this.openModelSelector();
       }
-      return { consume: false };
+    });
+    // 键位语义：Esc 空闲时放行、Ctrl+D 非空时放行（编辑器删除字符）
+    this.tui.addInputListener((data) => {
+      const isEsc = data === "\x1b";
+      const isCtrlD = data === "\x04";
+      const isBusyInterrupt = isEsc && this.turns.isBusy();
+      const isExit = isCtrlD && !this.editor.getText();
+      if ((isEsc && !isBusyInterrupt) || (isCtrlD && !isExit)) {
+        return { consume: false }; // 放行给编辑器
+      }
+      const consumed = this.keymap.handle(data);
+      return consumed ? { consume: true } : { consume: false };
     });
 
     if (options.initialText) {
@@ -287,42 +273,22 @@ export class TuiApp {
     return this.chat.getText();
   }
 
-  /** 工具事件（04）：start 创建灰底块，result 更新绿/红底 */
+  /** 工具事件（04）：委托 ToolBlockRegistry */
   handleToolEvent(event: ToolUiEvent): void {
-    if (event.phase === "start") {
-      let component = this.toolComponents.get(event.id);
-      if (!component) {
-        component = new ToolExecutionComponent(event.name, event.id, event.args);
-        component.setExpanded(this.toolOutputExpanded);
-        this.toolComponents.set(event.id, component);
-        this.chat.addChild(component);
-      }
-    } else if (event.phase === "result") {
-      let component = this.toolComponents.get(event.id);
-      if (!component) {
-        component = new ToolExecutionComponent(event.name, event.id, event.args);
-        component.setExpanded(this.toolOutputExpanded);
-        this.toolComponents.set(event.id, component);
-        this.chat.addChild(component);
-      }
-      component.updateResult(event.result ?? "", event.isError ?? false);
-    }
+    this.tools.handleEvent(event);
     this.tui.requestRender();
   }
 
   /** Ctrl+O：切换全部工具块展开/折叠（对齐 pi app.tools.expand）；启动帮助同步 */
   toggleToolExpansion(): void {
-    this.toolOutputExpanded = !this.toolOutputExpanded;
-    for (const component of this.toolComponents.values()) {
-      component.setExpanded(this.toolOutputExpanded);
-    }
-    this.startupMessage?.setExpanded(this.toolOutputExpanded);
+    this.tools.toggleExpansion();
+    this.startupMessage?.setExpanded(this.tools.isExpanded());
     this.tui.requestRender();
   }
 
   /** 工具块折叠状态（测试用） */
   getToolOutputExpanded(): boolean {
-    return this.toolOutputExpanded;
+    return this.tools.isExpanded();
   }
 
   /** thinking 增量（05）：追加到当前助手块 thinking 区 */
@@ -345,26 +311,23 @@ export class TuiApp {
 
   /** 08：开启可中断回合，返回 AbortSignal（Esc 中止）；handleSubmit 自动调用 */
   beginTurn(): AbortSignal {
-    this.abortController?.abort();
-    this.abortController = new AbortController();
-    return this.abortController.signal;
+    return this.turns.beginTurn();
   }
 
   /** 08：当前回合的 AbortSignal（onQuery 内取用；空闲时 null） */
   getTurnSignal(): AbortSignal | null {
-    return this.abortController?.signal ?? null;
+    return this.turns.getSignal();
   }
 
   /** 08：回合结束，清理中断控制器 */
   endTurn(): void {
-    this.abortController = null;
+    this.turns.endTurn();
   }
 
-  /** 08：Esc 中断当前生成（busy 时）；空闲无操作 */
-  private interrupt(): void {
-    if (this.busy) {
-      this.abortController?.abort();
-    }
+  /** 退出应用（/quit、Ctrl+D 空输入） */
+  private exitApp(): void {
+    this.running = false;
+    this.tui.stop();
   }
 
   /** 开始助手回合：创建流式块，后续 appendStream 增量进该块 */
@@ -444,7 +407,7 @@ export class TuiApp {
   }
 
   private async handleSubmit(value: string): Promise<void> {
-    if (this.busy) return;
+    if (this.turns.isBusy()) return;
     const trimmed = value.trim();
     this.editor.setText("");
     if (trimmed.startsWith("/")) {
@@ -452,7 +415,7 @@ export class TuiApp {
       return;
     }
     if (!trimmed) return;
-    this.busy = true;
+    this.turns.setBusy(true);
     this.updateStatus();
     this.setWorking(true);
     this.appendMessage("user", trimmed);
@@ -462,7 +425,7 @@ export class TuiApp {
     } finally {
       this.endTurn();
       this.setWorking(false);
-      this.busy = false;
+      this.turns.setBusy(false);
       this.updateStatus();
       this.tui.setFocus(this.editor);
     }
