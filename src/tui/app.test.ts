@@ -319,3 +319,38 @@ describe("TUI 渲染树挂载（回归）", () => {
     }
   });
 });
+
+describe("渲染行数不超过终端高度（回归：超屏导致每帧全量重绘）", () => {
+  it("Working + 长内容时总渲染行数 ≤ rows", () => {
+    const term = new FakeTerminal();
+    const app = new TuiApp({ terminal: term, onQuery: () => {} });
+    app.tui.start();
+    try {
+      app.setWorking(true);
+      app.beginAssistantTurn();
+      for (let i = 0; i < 50; i++) {
+        app.appendStream(`第 ${i} 行内容${"字".repeat(60)}\n`);
+      }
+      app.endAssistantTurn();
+      const lines = app.tui.render(80);
+      expect(lines.length).toBeLessThanOrEqual(term.rows);
+    } finally {
+      app.stop();
+    }
+  });
+
+  it("空闲（无 Working）时总渲染行数 ≤ rows", () => {
+    const term = new FakeTerminal();
+    const app = new TuiApp({ terminal: term, onQuery: () => {} });
+    app.tui.start();
+    try {
+      app.beginAssistantTurn();
+      app.appendStream("你好");
+      app.endAssistantTurn();
+      const lines = app.tui.render(80);
+      expect(lines.length).toBeLessThanOrEqual(term.rows);
+    } finally {
+      app.stop();
+    }
+  });
+});

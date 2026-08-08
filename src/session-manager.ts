@@ -414,7 +414,8 @@ export class SessionManager {
           });
           break;
         case "model_change":
-          model = entry.modelId;
+          // 完整 spec（provider/id），启动恢复时精确还原（restoreModel）
+          model = `${entry.provider}/${entry.modelId}`;
           break;
         case "custom":
         case "label":

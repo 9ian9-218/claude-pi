@@ -46,6 +46,7 @@ describe("启动屏/欢迎页（10）", () => {
       expect(collapsed).toContain("输入 /help 查看命令");
       expect(collapsed).not.toContain("Ctrl+L");
       term.onInput?.("\x0f"); // Ctrl+O
+      app.chat.setViewportHeight(100); // 展开内容超视口，放大后断言完整清单
       const expanded = app.chat.render(80).join("");
       expect(expanded).toContain("Ctrl+L 模型选择器");
       expect(expanded).toContain("/tree 会话树导航");

@@ -263,6 +263,10 @@ async function runTui(
     onReload: () => {
       void extManager.reload(cliPaths);
     },
+    // 模型记忆：切换时写入会话 model_change，重启后 restoreModel 恢复
+    onModelChange: (m) => {
+      sessionRef.current?.appendModelChange(m.provider, m.id);
+    },
     statusText: () => `${currentModelLabel()}${thinkingLabel()} | ${process.cwd()}`,
     onQuery: async (query) => {
       await triggerHooks("UserPromptSubmit", query);
@@ -317,6 +321,15 @@ async function runTui(
   setAskUserImpl((req, label) => app.askPermission(req, label));
 
   app.start();
+  // 模型记忆：会话恢复时从 model_change 恢复当前模型（不阻塞启动）
+  if (sessionRef.current) {
+    const restored = sessionRef.current.buildSessionContext().model;
+    if (restored) {
+      setTimeout(() => {
+        void app.restoreModel(restored);
+      }, 0);
+    }
+  }
   // 架构 A：重模块（pi-ai/pi-coding-agent/typebox）后台预热，避免首次查询
   // 同步 import 阻塞事件循环 2–7s（交互冻结）。idle 时执行，不阻塞启动。
   setTimeout(() => {

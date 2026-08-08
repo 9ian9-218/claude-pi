@@ -60,6 +60,8 @@ export interface TuiAppOptions {
   onSessionCommand?: (name: string, rest: string, app: TuiApp) => Promise<void> | void;
   /** 扩展重载（16：/reload） */
   onReload?: () => void;
+  /** 模型切换通知（记忆：cli 写入会话 model_change，重启后恢复） */
+  onModelChange?: (model: { provider: string; id: string }) => void;
   statusText?: () => string;
   initialText?: string;
   /** 自动补全附加命令（06）：扩展命令 + /model 模型名等动态项 */
@@ -134,6 +136,7 @@ export class TuiApp {
   private readonly onNewSession?: () => void;
   private readonly onSessionCommand?: (name: string, rest: string, app: TuiApp) => Promise<void> | void;
   private readonly onReload?: () => void;
+  private readonly onModelChange?: (model: { provider: string; id: string }) => void;
   private readonly statusTextFn?: () => string;
   private readonly footer: Footer;
   private readonly root = new Container();
@@ -158,6 +161,7 @@ export class TuiApp {
     this.onNewSession = options.onNewSession;
     this.onSessionCommand = options.onSessionCommand;
     this.onReload = options.onReload;
+    this.onModelChange = options.onModelChange;
     this.statusTextFn = options.statusText;
     this.autocompleteCommands = options.autocompleteCommands;
     this.chat = new MessageList();
@@ -468,7 +472,12 @@ export class TuiApp {
 
   private layout(): void {
     const rows = this.tui.terminal.rows;
-    this.chat.setViewportHeight(Math.max(3, rows - 3));
+    // 精确高度预算：editor 渲染 3 行（border×2 + 输入行），footer 最坏
+    // 3 行（Working 态：info 1 + Loader 2，Loader 自带空行缓冲）。超屏会让
+    // 屏幕外行变化 → firstChanged < viewportTop → 每帧全量重绘（回归）。
+    const editorLines = 3;
+    const footerLines = 3;
+    this.chat.setViewportHeight(Math.max(3, rows - editorLines - footerLines));
   }
 
   private updateStatus(): void {
@@ -689,6 +698,30 @@ export class TuiApp {
     );
   }
 
+  /**
+   * 会话恢复模型（记忆）：按 spec（provider/id 或裸 id 跨 provider 搜索）
+   * 恢复当前模型；成功返回 true。启动时由 cli 从会话 model_change 调用。
+   */
+  async restoreModel(spec: string): Promise<boolean> {
+    const { getModelRuntime, setCurrentModel, parseModelSpec } = await import("../ai-runtime.ts");
+    try {
+      const runtime = await getModelRuntime();
+      const { provider, id } = parseModelSpec(spec);
+      const found = provider
+        ? runtime.getModel(provider, id)
+        : runtime
+            .getProviders()
+            .map((p) => runtime.getModel(p.id, id))
+            .find((m) => m !== undefined);
+      if (!found) return false;
+      setCurrentModel(found);
+      this.updateFooter();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** /model <spec>：解析 provider/id 或裸 id（跨 provider 搜索）并切换 */
   private async setModelBySpec(spec: string): Promise<void> {
     const { getModelRuntime, setCurrentModel, parseModelSpec } = await import("../ai-runtime.ts");
@@ -708,6 +741,7 @@ export class TuiApp {
           .find((m) => m !== undefined);
     if (found) {
       setCurrentModel(found);
+      this.onModelChange?.({ provider: found.provider, id: found.id });
       this.appendSystem(`已切换模型：${found.provider}/${found.id}`, "success");
       this.updateFooter();
       return;
@@ -760,6 +794,7 @@ export class TuiApp {
       const model = runtime.getModel(found.provider, found.id);
       if (model) {
         setCurrentModel(model);
+        this.onModelChange?.({ provider: model.provider, id: model.id });
         this.appendSystem(`已切换模型：${picked.value}`, "success");
         this.updateFooter();
       }

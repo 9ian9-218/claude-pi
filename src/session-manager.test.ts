@@ -173,7 +173,7 @@ describe("扩展 entry（S12）", () => {
     // custom/label/session_info 不参与上下文
     const ctx = s.buildSessionContext();
     expect(ctx.messages).toHaveLength(1);
-    expect(ctx.model).toBe("gpt-test");
+    expect(ctx.model).toBe("openai/gpt-test"); // 完整 spec（恢复用）
   });
 });
 

@@ -239,3 +239,100 @@ describe("选择器方向键重绘（回归：监听器链路径不 requestRende
     }
   });
 });
+
+describe("模型记忆（回归：重启后丢失）", () => {
+  beforeEach(() => {
+    resetClient();
+  });
+
+  afterEach(() => {
+    resetClient();
+  });
+
+  it("/model <id> 切换触发 onModelChange（写会话 model_change）", async () => {
+    const modelA = makeCompletionsModel("gpt-test", "http://localhost:9");
+    const modelB = makeCompletionsModel("gpt-big", "http://localhost:9");
+    const stub = {
+      getAvailableSnapshot: () => [modelA, modelB],
+      getModel: (provider: string, id: string) =>
+        [modelA, modelB].find((m) => m.provider === provider && m.id === id),
+    } as unknown as ModelRuntime;
+    setModelRuntimeOverride(stub);
+    const changes: Array<{ provider: string; id: string }> = [];
+    const term = new FakeTerminal();
+    const app = new TuiApp({
+      terminal: term,
+      onQuery: () => {},
+      onModelChange: (m) => changes.push(m),
+    });
+    app.tui.start();
+    try {
+      app.editor.onSubmit?.("/model openai/gpt-big");
+      await nextTick();
+      expect(changes).toEqual([{ provider: "openai", id: "gpt-big" }]);
+    } finally {
+      app.stop();
+    }
+  });
+
+  it("restoreModel 按 spec 恢复当前模型（裸 id 跨 provider）", async () => {
+    const modelA = makeCompletionsModel("gpt-test", "http://localhost:9");
+    const stub = {
+      getAvailableSnapshot: () => [modelA],
+      getModel: (provider: string, id: string) =>
+        modelA.provider === provider && modelA.id === id ? modelA : undefined,
+      getProviders: () => [
+        {
+          id: "openai",
+          name: "OpenAI",
+          auth: {},
+          getModels: () => [modelA],
+          stream: () => {
+            throw new Error("n/a");
+          },
+          streamSimple: () => {
+            throw new Error("n/a");
+          },
+        },
+      ],
+    } as unknown as ModelRuntime;
+    setModelRuntimeOverride(stub);
+    const term = new FakeTerminal();
+    const app = new TuiApp({
+      terminal: term,
+      onQuery: () => {},
+      statusText: () => `${currentModelLabel()} | /test`,
+    });
+    app.tui.start();
+    try {
+      const ok = await app.restoreModel("gpt-test");
+      expect(ok).toBe(true);
+      expect(currentModelLabel()).toBe("openai/gpt-test");
+      // footer 状态行已更新
+      const footer = app["footer"] as { getText(): string };
+      expect(footer.getText()).toContain("openai/gpt-test");
+    } finally {
+      app.stop();
+    }
+  });
+
+  it("restoreModel 未知模型返回 false 不改变状态", async () => {
+    const modelA = makeCompletionsModel("gpt-test", "http://localhost:9");
+    const stub = {
+      getModel: (provider: string, id: string) =>
+        modelA.provider === provider && modelA.id === id ? modelA : undefined,
+      getProviders: () => [],
+    } as unknown as ModelRuntime;
+    setModelRuntimeOverride(stub);
+    const term = new FakeTerminal();
+    const app = new TuiApp({ terminal: term, onQuery: () => {} });
+    app.tui.start();
+    try {
+      const ok = await app.restoreModel("nope/x");
+      expect(ok).toBe(false);
+      expect(currentModelLabel()).toBe("?");
+    } finally {
+      app.stop();
+    }
+  });
+});
