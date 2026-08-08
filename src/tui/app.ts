@@ -532,6 +532,8 @@ export class TuiApp {
       // Container 无 handleInput——用全局输入监听把按键转发给 SelectList
       const removeListener = this.tui.addInputListener((data) => {
         list.handleInput(data);
+        // 监听器链路径不自动 requestRender：方向键后显式重绘
+        this.tui.requestRender();
         return { consume: true };
       });
       const finish = (resolution: PermissionResolution) => {
@@ -716,6 +718,9 @@ export class TuiApp {
       const handle = this.tui.showOverlay(overlay, { width: "70%", anchor: "center" });
       const removeListener = this.tui.addInputListener((data) => {
         list.handleInput(data);
+        // 监听器链路径不会自动 requestRender（仅焦点组件路径有），
+        // 方向键移动选中后必须显式重绘（回归：高亮不移动）
+        this.tui.requestRender();
         return { consume: true };
       });
       const finish = (item: SelectItem | null) => {

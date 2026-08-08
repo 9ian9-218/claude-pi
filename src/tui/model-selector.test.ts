@@ -200,3 +200,42 @@ describe("/model 命令（回归：命令缺失，仅补全/帮助提示存在�
     }
   });
 });
+
+describe("选择器方向键重绘（回归：监听器链路径不 requestRender）", () => {
+  beforeEach(() => {
+    resetClient();
+  });
+
+  afterEach(() => {
+    resetClient();
+  });
+
+  it("Ctrl+L 打开选择器后按 Down：渲染输出更新（选中高亮移动）", async () => {
+    const modelA = makeCompletionsModel("gpt-test", "http://localhost:9");
+    const modelB = makeCompletionsModel("gpt-big", "http://localhost:9");
+    const stub = {
+      getAvailableSnapshot: () => [modelA, modelB],
+      getModel: (provider: string, id: string) =>
+        [modelA, modelB].find((m) => m.provider === provider && m.id === id),
+    } as unknown as ModelRuntime;
+    setModelRuntimeOverride(stub);
+
+    const term = new FakeTerminal();
+    const app = new TuiApp({ terminal: term, onQuery: () => {} });
+    app.tui.start();
+    try {
+      term.onInput?.("\x0c");
+      await nextTick();
+      const before = term.writes.join("");
+      expect(before).toContain("选择模型"); // 选择器已打开
+      term.onInput?.("\x1b[B");
+      await nextTick();
+      const downDiff = term.writes.join("").slice(before.length);
+      // 修复前：监听器链处理输入后不 requestRender → Down 后无任何重绘输出
+      // 修复后：重绘 diff 含第二项（选中高亮移动到 gpt-big）
+      expect(downDiff).toMatch(/→[^\r\n]*gpt-big/);
+    } finally {
+      app.stop();
+    }
+  });
+});
