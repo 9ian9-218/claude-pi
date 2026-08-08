@@ -158,6 +158,7 @@ export class TuiApp {
 
     const resizeAware = new ResizeAwareTerminal(options.terminal, () => this.layout());
     this.tui = new TUI(resizeAware);
+    this.tui.addChild(this.root);
     this.footer = new Footer(this.tui);
     this.editor = new Editor(
       this.tui,

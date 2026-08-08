@@ -298,3 +298,24 @@ describe("通知与状态（S15c）", () => {
     expect(lines).toContain("completed");
   });
 });
+
+describe("TUI 渲染树挂载（回归）", () => {
+  it("root 挂在 TUI 上：渲染输出包含聊天区与编辑器", () => {
+    const term = new FakeTerminal();
+    const app = new TuiApp({
+      terminal: term,
+      onQuery: () => {},
+      initialText: "启动文本-REG",
+    });
+    app.tui.start();
+    try {
+      const lines = app.tui.render(80).join("");
+      // 聊天区（startup message）在渲染树中
+      expect(lines).toContain("启动文本-REG");
+      // 编辑器边框（borderColor 渲染）在渲染树中
+      expect(lines).toContain("─");
+    } finally {
+      app.stop();
+    }
+  });
+});
