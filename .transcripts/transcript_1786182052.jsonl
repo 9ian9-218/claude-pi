@@ -1,0 +1,3 @@
+{"role":"user","content":"message 1 xxxxxxxxxxxxxxxxxxxx"}
+{"role":"assistant","content":"reply 1","tool_calls":[{"id":"call_1","type":"function","function":{"name":"x","arguments":"{}"}}]}
+{"role":"tool","tool_call_id":"call_1","content":"result 1"}

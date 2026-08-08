@@ -25,6 +25,7 @@ import { currentModelLabel } from "./ai-runtime.ts";
 import { registerExtensionTool, buildTool } from "./tool.ts";
 import { registerSlashCommand, clearSlashCommands } from "./commands.ts";
 import { LoopOptions } from "./loop-options.ts";
+import { warmUp } from "./warmup.ts";
 import { TEAM_LEAD_NAME } from "./teammates/constants.ts";
 import { createTeam, readTeamConfig } from "./teammates/team-helpers.ts";
 import { startLeadInboxPoller } from "./teammates/poller.ts";
@@ -305,6 +306,11 @@ async function runTui(
   setAskUserImpl((req, label) => app.askPermission(req, label));
 
   app.start();
+  // 架构 A：重模块（pi-ai/pi-coding-agent/typebox）后台预热，避免首次查询
+  // 同步 import 阻塞事件循环 2–7s（交互冻结）。idle 时执行，不阻塞启动。
+  setTimeout(() => {
+    void warmUp();
+  }, 300);
   // 事件循环由 pi-tui 驱动；退出条件由 /quit / Esc / Ctrl+C 触发
   await new Promise<void>((resolve) => {
     const check = setInterval(() => {
