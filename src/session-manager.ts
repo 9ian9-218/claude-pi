@@ -120,6 +120,19 @@ function newSessionPath(cwd: string): string {
 
 // ── SessionManager ────────────────────────────────────────────────────────
 
+export interface SessionListItem {
+  path: string;
+  timestamp: number;
+  id: string;
+  /** 会话名（session_info.name） */
+  name: string | null;
+  /** 第一条 user 消息文本（预览） */
+  firstMessage: string;
+  messageCount: number;
+  /** 最后活动时间（最后一个 entry 的时间戳） */
+  lastActivity: number;
+}
+
 export class SessionManager {
   private header: SessionHeader;
   private entries: SessionEntry[] = [];
@@ -197,7 +210,8 @@ export class SessionManager {
     return new SessionManager(header, null, true);
   }
 
-  static list(cwd: string): Array<{ path: string; timestamp: number; id: string }> {
+  /** 会话列表（resume 选择器用）：name/firstMessage/消息数/最后活动，按最后活动降序 */
+  static list(cwd: string): SessionListItem[] {
     const dir = sessionDirFor(cwd);
     if (!fs.existsSync(dir)) return [];
     return fs
@@ -206,13 +220,52 @@ export class SessionManager {
       .map((f) => {
         const p = path.join(dir, f);
         try {
-          const header = JSON.parse(fs.readFileSync(p, "utf8").split("\n")[0]) as SessionHeader;
-          return { path: p, timestamp: Date.parse(header.timestamp) || 0, id: header.id };
+          const raw = fs.readFileSync(p, "utf8").split("\n").filter(Boolean);
+          const header = JSON.parse(raw[0]) as SessionHeader;
+          let name: string | null = null;
+          let firstMessage = "";
+          let messageCount = 0;
+          let lastActivity = Date.parse(header.timestamp) || 0;
+          for (const line of raw.slice(1)) {
+            try {
+              const entry = JSON.parse(line) as SessionEntry;
+              const ts = Date.parse(entry.timestamp);
+              if (ts > lastActivity) lastActivity = ts;
+              if (entry.type === "session_info" && (entry as SessionInfoEntry).name && !name) {
+                name = (entry as SessionInfoEntry).name!;
+              } else if (entry.type === "message") {
+                messageCount += 1;
+                const msg = (entry as { message: ChatMessage }).message;
+                if (!firstMessage && msg.role === "user" && msg.content) {
+                  firstMessage = String(msg.content).slice(0, 80);
+                }
+              }
+            } catch {
+              // 跳过损坏行
+            }
+          }
+          return {
+            path: p,
+            timestamp: Date.parse(header.timestamp) || 0,
+            id: header.id,
+            name,
+            firstMessage,
+            messageCount,
+            lastActivity,
+          };
         } catch {
-          return { path: p, timestamp: 0, id: "" };
+          return {
+            path: p,
+            timestamp: 0,
+            id: "",
+            name: null,
+            firstMessage: "",
+            messageCount: 0,
+            lastActivity: 0,
+          };
         }
       })
-      .sort((a, b) => b.timestamp - a.timestamp);
+      .sort((a, b) => b.lastActivity - a.lastActivity);
   }
 
   // ── 追加（全部落盘） ────────────────────────────────────────────────────

@@ -330,6 +330,11 @@ async function runTui(
       }, 0);
     }
   }
+  // 会话恢复：渲染完整历史（对齐 pi renderSessionItems），
+  // 启动帮助之后、新查询之前；/new 清空不受影响
+  if (sessionRef.current) {
+    app.renderHistory(sessionRef.current.buildSessionContext().messages);
+  }
   // 架构 A：重模块（pi-ai/pi-coding-agent/typebox）后台预热，避免首次查询
   // 同步 import 阻塞事件循环 2–7s（交互冻结）。idle 时执行，不阻塞启动。
   setTimeout(() => {

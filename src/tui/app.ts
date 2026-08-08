@@ -20,6 +20,7 @@ import {
   type AutocompleteItem,
   type SlashCommand,
 } from "@earendil-works/pi-tui";
+import type { ChatMessage, ToolCallData } from "../client.ts";
 import { MessageList } from "./messages/message-list.ts";
 import { UserMessageComponent } from "./messages/user-message.ts";
 import { AssistantMessageComponent } from "./messages/assistant-message.ts";
@@ -825,6 +826,40 @@ export class TuiApp {
       list.onSelect = (item) => finish(item);
       list.onCancel = () => finish(null);
     });
+  }
+
+  /**
+   * 会话恢复：渲染历史消息（对齐 pi renderSessionItems）。
+   * user 消息渲染消息块；assistant 渲染助手块 + 工具调用渲染工具块
+   * （结果由后续 tool 消息填充）；tool 匹配工具块更新结果。
+   */
+  renderHistory(messages: ChatMessage[]): void {
+    for (const m of messages) {
+      if (m.role === "user") {
+        if (m.content) this.appendMessage("user", m.content);
+      } else if (m.role === "assistant") {
+        if (m.content) this.appendMessage("assistant", m.content);
+        for (const tc of (m.tool_calls ?? []) as ToolCallData[]) {
+          let args: Record<string, unknown> = {};
+          try {
+            args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
+          } catch {
+            args = {};
+          }
+          this.handleToolEvent({ phase: "start", name: tc.function.name, id: tc.id, args });
+        }
+      } else if (m.role === "tool") {
+        this.handleToolEvent({
+          phase: "result",
+          name: "",
+          id: m.tool_call_id ?? "",
+          args: {},
+          result: String(m.content ?? ""),
+          isError: false,
+        });
+      }
+    }
+    this.tui.requestRender();
   }
 
   /** 清空聊天区并显示系统消息（会话切换后） */
