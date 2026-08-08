@@ -23,7 +23,7 @@ import {
 import { getSystemPrompt, updateContext } from "./prompt.ts";
 import { parseModelSpec, resolveCurrentModel, resetAiRuntime } from "./ai-runtime.ts";
 import { resetSettingsCache } from "./settings.ts";
-import type { UiStreamDelta } from "./ui-events.ts";
+import type { UiEventSink } from "./ui-events.ts";
 
 export type ChatRole = "system" | "user" | "assistant" | "tool";
 
@@ -60,8 +60,8 @@ export interface SendOptions {
   preserveSystem?: boolean;
   quietOutput?: boolean;
   tools?: unknown[];
-  /** 流式内容回调（TUI 渲染路径；quietOutput 时也触发）——结构化增量：text/thinking */
-  onStream?: (delta: UiStreamDelta) => void;
+  /** UI 事件通道（架构 C）：stream 增量广播（text/thinking；quietOutput 时也触发） */
+  uiEvents?: UiEventSink;
   /** 用户中断信号（Esc）；中断时流以 stopReason="aborted" 结束 */
   signal?: AbortSignal;
   /** 思考强度（P4 接入；off 不发 thinking 参数） */
@@ -278,7 +278,7 @@ export async function sendMessages(
     preserveSystem = false,
     quietOutput,
     tools,
-    onStream,
+    uiEvents,
     signal,
     thinkingLevel,
   } = options;
@@ -309,9 +309,9 @@ export async function sendMessages(
   for await (const event of stream) {
     if (event.type === "text_delta") {
       if (!quiet) process.stdout.write(event.delta);
-      onStream?.({ kind: "text", delta: event.delta });
+      uiEvents?.emit("stream", { kind: "text", delta: event.delta });
     } else if (event.type === "thinking_delta") {
-      onStream?.({ kind: "thinking", delta: event.delta });
+      uiEvents?.emit("stream", { kind: "thinking", delta: event.delta });
     }
   }
 

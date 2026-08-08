@@ -117,7 +117,7 @@ async function agentLoopInner(
       preserveSystem: opts.preserveSystem,
       quietOutput: opts.quietOutput,
       tools: getOpenaiTools(opts.exitOnFinalContent && !opts.preserveSystem),
-      onStream: opts.onStream,
+      uiEvents: opts.uiEvents,
       signal: opts.signal,
     });
     if (llmResult.action === "retry") {
@@ -128,14 +128,17 @@ async function agentLoopInner(
     }
     if (llmResult.action === "abort") {
       // ADR-0008：中断（Esc）/不可恢复错误 → 回合结束事件（UI 显示中止态）
-      opts.onTurnEnd?.({
+      opts.uiEvents?.emit("turnEnd", {
         stopReason: llmResult.reason === "interrupted" ? "aborted" : "error",
         errorMessage: llmResult.errorMessage,
       });
       return null;
     }
     const message = llmResult.message;
-    opts.onTurnEnd?.({ stopReason: message.stopReason, errorMessage: message.errorMessage });
+    opts.uiEvents?.emit("turnEnd", {
+      stopReason: message.stopReason,
+      errorMessage: message.errorMessage,
+    });
 
     if (message.toolCalls) {
       const assistantMsg = message.modelDump() as unknown as ChatMessage;
@@ -151,7 +154,7 @@ async function agentLoopInner(
           parseError = String(e);
         }
         // ADR-0008：无论参数是否合法都广播工具事件，UI 据此渲染执行块
-        opts.onToolEvent?.({
+        opts.uiEvents?.emit("tool", {
           phase: "start",
           name: toolCall.function.name,
           id: toolCall.id,
@@ -194,7 +197,7 @@ async function agentLoopInner(
             await triggerHooks("PostToolUse", block, toolResult);
           }
         }
-        opts.onToolEvent?.({
+        opts.uiEvents?.emit("tool", {
           phase: "result",
           name: toolCall.function.name,
           id: toolCall.id,

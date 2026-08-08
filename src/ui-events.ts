@@ -31,3 +31,50 @@ export interface TurnEndEvent {
   stopReason?: string;
   errorMessage?: string;
 }
+
+/** 事件类型 → 载荷映射（架构 C：UiEventSink 的单一传播面） */
+export interface UiEventMap {
+  stream: UiStreamDelta;
+  tool: ToolUiEvent;
+  turnEnd: TurnEndEvent;
+}
+
+type UiEventKey = keyof UiEventMap;
+type UiEventHandler<K extends UiEventKey> = (event: UiEventMap[K]) => void;
+
+/**
+ * UiEventSink（架构 C）— 核心机制向 UI 广播事件的单一出口。
+ *
+ * agent-loop / error-recovery / client 只 emit；TUI 只订阅。新增事件只
+ * 动 UiEventMap 一处（替代 onStream/onToolEvent/onTurnEnd 逐层透传）。
+ * 无监听器时 emit 为 no-op（ADR-0008：不传 sink = 无 UI，行为不变）。
+ */
+export class UiEventSink {
+  private readonly listeners = new Map<UiEventKey, Set<UiEventHandler<UiEventKey>>>();
+
+  /** 订阅事件；返回取消订阅函数 */
+  on<K extends UiEventKey>(type: K, handler: UiEventHandler<K>): () => void {
+    let set = this.listeners.get(type);
+    if (!set) {
+      set = new Set();
+      this.listeners.set(type, set);
+    }
+    set.add(handler as UiEventHandler<UiEventKey>);
+    return () => {
+      set!.delete(handler as UiEventHandler<UiEventKey>);
+    };
+  }
+
+  /** 广播事件（无订阅者时 no-op） */
+  emit<K extends UiEventKey>(type: K, event: UiEventMap[K]): void {
+    const set = this.listeners.get(type);
+    if (!set) return;
+    for (const handler of set) {
+      handler(event as UiEventMap[UiEventKey]);
+    }
+  }
+
+  listenerCount(type: UiEventKey): number {
+    return this.listeners.get(type)?.size ?? 0;
+  }
+}

@@ -13,6 +13,7 @@ import { PROJECT_ROOT, initRuntime } from "./config.ts";
 import { agentLoop } from "./agent-loop.ts";
 import { triggerHooks } from "./hook.ts";
 import type { ChatMessage } from "./client.ts";
+import { UiEventSink } from "./ui-events.ts";
 import { SessionManager } from "./session-manager.ts";
 import { TuiApp } from "./tui/app.ts";
 import { handleSessionCommand } from "./tui/session-commands.ts";
@@ -258,6 +259,15 @@ async function runTui(
       const session = sessionRef.current;
       // 08：Esc 可中断回合（controller 由 handleSubmit 创建）
       const signal = app.getTurnSignal() ?? undefined;
+      // 架构 C：UI 事件经 UiEventSink 订阅（stream/tool/turnEnd）
+      const sink = new UiEventSink();
+      sink.on("stream", (d) => {
+        // 05：thinking 增量进 thinking 区，正文进正文区
+        if (d.kind === "thinking") app.appendThinking(d.delta);
+        else app.appendStream(d.delta);
+      });
+      sink.on("tool", (e) => app.handleToolEvent(e));
+      sink.on("turnEnd", (e) => app.finishAssistantTurn(e));
       app.beginAssistantTurn();
       try {
         if (session) {
@@ -265,31 +275,12 @@ async function runTui(
           const ctx = session.buildSessionContext();
           await agentLoop(ctx.messages, {
             session,
-            loopOptions: new LoopOptions({
-              quietOutput: true,
-              onStream: (d) => {
-                // 05：thinking 增量进 thinking 区，正文进正文区
-                if (d.kind === "thinking") app.appendThinking(d.delta);
-                else app.appendStream(d.delta);
-              },
-              onToolEvent: (e) => app.handleToolEvent(e),
-              onTurnEnd: (e) => app.finishAssistantTurn(e),
-              signal,
-            }),
+            loopOptions: new LoopOptions({ quietOutput: true, uiEvents: sink, signal }),
           });
         } else {
           const messages: ChatMessage[] = [{ role: "user", content: query }];
           await agentLoop(messages, {
-            loopOptions: new LoopOptions({
-              quietOutput: true,
-              onStream: (d) => {
-                if (d.kind === "thinking") app.appendThinking(d.delta);
-                else app.appendStream(d.delta);
-              },
-              onToolEvent: (e) => app.handleToolEvent(e),
-              onTurnEnd: (e) => app.finishAssistantTurn(e),
-              signal,
-            }),
+            loopOptions: new LoopOptions({ quietOutput: true, uiEvents: sink, signal }),
           });
         }
       } finally {

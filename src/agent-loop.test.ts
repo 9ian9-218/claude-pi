@@ -4,6 +4,7 @@ import { installMockModels } from "../tests/helpers/test-client.ts";
 import { resetClient, type ChatMessage } from "./client.ts";
 import { agentLoop } from "./agent-loop.ts";
 import { LoopOptions } from "./loop-options.ts";
+import { UiEventSink } from "./ui-events.ts";
 import { registerHook, HOOKS } from "./hook.ts";
 
 let mock: MockOpenAI;
@@ -100,13 +101,12 @@ describe("agentLoop（S2）", () => {
       ],
     }));
     const events: Array<{ phase: string; name: string; id: string; result?: string }> = [];
+    const sink = new UiEventSink();
+    sink.on("tool", (e) => events.push({ phase: e.phase, name: e.name, id: e.id, result: e.result }));
     const messages: ChatMessage[] = [{ role: "user", content: "go" }];
     await agentLoop(messages, {
       maxTurn: 1,
-      loopOptions: new LoopOptions({
-        quietOutput: true,
-        onToolEvent: (e) => events.push({ phase: e.phase, name: e.name, id: e.id, result: e.result }),
-      }),
+      loopOptions: new LoopOptions({ quietOutput: true, uiEvents: sink }),
     });
     expect(events).toHaveLength(2);
     expect(events[0]).toEqual({ phase: "start", name: "ghost_tool", id: "call_1" });
@@ -118,9 +118,11 @@ describe("agentLoop（S2）", () => {
   it("onTurnEnd（ADR-0008）：每回合结束广播 stopReason", async () => {
     mock.always(() => ({ kind: "sse", chunks: [{ content: "Hello!", finishReason: "stop" }] }));
     const turns: Array<{ stopReason?: string }> = [];
+    const sink = new UiEventSink();
+    sink.on("turnEnd", (e) => turns.push(e));
     const messages: ChatMessage[] = [{ role: "user", content: "hi" }];
     await agentLoop(messages, {
-      loopOptions: new LoopOptions({ quietOutput: true, onTurnEnd: (e) => turns.push(e) }),
+      loopOptions: new LoopOptions({ quietOutput: true, uiEvents: sink }),
     });
     expect(turns.length).toBeGreaterThanOrEqual(1);
     expect(turns[0].stopReason).toBe("stop");

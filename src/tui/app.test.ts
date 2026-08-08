@@ -190,6 +190,7 @@ describe("TuiApp + agentLoop 流式集成（S14）", () => {
     const { resetClient } = await import("../client.ts");
     const { agentLoop } = await import("../agent-loop.ts");
     const { LoopOptions } = await import("../loop-options.ts");
+    const { UiEventSink } = await import("../ui-events.ts");
     const { SessionManager, setSessionRoot } = await import("../session-manager.ts");
     const fs = await import("node:fs");
     const os = await import("node:os");
@@ -209,16 +210,15 @@ describe("TuiApp + agentLoop 流式集成（S14）", () => {
       const app = new TuiApp({ terminal: term, onQuery: () => {} });
       const session = SessionManager.create(process.cwd());
       session.appendMessage({ role: "user", content: "测试" });
+      const sink = new UiEventSink();
+      sink.on("stream", (d) => {
+        if (d.kind === "text") app.appendStream(d.delta);
+      });
       app.beginAssistantTurn();
       try {
         await agentLoop(session.buildSessionContext().messages, {
           session,
-          loopOptions: new LoopOptions({
-            quietOutput: true,
-            onStream: (d) => {
-              if (d.kind === "text") app.appendStream(d.delta);
-            },
-          }),
+          loopOptions: new LoopOptions({ quietOutput: true, uiEvents: sink }),
         });
       } finally {
         app.endAssistantTurn();

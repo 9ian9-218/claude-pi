@@ -5,6 +5,7 @@ import { installMockModels } from "../../tests/helpers/test-client.ts";
 import { resetClient } from "../client.ts";
 import { agentLoop } from "../agent-loop.ts";
 import { LoopOptions } from "../loop-options.ts";
+import { UiEventSink } from "../ui-events.ts";
 import type { Terminal } from "@earendil-works/pi-tui";
 
 class FakeTerminal implements Terminal {
@@ -110,6 +111,11 @@ describe("Esc 中断（08）", () => {
     const controller = new AbortController();
     controller.abort();
     const turns: Array<{ stopReason?: string }> = [];
+    const sink = new UiEventSink();
+    sink.on("turnEnd", (e) => {
+      turns.push(e);
+      app.finishAssistantTurn(e);
+    });
     app.beginAssistantTurn();
     const messages = [{ role: "user" as const, content: "go" }];
     try {
@@ -117,10 +123,7 @@ describe("Esc 中断（08）", () => {
         loopOptions: new LoopOptions({
           quietOutput: true,
           signal: controller.signal,
-          onTurnEnd: (e) => {
-            turns.push(e);
-            app.finishAssistantTurn(e);
-          },
+          uiEvents: sink,
         }),
       });
       expect(result).toBeNull();

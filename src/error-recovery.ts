@@ -19,7 +19,7 @@ import {
 import { reactiveCompact } from "./compact.ts";
 import { CONTINUATION_PROMPT } from "./prompt.ts";
 import { readPiSettings, setSettingsOverrideForTest } from "./settings.ts";
-import type { UiStreamDelta } from "./ui-events.ts";
+import type { UiEventSink } from "./ui-events.ts";
 
 export { DEFAULT_MAX_TOKENS };
 
@@ -83,7 +83,8 @@ export interface RecoveryOptions {
   preserveSystem?: boolean;
   quietOutput?: boolean;
   tools?: unknown[];
-  onStream?: (delta: UiStreamDelta) => void;
+  /** UI 事件通道（架构 C）：透传给 client 的 stream 广播 */
+  uiEvents?: UiEventSink;
   /** 用户中断信号（ADR-0008）：中断时跳过 appendErrorMessage，不落脏数据 */
   signal?: AbortSignal;
 }
@@ -103,7 +104,7 @@ export async function sendMessagesWithRecovery(
     preserveSystem = false,
     quietOutput,
     tools,
-    onStream,
+    uiEvents,
     signal,
   } = options;
 
@@ -115,7 +116,7 @@ export async function sendMessagesWithRecovery(
       preserveSystem,
       quietOutput,
       tools,
-      onStream,
+      uiEvents,
       signal,
     });
 
