@@ -154,8 +154,12 @@ _Avoid_: 工具日志
 _Avoid_: 停止、取消（中断特指 Esc 中止当前回合）
 
 **UI 事件通道 (UI Event Channel)**:
-agent-loop 面向 UI 的可选回调集合（结构化 onStream / onToolEvent / onTurnEnd / signal），核心机制不感知 UI，不传参时行为与无 UI 完全一致。
+agent-loop 面向 UI 的广播出口（UiEventSink：stream / tool / turnEnd 三事件 + signal 中断信号），核心机制只 emit 不感知 UI，无订阅者时行为与无 UI 完全一致。
 _Avoid_: 事件总线、消息队列
+
+**预热 (Warm-up)**:
+启动后 idle 时后台加载重模块（pi-ai / pi-coding-agent / typebox）的机制，把首次查询的同步 import 阻塞（2-7s）移出交互路径；失败静默，查询路径懒加载兜底。
+_Avoid_: 预加载、缓存预热
 
 ## 数据与测试
 
