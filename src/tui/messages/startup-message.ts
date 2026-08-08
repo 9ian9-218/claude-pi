@@ -18,6 +18,7 @@ const KEY_HINTS = [
 ];
 
 const COMMANDS = [
+  "/login 登录模型服务商",
   "/new 开新会话",
   "/tree 会话树导航",
   "/fork 从历史消息分叉",

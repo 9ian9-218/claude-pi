@@ -233,6 +233,10 @@ async function runTui(
     initialText: "claude-pi — 输入 /help 查看命令\n\n",
     autocompleteCommands: () => [
       {
+        name: "login",
+        description: "登录模型服务商",
+      },
+      {
         name: "model",
         description: "切换模型",
         getArgumentCompletions: async () => {

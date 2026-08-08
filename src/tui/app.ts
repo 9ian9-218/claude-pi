@@ -31,6 +31,7 @@ import { SELECT_LIST_THEME, overlayTitle } from "./select-style.ts";
 import { TurnController } from "./turn-controller.ts";
 import { ToolBlockRegistry } from "./tool-registry.ts";
 import { Keymap } from "./keymap.ts";
+import { handleLoginCommand } from "./login.ts";
 import { getSlashCommand, listSlashCommands } from "../commands.ts";
 import { theme } from "./theme/theme.ts";
 import type { SwarmPermissionRequest, PermissionResolution } from "../permission-sync.ts";
@@ -141,6 +142,11 @@ export class TuiApp {
   private readonly keymap = new Keymap();
   private readonly tools: ToolBlockRegistry;
   private running = true;
+  /** 登录模式（/login）：Esc 取消；onCancel 中止 ModelRuntime.login 流程 */
+  private loginMode: { onCancel: () => void } | null = null;
+  /** 模态输入（promptForInput）：提交/取消回调 */
+  private loginPromptResolver: ((value: string | null) => void) | null = null;
+  private savedOnSubmit: ((value: string) => void) | undefined = undefined;
   /** 当前流式助手块（beginAssistantTurn → endAssistantTurn） */
   private streamingComponent: AssistantMessageComponent | null = null;
   /** 启动帮助消息（10）：Ctrl+O 同步展开/折叠 */
@@ -183,7 +189,11 @@ export class TuiApp {
     // 08：Esc 中断当前生成（对齐 pi app.interrupt）；空闲时放行（编辑器取消补全等）
     // 架构 B：全部键位经 Keymap 注册，单个全局监听器转发
     this.keymap.bind("\x1b", () => {
-      // 08：Esc 中断生成（busy 时）；空闲时放行（编辑器取消补全等）
+      // Esc：登录模式取消登录 > 中断生成（busy 时）；空闲时放行给编辑器
+      if (this.loginMode) {
+        this.cancelLogin();
+        return;
+      }
       this.turns.interrupt();
     });
     this.keymap.bind("\x03", () => {
@@ -226,8 +236,9 @@ export class TuiApp {
       const isEsc = data === "\x1b";
       const isCtrlD = data === "\x04";
       const isBusyInterrupt = isEsc && this.turns.isBusy();
+      const isLoginEsc = isEsc && this.loginMode !== null;
       const isExit = isCtrlD && !this.editor.getText();
-      if ((isEsc && !isBusyInterrupt) || (isCtrlD && !isExit)) {
+      if ((isEsc && !isBusyInterrupt && !isLoginEsc) || (isCtrlD && !isExit)) {
         return { consume: false }; // 放行给编辑器
       }
       const consumed = this.keymap.handle(data);
@@ -328,6 +339,61 @@ export class TuiApp {
   private exitApp(): void {
     this.running = false;
     this.tui.stop();
+  }
+
+  // ── 登录模式（/login）：Esc 取消整段流程 ────────────────────────────
+
+  /** 进入登录模式；onCancel 在 Esc 时被调用（中止登录流程） */
+  beginLoginMode(onCancel: () => void): void {
+    this.loginMode = { onCancel };
+  }
+
+  /** 退出登录模式；若有活动模态输入则取消 */
+  endLoginMode(): void {
+    this.loginMode = null;
+    this.finishLoginPrompt(null);
+  }
+
+  /** Esc 取消登录：先取消活动输入，再通知登录流程中止 */
+  private cancelLogin(): void {
+    const mode = this.loginMode;
+    this.finishLoginPrompt(null);
+    mode?.onCancel();
+  }
+
+  /** 模态文本输入（登录 prompt）：提交返回输入值，Esc/取消返回 null */
+  promptForInput(message: string, placeholder?: string): Promise<string | null> {
+    return new Promise((resolve) => {
+      if (this.loginPromptResolver) {
+        // 已有活动输入：取消旧的
+        this.finishLoginPrompt(null);
+      }
+      this.loginPromptResolver = resolve;
+      this.savedOnSubmit = this.editor.onSubmit;
+      this.appendSystem(
+        `${message}${placeholder ? `（例如 ${placeholder}）` : ""} — 输入后回车提交，Esc 取消`,
+        "accent",
+      );
+      this.editor.onSubmit = (value) => {
+        this.finishLoginPrompt(value);
+      };
+      this.editor.setText("");
+      this.tui.setFocus(this.editor);
+      this.tui.requestRender();
+    });
+  }
+
+  /** 结束活动模态输入：恢复编辑器 onSubmit 并清空输入框 */
+  private finishLoginPrompt(value: string | null): void {
+    const resolver = this.loginPromptResolver;
+    this.loginPromptResolver = null;
+    if (this.savedOnSubmit) {
+      this.editor.onSubmit = this.savedOnSubmit;
+      this.savedOnSubmit = undefined;
+    }
+    this.editor.setText("");
+    resolver?.(value);
+    this.tui.requestRender();
   }
 
   /** 开始助手回合：创建流式块，后续 appendStream 增量进该块 */
@@ -509,10 +575,13 @@ export class TuiApp {
           this.startupMessage.setExpanded(true);
         } else {
           this.appendSystem(
-            ["/new 开新会话", "/help 显示帮助", "/quit 退出", "/status 显示状态", "Ctrl+C / Esc 退出"].join("\n"),
+            ["/login 登录模型服务商", "/new 开新会话", "/help 显示帮助", "/quit 退出", "/status 显示状态", "Ctrl+C / Esc 退出"].join("\n"),
             "accent",
           );
         }
+        break;
+      case "login":
+        await handleLoginCommand(this, cmd.slice(1 + "login".length).trim());
         break;
       case "quit":
       case "exit":
