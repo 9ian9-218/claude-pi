@@ -57,6 +57,11 @@ export interface ModelChangeEntry extends SessionEntryBase {
   modelId: string;
 }
 
+export interface ThinkingChangeEntry extends SessionEntryBase {
+  type: "thinking_change";
+  level: string;
+}
+
 export interface SessionInfoEntry extends SessionEntryBase {
   type: "session_info";
   name?: string;
@@ -79,6 +84,7 @@ export type SessionEntry =
   | CompactionEntry
   | BranchSummaryEntry
   | ModelChangeEntry
+  | ThinkingChangeEntry
   | SessionInfoEntry
   | LabelEntry
   | CustomEntry;
@@ -330,6 +336,19 @@ export class SessionManager {
     return id;
   }
 
+  /** 记录思考强度变化（thinking 记忆：重启后恢复上次强度） */
+  appendThinkingChange(level: string): string {
+    const id = genId();
+    this.appendRawEntry({
+      type: "thinking_change",
+      id,
+      parentId: this.leafId,
+      timestamp: nowIso(),
+      level,
+    });
+    return id;
+  }
+
   appendSessionInfo(name?: string): string {
     const id = genId();
     this.appendRawEntry({
@@ -442,10 +461,15 @@ export class SessionManager {
   }
 
   /** 构建 LLM 消息列表（compaction → 摘要 user 消息 + retainedTail） */
-  buildSessionContext(): { messages: ChatMessage[]; model: string | null } {
+  buildSessionContext(): {
+    messages: ChatMessage[];
+    model: string | null;
+    thinkingLevel: string | null;
+  } {
     const entries = this.buildContextEntries();
     const messages: ChatMessage[] = [];
     let model: string | null = null;
+    let thinkingLevel: string | null = null;
     for (const entry of entries) {
       switch (entry.type) {
         case "message":
@@ -470,13 +494,17 @@ export class SessionManager {
           // 完整 spec（provider/id），启动恢复时精确还原（restoreModel）
           model = `${entry.provider}/${entry.modelId}`;
           break;
+        case "thinking_change":
+          // 思考强度记忆：重启后恢复上次强度
+          thinkingLevel = entry.level;
+          break;
         case "custom":
         case "label":
         case "session_info":
           break;
       }
     }
-    return { messages, model };
+    return { messages, model, thinkingLevel };
   }
 
   /** clone：把当前活动分支（到 leafId，默认当前 leaf）复制到新会话文件 */

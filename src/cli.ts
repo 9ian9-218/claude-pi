@@ -22,7 +22,12 @@ import { getMCPHub } from "./mcp/hub.ts";
 import { getCurrentWorktreeTaskId } from "./worktree.ts";
 import { getWorkdir } from "./workdir.ts";
 import { ExtensionManager } from "./extensions/loader.ts";
-import { currentModelLabel, getThinkingLevel } from "./ai-runtime.ts";
+import {
+  currentModelLabel,
+  getThinkingLevel,
+  setThinkingLevel,
+} from "./ai-runtime.ts";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 
 /** 状态行思考强度后缀：非 off 时显示 `:level`（对齐 pi footer model:level） */
 function thinkingLabel(): string {
@@ -267,6 +272,10 @@ async function runTui(
     onModelChange: (m) => {
       sessionRef.current?.appendModelChange(m.provider, m.id);
     },
+    // 思考强度记忆：变化时写入会话 thinking_change，重启后恢复
+    onThinkingChange: (level) => {
+      sessionRef.current?.appendThinkingChange(level);
+    },
     statusText: () => `${currentModelLabel()}${thinkingLabel()} | ${process.cwd()}`,
     onQuery: async (query) => {
       await triggerHooks("UserPromptSubmit", query);
@@ -321,12 +330,18 @@ async function runTui(
   setAskUserImpl((req, label) => app.askPermission(req, label));
 
   app.start();
-  // 模型记忆：会话恢复时从 model_change 恢复当前模型（不阻塞启动）
+  // 模型/思考强度记忆：会话恢复时还原（不阻塞启动）
   if (sessionRef.current) {
-    const restored = sessionRef.current.buildSessionContext().model;
-    if (restored) {
+    const ctx = sessionRef.current.buildSessionContext();
+    // 思考强度先恢复（footer 在 restoreModel 内刷新，两者同时生效）
+    if (ctx.thinkingLevel) {
+      // 异步恢复（含 footer 刷新；模型恢复完成时 footer 再刷一次）
+      void app.restoreThinkingLevel(ctx.thinkingLevel);
+    }
+    const modelSpec = ctx.model;
+    if (modelSpec) {
       setTimeout(() => {
-        void app.restoreModel(restored);
+        void app.restoreModel(modelSpec);
       }, 0);
     }
   }

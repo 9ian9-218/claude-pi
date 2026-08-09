@@ -21,6 +21,7 @@ import {
   type SlashCommand,
 } from "@earendil-works/pi-tui";
 import type { ChatMessage, ToolCallData } from "../client.ts";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { MessageList } from "./messages/message-list.ts";
 import { UserMessageComponent } from "./messages/user-message.ts";
 import { AssistantMessageComponent } from "./messages/assistant-message.ts";
@@ -63,6 +64,8 @@ export interface TuiAppOptions {
   onReload?: () => void;
   /** 模型切换通知（记忆：cli 写入会话 model_change，重启后恢复） */
   onModelChange?: (model: { provider: string; id: string }) => void;
+  /** 思考强度变化通知（记忆：cli 写入会话 thinking_change，重启后恢复） */
+  onThinkingChange?: (level: string) => void;
   statusText?: () => string;
   initialText?: string;
   /** 自动补全附加命令（06）：扩展命令 + /model 模型名等动态项 */
@@ -138,6 +141,7 @@ export class TuiApp {
   private readonly onSessionCommand?: (name: string, rest: string, app: TuiApp) => Promise<void> | void;
   private readonly onReload?: () => void;
   private readonly onModelChange?: (model: { provider: string; id: string }) => void;
+  private readonly onThinkingChange?: (level: string) => void;
   private readonly statusTextFn?: () => string;
   private readonly footer: Footer;
   private readonly root = new Container();
@@ -163,6 +167,7 @@ export class TuiApp {
     this.onSessionCommand = options.onSessionCommand;
     this.onReload = options.onReload;
     this.onModelChange = options.onModelChange;
+    this.onThinkingChange = options.onThinkingChange;
     this.statusTextFn = options.statusText;
     this.autocompleteCommands = options.autocompleteCommands;
     this.chat = new MessageList();
@@ -664,6 +669,7 @@ export class TuiApp {
       return;
     }
     this.appendSystem(`Thinking level: ${level}`, "success");
+    this.onThinkingChange?.(level);
     this.updateFooter();
   }
 
@@ -684,6 +690,7 @@ export class TuiApp {
     const supported = await getSupportedThinkingLevels();
     const hint = supported ? `（模型支持：${supported.join(" / ")}）` : "";
     this.appendSystem(`Thinking level: ${getThinkingLevel()}${hint}`, "success");
+    this.onThinkingChange?.(getThinkingLevel());
     this.updateFooter();
   }
 
@@ -697,6 +704,14 @@ export class TuiApp {
       `当前思考强度：${getThinkingLevel()}。${supported ? `可用：${supported.join(" / ")}` : "当前模型不支持思考"}（Shift+Tab 循环）`,
       "accent",
     );
+  }
+
+  /** 会话恢复思考强度（记忆）：还原上次级别并刷新状态行 */
+  async restoreThinkingLevel(level: string): Promise<boolean> {
+    const { setThinkingLevel } = await import("../ai-runtime.ts");
+    setThinkingLevel(level as ModelThinkingLevel);
+    this.updateFooter();
+    return true;
   }
 
   /**

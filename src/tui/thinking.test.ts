@@ -15,6 +15,7 @@ import {
   setThinkingLevel,
   getThinkingLevel,
   setCurrentModel,
+  currentModelLabel,
 } from "../ai-runtime.ts";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { Api, Model, Provider } from "@earendil-works/pi-ai";
@@ -184,6 +185,76 @@ describe("思考强度（回归：无切换入口）", () => {
       const lines = app.chat.render(80).join("");
       expect(lines).toContain("Shift+Tab");
       expect(lines).toContain("/thinking");
+    } finally {
+      app.stop();
+    }
+  });
+});
+
+describe("思考强度记忆（回归：重启后丢失）", () => {
+  beforeEach(() => {
+    resetClient();
+    setThinkingLevel("off");
+  });
+
+  afterEach(() => {
+    resetAiRuntime();
+    resetClient();
+  });
+
+  it("Shift+Tab 切换触发 onThinkingChange（写会话 thinking_change）", async () => {
+    stubRuntime(makeModel("gpt-reason", true));
+    const changes: string[] = [];
+    const term = new FakeTerminal();
+    const app = new TuiApp({
+      terminal: term,
+      onQuery: () => {},
+      onThinkingChange: (level) => changes.push(level),
+    });
+    app.tui.start();
+    try {
+      term.onInput?.("\x1b[Z");
+      await nextTick();
+      expect(changes).toEqual(["low"]);
+    } finally {
+      app.stop();
+    }
+  });
+
+  it("/thinking <level> 触发 onThinkingChange", async () => {
+    stubRuntime(makeModel("gpt-reason", true));
+    const changes: string[] = [];
+    const term = new FakeTerminal();
+    const app = new TuiApp({
+      terminal: term,
+      onQuery: () => {},
+      onThinkingChange: (level) => changes.push(level),
+    });
+    app.tui.start();
+    try {
+      app.editor.onSubmit?.("/thinking high");
+      await nextTick();
+      expect(changes).toEqual(["high"]);
+    } finally {
+      app.stop();
+    }
+  });
+
+  it("restoreThinkingLevel 恢复上次级别并刷新状态行", async () => {
+    stubRuntime(makeModel("gpt-reason", true));
+    const term = new FakeTerminal();
+    const app = new TuiApp({
+      terminal: term,
+      onQuery: () => {},
+      statusText: () => `${currentModelLabel()}${getThinkingLevel() !== "off" ? `:${getThinkingLevel()}` : ""} | /t`,
+    });
+    app.tui.start();
+    try {
+      const ok = await app.restoreThinkingLevel("medium");
+      expect(ok).toBe(true);
+      expect(getThinkingLevel()).toBe("medium");
+      const footer = app["footer"] as { getText(): string };
+      expect(footer.getText()).toContain(":medium");
     } finally {
       app.stop();
     }
