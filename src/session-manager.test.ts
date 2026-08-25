@@ -359,3 +359,31 @@ describe("崩溃容错与并发写（隐患 02/03）", () => {
     expect(s2.isConcurrent()).toBe(false);
   });
 });
+
+describe("usage 落盘（footer 统计数据源）", () => {
+  const usage = {
+    input: 100, output: 50, cacheRead: 900, cacheWrite: 10, totalTokens: 1060,
+    cost: { input: 0.1, output: 0.2, cacheRead: 0.05, cacheWrite: 0.01, total: 0.36 },
+  };
+
+  it("appendMessage 携带 usage → 重开文件后 entry 保留", () => {
+    const s = SessionManager.create(cwd);
+    s.appendMessage(u("go"));
+    s.appendMessage({ role: "assistant", content: "ok", usage });
+    const reopened = SessionManager.open(s.getSessionFile()!);
+    const entries = reopened.getEntries();
+    const assistant = entries[entries.length - 1] as { message: { usage?: unknown } };
+    expect(assistant.message.usage).toEqual(usage);
+    // buildSessionContext 透传不丢（closeOpenTurns 不剥离 usage）
+    const ctx = reopened.buildSessionContext();
+    expect((ctx.messages[1] as { usage?: unknown }).usage).toEqual(usage);
+  });
+
+  it("appendCompaction 携带 usage → 重开保留", () => {
+    const s = SessionManager.create(cwd);
+    s.appendCompaction("summary", 1000, undefined, usage);
+    const reopened = SessionManager.open(s.getSessionFile()!);
+    const last = reopened.getEntries()[reopened.getEntries().length - 1] as { usage?: unknown };
+    expect(last.usage).toEqual(usage);
+  });
+});

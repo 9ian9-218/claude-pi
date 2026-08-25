@@ -25,10 +25,13 @@ import { getWorkdir } from "./workdir.ts";
 import { ExtensionManager } from "./extensions/loader.ts";
 import {
   currentModelLabel,
+  getCurrentModel,
   getThinkingLevel,
   setThinkingLevel,
 } from "./ai-runtime.ts";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { computeUsageTotals, latestCacheHitRate, computeContextUsage } from "./usage-stats.ts";
+import { getGitBranch } from "./git-branch.ts";
 
 /** 状态行思考强度后缀：非 off 时显示 `:level`（对齐 pi footer model:level） */
 function thinkingLabel(): string {
@@ -278,6 +281,20 @@ async function runTui(
       sessionRef.current?.appendThinkingChange(level);
     },
     statusText: () => `${currentModelLabel()}${thinkingLabel()} | ${process.cwd()}`,
+    // footer 统计：渲染时现算（数据在会话 entry 上，零状态）
+    footerStats: () => {
+      const session = sessionRef.current;
+      if (!session) return null;
+      const model = getCurrentModel();
+      const entries = session.getBranch();
+      const messages = session.buildSessionContext().messages;
+      return {
+        totals: computeUsageTotals(entries),
+        latestCacheHitRate: latestCacheHitRate(entries),
+        ...(model ? { context: computeContextUsage(entries, messages, model.contextWindow) } : {}),
+        branch: getGitBranch(process.cwd()),
+      };
+    },
     onQuery: async (query) => {
       await triggerHooks("UserPromptSubmit", query);
       const session = sessionRef.current;

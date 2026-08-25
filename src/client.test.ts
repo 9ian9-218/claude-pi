@@ -21,6 +21,21 @@ function plainMessages(): ChatMessage[] {
 }
 
 describe("sendMessages 流式（S1）", () => {
+  it("流式响应 usage 捕获：AssistantMessage.usage 有值，modelDump 落盘含 usage", async () => {
+    mock.always(() => ({
+      kind: "sse",
+      chunks: [
+        { content: "ok" },
+        { finishReason: "stop" },
+      ],
+    }));
+    const result = await sendMessages(plainMessages(), { quietOutput: true });
+    expect(result.usage).toBeDefined();
+    expect(result.usage!.totalTokens).toBeGreaterThan(0);
+    const dump = result.modelDump();
+    expect((dump as { usage?: { input: number } }).usage).toBeDefined();
+  });
+
   it("聚合流式 content 并返回 finish_reason", async () => {
     mock.always(() => ({
       kind: "sse",

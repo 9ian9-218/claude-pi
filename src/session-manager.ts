@@ -11,6 +11,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { AGENT_ROOT, resolveAgentDirs } from "./config.ts";
 import { formatCompactedUserMessage } from "./prompt.ts";
+import type { Usage } from "@earendil-works/pi-ai";
 import type { ChatMessage } from "./client.ts";
 
 export const CURRENT_SESSION_VERSION = 1;
@@ -43,6 +44,8 @@ export interface CompactionEntry extends SessionEntryBase {
   summary: string;
   tokensBefore: number;
   retainedTail?: ChatMessage[];
+  /** 摘要生成响应的计费信息（footer 累计用） */
+  usage?: Usage;
 }
 
 export interface BranchSummaryEntry extends SessionEntryBase {
@@ -460,7 +463,12 @@ export class SessionManager {
     return id;
   }
 
-  appendCompaction(summary: string, tokensBefore: number, retainedTail?: ChatMessage[]): string {
+  appendCompaction(
+    summary: string,
+    tokensBefore: number,
+    retainedTail?: ChatMessage[],
+    usage?: Usage,
+  ): string {
     const id = genId();
     this.appendRawEntry({
       type: "compaction",
@@ -470,6 +478,7 @@ export class SessionManager {
       summary,
       tokensBefore,
       ...(retainedTail ? { retainedTail } : {}),
+      ...(usage ? { usage } : {}),
     });
     return id;
   }

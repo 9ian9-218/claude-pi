@@ -34,18 +34,60 @@ class FakeTerminal implements Terminal {
 }
 
 describe("Footer 状态栏（07）", () => {
-  it("显示 claude-pi · 模型 · cwd，主题着色", () => {
+  it("两行布局：第 1 行 cwd（含 git 分支），第 2 行统计 + 模型名右对齐", () => {
     const term = new FakeTerminal();
     const app = new TuiApp({
       terminal: term,
       onQuery: () => {},
       statusText: () => "openai/gpt-4o | /home/test/proj",
+      footerStats: () => ({
+        totals: { input: 714000, output: 136000, cacheRead: 20000000, cacheWrite: 0, cost: 0.357 },
+        latestCacheHitRate: 99.6,
+        context: { tokens: 500000, percent: 50, contextWindow: 1000000 },
+        branch: "main",
+      }),
     });
     const lines = app["footer"].render(80).join("");
-    expect(lines).toContain("claude-pi");
-    expect(lines).toContain(theme.getFgAnsi("accent"));
+    expect(lines).toContain("/home/test/proj (main)");
+    expect(lines).toContain("↑714k");
+    expect(lines).toContain("↓136k");
+    expect(lines).toContain("R20M");
+    expect(lines).toContain("CH99.6%");
+    expect(lines).toContain("$0.357");
+    expect(lines).toContain("50.0%/1.0M");
     expect(lines).toContain("openai/gpt-4o");
-    expect(lines).toContain("/home/test/proj");
+    expect(lines).toContain(theme.getFgAnsi("dim"));
+  });
+
+  it("统计无数据时元素隐藏：无会话 → 第 2 行只有模型名", () => {
+    const term = new FakeTerminal();
+    const app = new TuiApp({
+      terminal: term,
+      onQuery: () => {},
+      statusText: () => "openai/gpt-4o | /home/test/proj",
+      footerStats: () => null,
+    });
+    const lines = app["footer"].render(80).join("");
+    expect(lines).toContain("openai/gpt-4o");
+    expect(lines).not.toContain("↑");
+    expect(lines).not.toContain("$");
+  });
+
+  it("上下文占用 >90% 红色、>70% 黄色", () => {
+    const term = new FakeTerminal();
+    const app = new TuiApp({
+      terminal: term,
+      onQuery: () => {},
+      statusText: () => "openai/gpt-4o | /home/test/proj",
+      footerStats: () => ({
+        totals: { input: 1000, output: 100, cacheRead: 0, cacheWrite: 0, cost: 0 },
+        context: { tokens: 950000, percent: 95, contextWindow: 1000000 },
+        branch: null,
+      }),
+    });
+    const lines = app["footer"].render(80).join("");
+    expect(lines).toContain(theme.getFgAnsi("error"));
+    expect(lines).toContain("95.0%/1.0M");
   });
 
   it("setWorking(true) 显示 spinner 帧，false 后消失", () => {

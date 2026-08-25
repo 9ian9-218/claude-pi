@@ -91,7 +91,7 @@ async function agentLoopInner(
       console.log("  \x1b[31m[auto compact]\x1b[0m");
       if (session) {
         const tokensBefore = estimateMessagesTokens(messages);
-        const summary = await summarizeHistory(messages);
+        const { summary, usage } = await summarizeHistory(messages);
         // retainedTail：最近的合理大小消息（排除超限大消息）
         const tail = messages
           .slice(-5)
@@ -100,6 +100,7 @@ async function agentLoopInner(
           summary,
           tokensBefore,
           tail.length > 0 ? tail : undefined,
+          usage,
         );
         replaceMessages(messages, session.buildSessionContext().messages);
       } else {

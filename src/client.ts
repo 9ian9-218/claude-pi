@@ -19,6 +19,7 @@ import {
   type ModelThinkingLevel,
   type Models,
   type Tool as PiTool,
+  type Usage,
 } from "@earendil-works/pi-ai";
 import { getSystemPrompt, updateContext } from "./prompt.ts";
 import { parseModelSpec, resolveCurrentModel, resetAiRuntime } from "./ai-runtime.ts";
@@ -32,6 +33,8 @@ export interface ChatMessage {
   content?: string | null;
   tool_calls?: unknown[];
   tool_call_id?: string;
+  /** 响应计费信息（仅 assistant 真实响应落盘；回放/历史消息无此字段） */
+  usage?: Usage;
 }
 
 export interface ToolCallData {
@@ -50,6 +53,8 @@ export interface AssistantMessage {
   errorMessage?: string;
   /** 裸 OpenAI 消息结构（对齐 Python model_dump(exclude_none=True)） */
   modelDump(): Record<string, unknown>;
+  /** 本次响应的 token/成本（捕获时算；footer 统计用） */
+  usage?: Usage;
 }
 
 export interface SendOptions {
@@ -127,7 +132,7 @@ export function createAssistantMessage(
   toolCalls: ToolCallData[] | null,
   needsFollowUp: boolean,
   finishReason: string | null,
-  extra?: { stopReason?: string; errorMessage?: string },
+  extra?: { stopReason?: string; errorMessage?: string; usage?: Usage },
 ): AssistantMessage {
   return {
     content,
@@ -136,6 +141,7 @@ export function createAssistantMessage(
     finishReason,
     stopReason: extra?.stopReason ?? finishReason ?? "stop",
     ...(extra?.errorMessage ? { errorMessage: extra.errorMessage } : {}),
+    ...(extra?.usage && extra.usage.totalTokens > 0 ? { usage: extra.usage } : {}),
     modelDump() {
       const d: Record<string, unknown> = { role: "assistant", content: this.content };
       if (this.toolCalls) {
@@ -145,6 +151,7 @@ export function createAssistantMessage(
           function: { name: tc.function.name, arguments: tc.function.arguments },
         }));
       }
+      if (this.usage) d.usage = this.usage;
       const cleaned: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(d)) {
         if (v !== null && v !== undefined) cleaned[k] = v;
@@ -261,7 +268,7 @@ function fromPiMessage(m: PiMessage): AssistantMessage {
     toolCalls.length > 0 ? toolCalls : null,
     toolCalls.length > 0,
     finishReason,
-    { stopReason: stop, errorMessage: m.errorMessage },
+    { stopReason: stop, errorMessage: m.errorMessage, usage: m.usage },
   );
 }
 
@@ -332,6 +339,14 @@ export async function completeText(
   prompt: string,
   options: { maxTokens?: number } = {},
 ): Promise<string> {
+  return (await completeTextWithUsage(prompt, options)).text;
+}
+
+/** 同 completeText，但返回本次响应的计费信息（compaction 累计用） */
+export async function completeTextWithUsage(
+  prompt: string,
+  options: { maxTokens?: number } = {},
+): Promise<{ text: string; usage?: Usage }> {
   const models = await getModels();
   const model = await resolveEffectiveModel();
   const m = await models.completeSimple(
@@ -342,12 +357,14 @@ export async function completeText(
   if (m.stopReason === "error" || m.stopReason === "aborted") {
     throw new Error(m.errorMessage ?? `LLM request failed (${m.stopReason})`);
   }
-  return (
-    m.content
-      .filter((b): b is { type: "text"; text: string } => b.type === "text")
-      .map((b) => b.text)
-      .join("") || ""
-  );
+  return {
+    text:
+      m.content
+        .filter((b): b is { type: "text"; text: string } => b.type === "text")
+        .map((b) => b.text)
+        .join("") || "",
+    ...(m.usage && m.usage.totalTokens > 0 ? { usage: m.usage } : {}),
+  };
 }
 
 /** 测试隔离：清除全部缓存（client 覆盖 / ModelRuntime / 设置 / 当前模型） */

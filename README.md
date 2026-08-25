@@ -127,7 +127,6 @@ npm install            # 安装依赖
 npm run dev            # tsx 开发运行
 npm run typecheck      # tsc --noEmit 类型检查
 npm test               # vitest 全量测试
-npx tsx scripts/parity/parity-runner.ts   # 与 Python 版 Claude-Code-simple 行为对拍
 ```
 
 运行时数据（会话/团队/记忆/任务/Skill/worktree/扩展）存于项目内 `.agent/`（gitignored）。

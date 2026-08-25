@@ -62,6 +62,13 @@ function sseEncode(chunks: MockSseChunk[]): string {
       })}\n\n`,
     );
   }
+  // OpenAI 流式协议：末尾 usage chunk（pi-ai 从 chunk.usage 解析计费信息）
+  lines.push(
+    `data: ${JSON.stringify({
+      choices: [],
+      usage: { prompt_tokens: 5, completion_tokens: 7, total_tokens: 12 },
+    })}\n\n`,
+  );
   lines.push("data: [DONE]\n\n");
   return lines.join("");
 }

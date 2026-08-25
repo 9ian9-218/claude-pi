@@ -67,6 +67,8 @@ export interface TuiAppOptions {
   /** 思考强度变化通知（记忆：cli 写入会话 thinking_change，重启后恢复） */
   onThinkingChange?: (level: string) => void;
   statusText?: () => string;
+  /** footer 统计（渲染时现算）：totals/CH%/上下文/分支；null = 无会话 */
+  footerStats?: () => import("../usage-stats.ts").FooterStats | null;
   initialText?: string;
   /** 自动补全附加命令（06）：扩展命令 + /model 模型名等动态项 */
   autocompleteCommands?: () => Array<AutocompleteItem | SlashCommand>;
@@ -143,6 +145,7 @@ export class TuiApp {
   private readonly onModelChange?: (model: { provider: string; id: string }) => void;
   private readonly onThinkingChange?: (level: string) => void;
   private readonly statusTextFn?: () => string;
+  private readonly footerStatsFn?: () => import("../usage-stats.ts").FooterStats | null;
   private readonly footer: Footer;
   private readonly root = new Container();
   /** 架构 B：职责拆分 */
@@ -169,6 +172,7 @@ export class TuiApp {
     this.onModelChange = options.onModelChange;
     this.onThinkingChange = options.onThinkingChange;
     this.statusTextFn = options.statusText;
+    this.footerStatsFn = options.footerStats;
     this.autocompleteCommands = options.autocompleteCommands;
     this.chat = new MessageList();
     this.tools = new ToolBlockRegistry((c) => this.chat.addChild(c));
@@ -469,6 +473,7 @@ export class TuiApp {
     const status = this.statusTextFn?.() ?? "";
     const [model = "?", ...rest] = status.split(" | ");
     this.footer.setInfo(model, rest.join(" | ") || process.cwd());
+    this.footer.setStatsProvider(this.footerStatsFn ?? null);
   }
 
   /** Working 状态（07）：agent-loop 运行时显示 spinner */
@@ -479,10 +484,10 @@ export class TuiApp {
   private layout(): void {
     const rows = this.tui.terminal.rows;
     // 精确高度预算：editor 渲染 3 行（border×2 + 输入行），footer 最坏
-    // 3 行（Working 态：info 1 + Loader 2，Loader 自带空行缓冲）。超屏会让
-    // 屏幕外行变化 → firstChanged < viewportTop → 每帧全量重绘（回归）。
+    // 4 行（两行状态 + Working 态 Loader 2 行）。超屏会让屏幕外行变化 →
+    // firstChanged < viewportTop → 每帧全量重绘（回归）。
     const editorLines = 3;
-    const footerLines = 3;
+    const footerLines = 4;
     this.chat.setViewportHeight(Math.max(3, rows - editorLines - footerLines));
   }
 

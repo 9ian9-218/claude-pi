@@ -9,7 +9,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getWorkdir } from "./workdir.ts";
-import { completeText, type ChatMessage } from "./client.ts";
+import { completeTextWithUsage, type ChatMessage } from "./client.ts";
 import {
   formatCompactedUserMessage,
   formatReactiveCompactedUserMessage,
@@ -257,7 +257,9 @@ export function writeTranscript(messages: ChatMessage[]): string {
   return p;
 }
 
-export async function summarizeHistory(messages: ChatMessage[]): Promise<string> {
+export async function summarizeHistory(
+  messages: ChatMessage[],
+): Promise<{ summary: string; usage?: import("@earendil-works/pi-ai").Usage }> {
   let messagesToSummarize = messages;
   const totalEst = estimateMessagesTokens(messages);
   if (totalEst > AUTO_COMPACT_MAX_INPUT_TOKENS_EST) {
@@ -273,19 +275,20 @@ export async function summarizeHistory(messages: ChatMessage[]): Promise<string>
   }
   const conversation = JSON.stringify(messagesToSummarize);
   const prompt = formatCompactSummary(conversation);
-  return (await completeText(prompt, { maxTokens: MAX_OUTPUT_TOKENS_FOR_SUMMARY })) || "(empty summary)";
+  const r = await completeTextWithUsage(prompt, { maxTokens: MAX_OUTPUT_TOKENS_FOR_SUMMARY });
+  return { summary: r.text || "(empty summary)", ...(r.usage ? { usage: r.usage } : {}) };
 }
 
 export async function compactHistory(messages: ChatMessage[]): Promise<ChatMessage[]> {
   const transcriptPath = writeTranscript(messages);
   console.log(`[transcript saved: ${transcriptPath}]`);
-  const summary = await summarizeHistory(messages);
+  const { summary } = await summarizeHistory(messages);
   return [{ role: "user", content: formatCompactedUserMessage(summary) }];
 }
 
 export async function reactiveCompact(messages: ChatMessage[]): Promise<ChatMessage[]> {
   writeTranscript(messages);
-  const summary = await summarizeHistory(messages);
+  const { summary } = await summarizeHistory(messages);
   return [
     { role: "user", content: formatReactiveCompactedUserMessage(summary) },
     ...messages.slice(-5),

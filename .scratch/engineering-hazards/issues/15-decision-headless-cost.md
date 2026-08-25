@@ -14,3 +14,9 @@ blocked_by: [08-headless-robustness, 09-context-cost-control]
 - CC 对照项（流停滞看门狗、降 max_tokens、部分输出保留）的取舍。
 
 裁决输入：两张研究票的实证结论 + `docs/research/claude-code-error-recovery.md` 对照。
+
+## 前置注记（2025-08-25）
+
+TUI footer 两行统计已落地（grill 会话共识：Q1–Q8 全量复制 pi footer）：
+usage 落盘（assistant/compaction entry）→ 渲染时现算纯函数（usage-stats.ts）→
+footer 显示 ↑↓R W CH% $ 上下文%/窗口（压缩后 ? 态）。本票决策时可引用。
