@@ -55,3 +55,65 @@ describe("CLI 入口（S3）", () => {
     }
   });
 });
+
+describe("分发与崩溃兜底（隐患 04/05）", () => {
+  it(
+    "bin shim：node 直接跑 bin/cpi.js --version（tsx 在 dependencies）",
+    async () => {
+    const binPath = path.join(PROJECT_ROOT, "bin", "cpi.js");
+    const { code, stdout } = await new Promise<{ code: number; stdout: string; stderr: string }>(
+      (resolve) => {
+        const child = execFile(
+          process.execPath,
+          [binPath, "--version"],
+          { cwd: PROJECT_ROOT, timeout: 15000 },
+          (error, stdout, stderr) => {
+            resolve({ code: error ? (error as { code?: number }).code ?? 0 : 0, stdout, stderr });
+          },
+        );
+        child.stdin?.end();
+      },
+    );
+    const pkg = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, "package.json"), "utf8"));
+    expect(code).toBe(0);
+    expect(stdout.trim()).toBe(pkg.version);
+    expect(pkg.bin.cpi).toBe("bin/cpi.js");
+    expect(pkg.dependencies.tsx).toBeDefined(); // tsx 运行时依赖（原在 devDependencies）
+    },
+    30000,
+  );
+
+  it(
+    "fatal 兜底：未捕获异常 → 提示 + 退出码 1（不静默退出）",
+    async () => {
+    const dir = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "claude-pi-fatal-"));
+    const script = path.join(dir, "boom.ts");
+    fs.writeFileSync(
+      script,
+      [
+        'import { installFatalHandlers } from "/home/z9ian9/myproject/claude-pi/src/fatal.ts";',
+        "installFatalHandlers();",
+        'setTimeout(() => { throw new Error("boom-test"); }, 20);',
+      ].join("\n"),
+    );
+    const result = await new Promise<{ code: number; stdout: string; stderr: string }>(
+      (resolve) => {
+        const child = execFile(
+          process.execPath,
+          [tsxCli, script],
+          { cwd: PROJECT_ROOT, timeout: 15000 },
+          (error, stdout, stderr) => {
+            resolve({ code: error ? (error as { code?: number }).code ?? 0 : 0, stdout, stderr });
+          },
+        );
+        child.stdin?.end();
+      },
+    );
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("boom-test");
+    expect(result.stderr).toContain("uncaughtException");
+    fs.rmSync(dir, { recursive: true, force: true });
+    },
+    30000,
+  );
+});

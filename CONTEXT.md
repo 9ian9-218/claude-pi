@@ -42,7 +42,9 @@ _Avoid_: 压缩标记
 切换分支时对放弃路径生成的 LLM 摘要记录（branch_summary entry）。
 
 **断线恢复 (Crash Recovery)**:
-进程崩溃后通过 reopen 会话文件 + resume 从 leaf 重建上下文的恢复能力；mid-turn 未完成回合不落盘。
+进程崩溃后通过 reopen 会话文件 + resume 从 leaf 重建上下文的恢复能力。每条消息（含工具调用与结果）
+即时落盘（append 即写）；中断（Esc）时用 truncateTo 回滚本轮未完成落盘；恢复时用 closeOpenTurns
+裁剪未闭合回合，保证发给模型的序列合法。
 _Avoid_: 自动续写
 
 ## 多 Agent

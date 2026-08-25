@@ -110,6 +110,72 @@ export function setSessionRoot(dir: string): void {
   sessionRoot = dir;
 }
 
+// ── 会话文件锁（并发写防护，隐患 03） ─────────────────────────────────────
+// 锁文件 `<会话>.lock` 以原子创建表达占用（pid + 时间戳）；崩溃残留（SIGKILL/
+// 断电）由 stale 检测接管：**仅按 pid 存活判定**——交互式会话可长开数小时，
+// 按时间判陈旧会误杀活锁、让第一进程失去保护。锁只保护「整文件重写」类操作
+// （truncateTo），append 本身按行原子，不加锁。
+// 失败方向：误判 busy 只产生 concurrent 提示（不重写磁盘），永不误判 stale（不抹数据）。
+
+const heldLocks = new Set<string>();
+
+/** 尝试获取会话文件锁；被其他进程占用且非陈旧时返回 false */
+function tryAcquireLock(filePath: string): boolean {
+  if (!filePath) return true;
+  const lockPath = `${filePath}.lock`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = fs.openSync(lockPath, "wx");
+      fs.writeSync(fd, `${process.pid} ${Date.now()}`);
+      fs.closeSync(fd);
+      heldLocks.add(lockPath);
+      return true;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") return true; // 锁目录不可写等：不阻塞会话
+      if (isStaleLock(lockPath)) {
+        try {
+          fs.unlinkSync(lockPath);
+        } catch {
+          return false;
+        }
+        continue;
+      }
+      return false;
+    }
+  }
+  return false;
+}
+
+/** 锁陈旧判定：pid 不存在 = 持锁进程已死，可抢占；其余一律视为活跃（保守） */
+function isStaleLock(lockPath: string): boolean {
+  try {
+    const content = fs.readFileSync(lockPath, "utf8");
+    const pid = Number(content.split(" ")[0]);
+    if (!Number.isInteger(pid) || pid <= 0) return false; // 内容异常：保守判活跃
+    try {
+      process.kill(pid, 0);
+      return false; // 进程存活：锁有效（时长不限）
+    } catch {
+      return true; // ESRCH：进程已死
+    }
+  } catch {
+    return false; // 读失败：保守判活跃
+  }
+}
+
+function releaseAllLocks(): void {
+  for (const lockPath of heldLocks) {
+    try {
+      fs.unlinkSync(lockPath);
+    } catch {
+      // 已被外部清理
+    }
+  }
+  heldLocks.clear();
+}
+
+process.on("exit", releaseAllLocks);
+
 export function defaultSessionDir(): string {
   if (sessionRoot) return sessionRoot;
   const envRoot = process.env.CLAUDE_PI_SESSION_ROOT;
@@ -139,17 +205,96 @@ export interface SessionListItem {
   lastActivity: number;
 }
 
+/**
+ * 恢复期清洗：裁剪未闭合的工具回合（崩溃/中断残留），保证发给模型的
+ * 消息序列合法（OpenAI 协议要求 assistant 的 tool_calls 必须被配对）。
+ *
+ * 对齐 Claude Code 的 "The response above may be incomplete" 语义：
+ * - 保留已闭合轮（assistant(tool_calls) + 全部对应 tool 结果）；
+ * - 末尾残留未闭合轮：截断到闭合点，其内容转为文本（保留已产出文本
+ *   + [Error] 中断标记），恢复后可直接继续对话；
+ * - 孤儿 tool 消息（无对应 assistant tool_calls）：其后内容不可信，截断。
+ */
+export function closeOpenTurns(messages: ChatMessage[]): ChatMessage[] {
+  const result: ChatMessage[] = [];
+  /** 当前未闭合轮期望配对的 tool_call_id 集合 */
+  let expected = new Set<string>();
+  /** 未闭合轮在 result 中的起点索引（-1 = 当前无未闭合轮） */
+  let openFrom = -1;
+
+  for (const m of messages) {
+    if (m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+      expected = new Set(
+        (m.tool_calls as Array<{ id: string }>).map((tc) => tc.id),
+      );
+      openFrom = result.length;
+      result.push(m);
+      continue;
+    }
+    if (m.role === "tool") {
+      if (openFrom === -1) {
+        // 孤儿 tool 结果：其后的内容都不能信任，截断
+        result.push({
+          role: "assistant",
+          content: "[Error] 会话恢复：发现孤立的工具结果（对应调用缺失），其后的内容已截断。",
+        } as ChatMessage);
+        return result;
+      }
+      if (m.tool_call_id) expected.delete(m.tool_call_id);
+      result.push(m);
+      if (expected.size === 0) openFrom = -1;
+      continue;
+    }
+    if (openFrom !== -1) {
+      // 未闭合轮被非工具消息打断（防御：正常流程不应发生）
+      result.push({
+        role: "assistant",
+        content: "[Error] 会话恢复：工具调用未完成，中断点之后的内容已截断。",
+      } as ChatMessage);
+      return result;
+    }
+    result.push(m);
+  }
+
+  if (openFrom !== -1) {
+    // 循环结束仍未闭合：撤销该轮，已产出的文本转成中断标记保留
+    const open = result[openFrom] as ChatMessage;
+    const completed = result.slice(0, openFrom);
+    const openText =
+      typeof open.content === "string" && open.content.trim() ? open.content + "\n\n" : "";
+    completed.push({
+      role: "assistant",
+      content: `${openText}[Error] 回合中断：工具调用未完成（已从恢复上下文回退），可回复 continue 继续。`,
+    } as ChatMessage);
+    return completed;
+  }
+  return result;
+}
+
 export class SessionManager {
   private header: SessionHeader;
   private entries: SessionEntry[] = [];
   private leafId: string | null = null;
   private readonly filePath: string | null;
   private readonly inMemory: boolean;
+  /** 会话文件被其他进程占用（锁获取失败）：truncateTo 只回滚内存、不重写磁盘 */
+  private readonly concurrent: boolean;
 
-  private constructor(header: SessionHeader, filePath: string | null, inMemory: boolean) {
+  private constructor(
+    header: SessionHeader,
+    filePath: string | null,
+    inMemory: boolean,
+    concurrent: boolean,
+  ) {
     this.header = header;
     this.filePath = filePath;
     this.inMemory = inMemory;
+    this.concurrent = concurrent;
+  }
+
+  /** 会话文件是否被其他进程并发持有（只读视角，写入有丢失风险） */
+  isConcurrent(): boolean {
+    return this.concurrent;
   }
 
   // ── 静态构造 ────────────────────────────────────────────────────────────
@@ -165,7 +310,14 @@ export class SessionManager {
       cwd,
     };
     fs.writeFileSync(filePath, JSON.stringify(header) + "\n");
-    return new SessionManager(header, filePath, false);
+    const mgr = new SessionManager(header, filePath, false, !tryAcquireLock(filePath));
+    if (mgr.concurrent) {
+      console.warn(
+        `  \x1b[33m[session] ${path.basename(filePath)} 正被其他进程使用（并发会话）；` +
+          `回滚将只作用于内存，不重写磁盘\x1b[0m`,
+      );
+    }
+    return mgr;
   }
 
   static open(path_: string): SessionManager {
@@ -173,11 +325,23 @@ export class SessionManager {
     const lines = raw.trim().split("\n");
     const header = JSON.parse(lines[0]) as SessionHeader;
     const entries: SessionEntry[] = [];
+    // 崩溃容错：kill -9 可能落在 append 中途留下半行 JSON，逐行 try/catch 跳过坏行
+    // （尾行 torn 时丢弃它，leaf 回到最后一个有效 entry）
     for (const line of lines.slice(1)) {
       if (!line.trim()) continue;
-      entries.push(JSON.parse(line) as SessionEntry);
+      try {
+        entries.push(JSON.parse(line) as SessionEntry);
+      } catch {
+        // 坏行跳过（不中断恢复）
+      }
     }
-    const mgr = new SessionManager(header, path_, false);
+    const mgr = new SessionManager(header, path_, false, !tryAcquireLock(path_));
+    if (mgr.concurrent) {
+      console.warn(
+        `  \x1b[33m[session] ${path.basename(path_)} 正被其他进程使用（并发会话）；` +
+          `回滚将只作用于内存，不重写磁盘\x1b[0m`,
+      );
+    }
     mgr.entries = entries;
     // 恢复 leaf：最后一个有 parentId 链的 entry（文件末尾）
     mgr.leafId = entries.length > 0 ? entries[entries.length - 1].id : null;
@@ -213,7 +377,7 @@ export class SessionManager {
       timestamp: nowIso(),
       cwd,
     };
-    return new SessionManager(header, null, true);
+    return new SessionManager(header, null, true, false);
   }
 
   /** 会话列表（resume 选择器用）：name/firstMessage/消息数/最后活动，按最后活动降序 */
@@ -387,6 +551,39 @@ export class SessionManager {
     return id;
   }
 
+  /**
+   * 截断会话到 entryId（含）之后的内容全部移除（内存裁剪 + 文件重写）。
+   * entryId=null 清空所有 entry（仅保留 header）。用于中断回滚：
+   * 把本回合未完成落盘的 assistant/tool 消息整体撤销，恢复后从干净状态继续。
+   */
+  truncateTo(entryId: string | null): void {
+    if (entryId === null) {
+      this.entries = [];
+      this.leafId = null;
+    } else {
+      const idx = this.entries.findIndex((e) => e.id === entryId);
+      if (idx === -1) return; // 未知 entry：不动（防御）
+      this.entries = this.entries.slice(0, idx + 1);
+      this.leafId = this.entries[this.entries.length - 1].id;
+    }
+    if (this.filePath) {
+      if (this.concurrent) {
+        // 并发会话：另一进程可能正在追加——重写会抹掉其增量，只回滚内存
+        console.warn(
+          `  \x1b[33m[session] 并发会话（${path.basename(this.filePath)}）：` +
+            `中断回滚只作用于内存，磁盘保留追加内容\x1b[0m`,
+        );
+      } else {
+        // 重写文件：header + 保留的 entries（全部 append 均为同步，同进程安全）
+        const lines = [
+          JSON.stringify(this.header),
+          ...this.entries.map((e) => JSON.stringify(e)),
+        ];
+        fs.writeFileSync(this.filePath, lines.join("\n") + "\n");
+      }
+    }
+  }
+
   // ── 树操作 ──────────────────────────────────────────────────────────────
 
   getLeafId(): string | null {
@@ -504,7 +701,7 @@ export class SessionManager {
           break;
       }
     }
-    return { messages, model, thinkingLevel };
+    return { messages: closeOpenTurns(messages), model, thinkingLevel };
   }
 
   /** clone：把当前活动分支（到 leafId，默认当前 leaf）复制到新会话文件 */

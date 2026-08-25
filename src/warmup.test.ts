@@ -30,9 +30,10 @@ describe("warmup（架构 A）", () => {
   it("运行时 create 抛错时静默失败（不抛、不拒绝）", async () => {
     resetAiRuntime();
     // 无 override → getModelRuntime 走真实路径（无凭据环境会挂起或抛错）
-    // 有超时保护，最终 resolve（不 reject）
+    // 有超时保护，最终 resolve（不 reject）。内部超时 10s > vitest 默认 5s，
+    // 全量并行负载下 create 可能挂满 5s 被误杀——显式放宽
     await expect(warmUp()).resolves.toBeUndefined();
-  });
+  }, 15000);
 
   it("预热完成后再次调用立即返回", async () => {
     await warmUp();

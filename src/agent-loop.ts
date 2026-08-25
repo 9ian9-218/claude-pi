@@ -108,6 +108,8 @@ async function agentLoopInner(
     }
     const requestMessages = buildRequestMessages(messages, memoriesContent);
 
+    // 本次 LLM 调用前的最新落盘点：中断回滚目标（ADR-0008：不落脏数据）
+    const llmStartLeaf = session?.getLeafId() ?? null;
     const llmResult = await sendMessagesWithRecovery({
       requestMessages,
       messages,
@@ -128,6 +130,24 @@ async function agentLoopInner(
       continue;
     }
     if (llmResult.action === "abort") {
+      if (session) {
+        if (llmResult.reason === "interrupted") {
+          // ADR-0008：用户中断不落脏数据——回滚本次未完成的落盘（无落盘时 no-op）
+          session.truncateTo(llmStartLeaf);
+        } else {
+          // 不可恢复错误：把 error-recovery 追加的 [Error] 收尾消息落盘，
+          // 断连恢复后用户能看到回合失败原因（而非无痕中断）
+          const last = messages[messages.length - 1];
+          if (
+            last &&
+            last.role === "assistant" &&
+            typeof last.content === "string" &&
+            last.content.startsWith("[Error]")
+          ) {
+            session.appendMessage(last);
+          }
+        }
+      }
       // ADR-0008：中断（Esc）/不可恢复错误 → 回合结束事件（UI 显示中止态）
       opts.uiEvents?.emit("turnEnd", {
         stopReason: llmResult.reason === "interrupted" ? "aborted" : "error",
@@ -146,6 +166,12 @@ async function agentLoopInner(
       messages.push(assistantMsg);
       session?.appendMessage(assistantMsg);
       for (const toolCall of message.toolCalls) {
+        // ADR-0008：中断后不再执行/落盘剩余工具——回滚本轮已落盘内容并结束回合
+        if (opts.signal?.aborted) {
+          session?.truncateTo(llmStartLeaf);
+          opts.uiEvents?.emit("turnEnd", { stopReason: "aborted", errorMessage: undefined });
+          return null;
+        }
         let args: unknown;
         let parseError = "";
         try {

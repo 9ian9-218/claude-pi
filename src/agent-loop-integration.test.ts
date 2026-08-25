@@ -9,7 +9,8 @@ import { setRetryPolicyForTest } from "./error-recovery.ts";
 import { resetClient, type ChatMessage } from "./client.ts";
 import { agentLoop } from "./agent-loop.ts";
 import { LoopOptions } from "./loop-options.ts";
-import { installBuiltinHooks } from "./hook.ts";
+import { installBuiltinHooks, registerHook } from "./hook.ts";
+import { SessionManager } from "./session-manager.ts";
 import { runWithWorkdir } from "./workdir.ts";
 
 let mock: MockOpenAI;
@@ -307,4 +308,66 @@ describe("agentLoop 集成（12 会话机制）", () => {
       fs.rmSync(sessDir, { recursive: true, force: true });
     }
   }, 30000);
+});
+
+describe("agentLoop 会话落盘与中断回滚（恢复）", () => {
+  it("工具执行中途中断：回滚本轮落盘，恢复后只剩 user 消息", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-rollback-"));
+    try {
+      const session = SessionManager.create(process.cwd(), dir);
+      session.appendMessage({ role: "user", content: "go" });
+      const controller = new AbortController();
+      // PreToolUse 时触发中断：第一个工具执行后、第二个工具前 signal 生效
+      const unsubscribe = registerHook("PreToolUse", () => {
+        controller.abort();
+        return null;
+      });
+      mock.push(() => ({
+        kind: "sse",
+        chunks: [
+          {
+            toolCalls: [
+              { index: 0, id: "call_1", name: "read_file", arguments: '{"path":"a.txt"}' },
+              { index: 1, id: "call_2", name: "read_file", arguments: '{"path":"b.txt"}' },
+            ],
+            finishReason: "tool_calls",
+          },
+        ],
+      }));
+      await runWithWorkdir(ws, async () => {
+        fs.writeFileSync(path.join(ws, "a.txt"), "x");
+        await agentLoop(session.buildSessionContext().messages, {
+          session,
+          loopOptions: new LoopOptions({ quietOutput: true, signal: controller.signal }),
+        });
+      });
+      unsubscribe();
+      // ADR-0008：本轮 assistant(tool_calls) + 已执行工具结果全部回滚
+      const entries = session.getEntries();
+      expect(entries.filter((e) => e.type === "message")).toHaveLength(1);
+      expect(session.buildSessionContext().messages).toHaveLength(1);
+      // 磁盘文件同步回滚（重新打开验证）
+      const reopened = SessionManager.open(session.getSessionFile()!);
+      expect(reopened.getEntries()).toHaveLength(1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("不可恢复错误：把 [Error] 收尾消息落盘（恢复后可见失败原因）", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-err-"));
+    try {
+      const session = SessionManager.create(process.cwd(), dir);
+      session.appendMessage({ role: "user", content: "go" });
+      setRetryPolicyForTest({ enabled: true, maxRetries: 0, baseDelayMs: 1 });
+      mock.push(() => ({ kind: "error", status: 500, body: "boom" }));
+      await agentLoop(session.buildSessionContext().messages, { session, loopOptions: quiet });
+      const ctx = session.buildSessionContext();
+      const last = ctx.messages[ctx.messages.length - 1];
+      expect(last.role).toBe("assistant");
+      expect(String(last.content)).toContain("[Error]");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

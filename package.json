@@ -18,19 +18,20 @@
     "dotenv": "16.6.1",
     "glob": "^13.0.6",
     "jiti": "^2.7.0",
-    "proper-lockfile": "^4.1.2"
+    "proper-lockfile": "^4.1.2",
+    "tsx": "^4.23.5"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",
     "@types/proper-lockfile": "^4.1.4",
-    "tsx": "^4.23.5",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
   },
   "bin": {
-    "cpi": "src/cli.ts"
+    "cpi": "bin/cpi.js"
   },
   "files": [
+    "bin",
     "src",
     "scripts",
     "examples",

@@ -10,6 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline/promises";
 import { PROJECT_ROOT, initRuntime } from "./config.ts";
+import { installFatalHandlers } from "./fatal.ts";
 import { agentLoop } from "./agent-loop.ts";
 import { triggerHooks } from "./hook.ts";
 import type { ChatMessage } from "./client.ts";
@@ -371,6 +372,8 @@ async function runTui(
 }
 
 async function main(): Promise<void> {
+  // 顶层崩溃兜底（04）：未捕获异常不静默退出，记录原因 + 退出码 1
+  installFatalHandlers();
   const args = process.argv.slice(2);
 
   if (args.includes("--version") || args.includes("-v")) {

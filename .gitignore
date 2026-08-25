@@ -1,6 +1,9 @@
 # Runtime data (project-local, like .claude in the Python original)
 .agent/
 
+# 会话转写（含工具输出，可能含敏感内容；不提交不发布）
+.transcripts/
+
 # Node
 node_modules/
 dist/
