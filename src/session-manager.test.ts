@@ -114,7 +114,7 @@ describe("compaction 检查点（S12）", () => {
     s.appendMessage(u("继续"));
     const ctx = s.buildSessionContext();
     const contents = ctx.messages.map((m) => String(m.content));
-    expect(contents.some((c) => c.includes("[Compacted]"))).toBe(true);
+    expect(contents.some((c) => c.includes("compacted into the following summary"))).toBe(true);
     expect(contents.some((c) => c.includes("早期内容摘要"))).toBe(true);
     // retainedTail 检查点内容
     expect(contents).toContain("最近请求");

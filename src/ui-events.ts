@@ -30,6 +30,12 @@ export interface ToolUiEvent {
 export interface TurnEndEvent {
   stopReason?: string;
   errorMessage?: string;
+  /** 缓存诊断：本回合相对上轮应命中却重计费（对齐 pi cache-stats） */
+  cacheMiss?: {
+    missedTokens: number;
+    missedCost: number;
+    idleMs: number;
+  };
 }
 
 /** 事件类型 → 载荷映射（架构 C：UiEventSink 的单一传播面） */

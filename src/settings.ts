@@ -18,10 +18,32 @@ export interface PiSettings {
   retry: PiRetrySettings;
   defaultModel?: string;
   enabledModels?: string[];
+  /** 自动压缩（对齐 pi compaction 键：enabled/reserveTokens/keepRecentTokens） */
+  compaction?: {
+    enabled?: boolean;
+    reserveTokens?: number;
+    keepRecentTokens?: number;
+    /** 触发系数（CC LA1=0.92 实证；触发 = kE ≥ pct × (window − maxOutput 预留)） */
+    autoCompactPct?: number;
+  };
 }
 
 /** pi 默认：agent 级重试开启，最多 3 次，指数退避 2s/4s/8s */
 export const DEFAULT_RETRY: PiRetrySettings = { enabled: true, maxRetries: 3, baseDelayMs: 2000 };
+
+/** pi 默认（DEFAULT_COMPACTION_SETTINGS）：window 余量 16K，tail 预算 20K；
+ * autoCompactPct 对齐 CC 1.0.40 实证（LA1=0.92：kE ≥ 0.92×窗口触发） */
+export const DEFAULT_COMPACTION: {
+  enabled: boolean;
+  reserveTokens: number;
+  keepRecentTokens: number;
+  autoCompactPct: number;
+} = {
+  enabled: true,
+  reserveTokens: 16384,
+  keepRecentTokens: 20000,
+  autoCompactPct: 0.92,
+};
 
 let _cache: PiSettings | null = null;
 let _override: PiSettings | null = null;
@@ -71,6 +93,27 @@ export function readPiSettings(): PiSettings {
           enabledModels: (parsed["enabledModels"] as unknown[]).filter(
             (v): v is string => typeof v === "string",
           ),
+        }
+      : {}),
+    ...(parsed["compaction"] !== undefined
+      ? {
+          compaction: {
+            enabled:
+              (parsed["compaction"] as Record<string, unknown>)["enabled"] !== false,
+            ...(typeof (parsed["compaction"] as Record<string, unknown>)["reserveTokens"] === "number"
+              ? { reserveTokens: (parsed["compaction"] as Record<string, unknown>)["reserveTokens"] as number }
+              : {}),
+            ...(typeof (parsed["compaction"] as Record<string, unknown>)["keepRecentTokens"] === "number"
+              ? {
+                  keepRecentTokens: (parsed["compaction"] as Record<string, unknown>)["keepRecentTokens"] as number,
+                }
+              : {}),
+            ...(typeof (parsed["compaction"] as Record<string, unknown>)["autoCompactPct"] === "number"
+              ? {
+                  autoCompactPct: (parsed["compaction"] as Record<string, unknown>)["autoCompactPct"] as number,
+                }
+              : {}),
+          },
         }
       : {}),
   };

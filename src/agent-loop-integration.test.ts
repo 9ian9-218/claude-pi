@@ -6,6 +6,7 @@ import path from "node:path";
 import { MockOpenAI } from "../tests/helpers/mock-openai.ts";
 import { installMockModels } from "../tests/helpers/test-client.ts";
 import { setRetryPolicyForTest } from "./error-recovery.ts";
+import { setSettingsOverrideForTest } from "./settings.ts";
 import { resetClient, type ChatMessage } from "./client.ts";
 import { agentLoop } from "./agent-loop.ts";
 import { LoopOptions } from "./loop-options.ts";
@@ -18,6 +19,7 @@ let ws: string;
 
 beforeEach(async () => {
   resetClient();
+  setSettingsOverrideForTest({ retry: { enabled: true, maxRetries: 3, baseDelayMs: 2000 }, compaction: { enabled: true } });
   mock = await MockOpenAI.create();
   installMockModels(mock.baseUrl);
   ws = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-int-"));
@@ -26,6 +28,10 @@ beforeEach(async () => {
 
 afterEach(async () => {
   resetClient();
+  // kE 触发测试预置的当前模型不泄漏到其他用例（resolveCurrentModel 缓存）
+  const { resetAiRuntime } = await import("./ai-runtime.ts");
+  resetAiRuntime();
+  setSettingsOverrideForTest(null);
   await mock.close();
   fs.rmSync(ws, { recursive: true, force: true });
 });
@@ -65,9 +71,9 @@ describe("agentLoop 集成（03/04）", () => {
       const messages: ChatMessage[] = [{ role: "user", content: "read both" }];
       await agentLoop(messages, { loopOptions: quiet });
 
-      // 预算达标后停止：最大的 1 条落盘（Python 行为）
+      // L3（CC 式）：每条超限工具输出在出口处完整落盘（双保险）
       const dir = path.join(ws, ".task_outputs", "tool-results");
-      expect(fs.readdirSync(dir).length).toBe(1);
+      expect(fs.readdirSync(dir).length).toBe(2);
       // 第二轮请求体中该大 tool 结果被替换为占位
       const second = mock.requests[1];
       const toolContents = second.messages
@@ -277,9 +283,68 @@ describe("agentLoop 集成（12 会话机制）", () => {
     }
   });
 
-  it("L4：超 CONTEXT_LIMIT 写 compaction entry（retainedTail），上下文从检查点重建", async () => {
+  it("L4：kE 口径触发——预置带 usage 的 assistant（真实 usage 超阈值）写 compaction", async () => {
     const { SessionManager, setSessionRoot } = await import("./session-manager.ts");
-    const { CONTEXT_LIMIT } = await import("./compact.ts");
+    const { makeCompletionsModel } = await import("../tests/helpers/test-client.ts");
+    const { setCurrentModel } = await import("./ai-runtime.ts");
+    const sessDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-l4ke-"));
+    setSessionRoot(sessDir);
+    try {
+      // 预置模型：128K 窗口 → 阈值 0.92×(128K−32K)=88,320（无模型时兜底 600K 阈值 522K 不会触发）
+      setCurrentModel(makeCompletionsModel("gpt-test", mock.baseUrl));
+      mock.push(() => ({ kind: "sse", chunks: [{ content: "kE 摘要", finishReason: "stop" }] }));
+      mock.push(() => ({ kind: "sse", chunks: [{ content: "ok", finishReason: "stop" }] }));
+      const session = SessionManager.create(process.cwd());
+      // 真实 usage 500K prompt tokens（字符量很小，只有 kE 口径能触发）
+      const usage = {
+        input: 500_000, output: 100, cacheRead: 0, cacheWrite: 0, totalTokens: 500_100,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      };
+      session.appendMessage({ role: "user", content: "问题" });
+      session.appendMessage({ role: "assistant", content: "之前的大响应", usage });
+      session.appendMessage({ role: "user", content: "继续" });
+      await agentLoop(session.buildSessionContext().messages, { loopOptions: quiet, session });
+      const comp = session.getEntries().find((e) => e.type === "compaction");
+      expect(comp).toBeDefined();
+      expect((comp as { summary: string }).summary).toContain("kE 摘要");
+      expect((comp as { tokensBefore: number }).tokensBefore).toBe(500_000);
+    } finally {
+      fs.rmSync(sessDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it("L4：摘要失败（api_error）→ 不写 entry、回合继续（CC 错误分类语义）", async () => {
+    const { SessionManager, setSessionRoot } = await import("./session-manager.ts");
+    const { makeCompletionsModel } = await import("../tests/helpers/test-client.ts");
+    const { setCurrentModel } = await import("./ai-runtime.ts");
+    const sessDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-l4err-"));
+    setSessionRoot(sessDir);
+    try {
+      setCurrentModel(makeCompletionsModel("gpt-test", mock.baseUrl));
+      // 摘要调用 → 500 错误；随后主调用正常（不阻断回合）
+      mock.push(() => ({ kind: "error", status: 500, body: "summarization failed" }));
+      mock.push(() => ({ kind: "sse", chunks: [{ content: "继续干活", finishReason: "stop" }] }));
+      const session = SessionManager.create(process.cwd());
+      const usage = {
+        input: 500_000, output: 100, cacheRead: 0, cacheWrite: 0, totalTokens: 500_100,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      };
+      session.appendMessage({ role: "user", content: "问题" });
+      session.appendMessage({ role: "assistant", content: "大响应", usage });
+      session.appendMessage({ role: "user", content: "继续" });
+      await agentLoop(session.buildSessionContext().messages, { loopOptions: quiet, session });
+      // 无 compaction entry 写入；回合照常产出响应
+      expect(session.getEntries().some((e) => e.type === "compaction")).toBe(false);
+      expect(mock.requests[mock.requests.length - 1].messages.map((x: { content?: unknown }) => String(x.content))).toContain("继续");
+      void setCurrentModel;
+    } finally {
+      fs.rmSync(sessDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it("L4：超触发阈值写 compaction entry（字符估算兜底口径）（retainedTail），上下文从检查点重建", async () => {
+    const { SessionManager, setSessionRoot } = await import("./session-manager.ts");
+    const { getCompactionThreshold } = await import("./compact.ts");
     const sessDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-l4-"));
     setSessionRoot(sessDir);
     try {
@@ -300,10 +365,10 @@ describe("agentLoop 集成（12 会话机制）", () => {
       // 上下文从检查点重建：不含巨大历史，含 retainedTail
       const ctx = session.buildSessionContext();
       const contents = ctx.messages.map((m) => String(m.content));
-      expect(contents.some((c) => c.includes("[Compacted]"))).toBe(true);
+      expect(contents.some((c) => c.includes("compacted into the following summary"))).toBe(true);
       expect(contents.some((c) => c === huge)).toBe(false);
       expect(contents).toContain("最新问题");
-      void CONTEXT_LIMIT;
+      void getCompactionThreshold;
     } finally {
       fs.rmSync(sessDir, { recursive: true, force: true });
     }

@@ -29,6 +29,7 @@ import { SystemMessageComponent } from "./messages/system-message.ts";
 import { ToolExecutionComponent } from "./messages/tool-execution.ts";
 import { StartupMessageComponent } from "./messages/startup-message.ts";
 import { Footer } from "./footer.ts";
+import { CACHE_TTL_MS } from "../cache-stats.ts";
 import { SELECT_LIST_THEME, overlayTitle } from "./select-style.ts";
 import { TurnController } from "./turn-controller.ts";
 import { ToolBlockRegistry } from "./tool-registry.ts";
@@ -431,6 +432,14 @@ export class TuiApp {
   finishAssistantTurn(event: TurnEndEvent): void {
     this.streamingComponent?.setTurnEnd(event);
     this.streamingComponent = null;
+    // 缓存诊断提示（对齐 pi 回合并末 miss 提示）
+    if (event.cacheMiss && event.cacheMiss.missedTokens > 0) {
+      const { missedTokens, idleMs } = event.cacheMiss;
+      const idleHint = idleMs > CACHE_TTL_MS ? "（idle 超过 5 分钟缓存 TTL）" : "";
+      this.chat.addChild(
+        new SystemMessageComponent(`[cache miss] ${missedTokens.toLocaleString()} tokens 本应命中缓存${idleHint}`, "muted"),
+      );
+    }
     this.tui.requestRender();
   }
 

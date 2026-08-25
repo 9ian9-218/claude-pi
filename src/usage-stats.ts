@@ -88,6 +88,28 @@ export interface ContextUsage {
 }
 
 /**
+ * 分支内最近 compaction 之后是否存在有效 assistant usage（pi 的
+ * hasPostCompactionUsage 语义）。
+ * - null：分支无 compaction（门闩不限制）；
+ * - true：压缩后已有有效响应（上下文量可知）；
+ * - false：压缩后尚无有效响应（上下文量未知——触发方应等待）。
+ * 有效 = usage.totalTokens > 0 的 assistant 消息。中断/出错回合已被
+ * truncateTo 回滚，无需 pi 的 stopReason 过滤。
+ */
+export function hasValidPostCompactionUsage(entries: SessionEntry[]): boolean | null {
+  let latestCompactionIdx = -1;
+  for (let i = 0; i < entries.length; i++) {
+    if (entries[i].type === "compaction") latestCompactionIdx = i;
+  }
+  if (latestCompactionIdx < 0) return null;
+  for (let i = entries.length - 1; i > latestCompactionIdx; i--) {
+    const usage = usageOf(entries[i]);
+    if (usage && usage.totalTokens > 0) return true;
+  }
+  return false;
+}
+
+/**
  * 上下文占用（pi 语义）：
  * - contextWindow <= 0 → undefined（不显示）；
  * - 分支内最近一次 compaction 之后无有效 assistant usage → { tokens: null, percent: null }；
@@ -100,23 +122,9 @@ export function computeContextUsage(
 ): ContextUsage | undefined {
   if (contextWindow <= 0) return undefined;
 
-  let latestCompactionIdx = -1;
-  for (let i = 0; i < entries.length; i++) {
-    if (entries[i].type === "compaction") latestCompactionIdx = i;
-  }
-
-  if (latestCompactionIdx >= 0) {
-    let hasValidPostCompactionUsage = false;
-    for (let i = entries.length - 1; i > latestCompactionIdx; i--) {
-      const usage = usageOf(entries[i]);
-      if (usage && usage.totalTokens > 0) {
-        hasValidPostCompactionUsage = true;
-        break;
-      }
-    }
-    if (!hasValidPostCompactionUsage) {
-      return { tokens: null, percent: null, contextWindow };
-    }
+  const gate = hasValidPostCompactionUsage(entries);
+  if (gate === false) {
+    return { tokens: null, percent: null, contextWindow };
   }
 
   const tokens = estimateMessagesTokens(messages);

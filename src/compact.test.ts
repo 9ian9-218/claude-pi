@@ -9,15 +9,16 @@ import {
   estimateTokens,
   estimateMessageTokens,
   estimateMessagesTokens,
-  snipCompact,
-  microCompact,
-  toolResultBudget,
   truncateToTokens,
   persistLargeOutput,
   reactiveCompact,
   compactHistory,
-  _splitRounds,
-  _validateToolPairing,
+  truncateToolOutput,
+  maxOutputReserve,
+  getCompactionThreshold,
+  estimateContextTokensByUsage,
+  pickRetainedTail,
+  summarizeHistory,
 } from "./compact.ts";
 import { runWithWorkdir } from "./workdir.ts";
 
@@ -72,117 +73,6 @@ describe("estimateTokens（S4）", () => {
   });
 });
 
-describe("splitRounds / validateToolPairing（S4）", () => {
-  it("assistant+tool_calls 与后续 tool 消息组成一轮", () => {
-    const msgs = [
-      m("user", "u"),
-      m("assistant", "a", {
-        tool_calls: [{ id: "c1", type: "function", function: { name: "x", arguments: "{}" } }],
-      }),
-      m("tool", "r", { tool_call_id: "c1" }),
-      m("user", "u2"),
-    ];
-    const rounds = _splitRounds(msgs);
-    expect(rounds).toHaveLength(3);
-    expect(rounds[1]).toHaveLength(2); // assistant+tool 同轮
-    expect(rounds[1][0].role).toBe("assistant");
-    expect(rounds[1][1].role).toBe("tool");
-  });
-
-  it("tool pairing 破坏时抛错", () => {
-    const msgs = [
-      m("assistant", "a", { tool_calls: [{ id: "c1" }] }),
-      m("tool", "r", { tool_call_id: "c2" }),
-    ];
-    expect(() => _validateToolPairing(msgs)).toThrow("tool_call pairing broken");
-  });
-});
-
-describe("snipCompact（S4, L1）", () => {
-  it("消息数未超限时原样返回", () => {
-    const msgs: ChatMessage[] = [userMsg(1), ...round(1)];
-    expect(snipCompact(msgs)).toBe(msgs);
-  });
-
-  it("超限且可裁剪时：裁剪中间、保留首尾完整轮次、插入占位符", () => {
-    const msgs: ChatMessage[] = [m("system", "sys")];
-    for (let i = 0; i < 130; i++) {
-      msgs.push(userMsg(i), ...round(i));
-    }
-    const out = snipCompact(msgs, 68);
-    expect(out.length).toBeLessThanOrEqual(68);
-    expect(out[0].role).toBe("system");
-    expect(out.some((m) => m.role === "user" && String(m.content).startsWith("[snipped"))).toBe(true);
-    // 首尾保留：头部首条 + 尾部最后轮次（assistant/tool；Python 行为）
-    expect(out.some((x) => String(x.content).includes("message 0"))).toBe(true);
-    expect(out.some((x) => String(x.content).includes("reply 129"))).toBe(true);
-    expect(out.some((x) => String(x.content).includes("result 129"))).toBe(true);
-    // tool pairing 完好
-    expect(() => _validateToolPairing(out)).not.toThrow();
-  });
-
-  it("无法放下完整轮次时返回原数组（Python 等价行为）", () => {
-    const msgs: ChatMessage[] = [m("system", "sys")];
-    for (let i = 0; i < 130; i++) {
-      msgs.push(userMsg(i), ...round(i));
-    }
-    const out = snipCompact(msgs, 63);
-    expect(out).toBe(msgs);
-  });
-});
-
-describe("microCompact（S4, L2）", () => {
-  it("旧的大 tool result 替换为占位符，最近 10 条保留", () => {
-    const msgs: ChatMessage[] = [];
-    for (let i = 0; i < 15; i++) {
-      msgs.push(m("tool", "x".repeat(40_000), { tool_call_id: `c${i}` }));
-    }
-    microCompact(msgs);
-    // 前 5 条被替换
-    for (let i = 0; i < 5; i++) {
-      expect(msgs[i].content).toContain("[Earlier tool result compacted");
-    }
-    // 最近 10 条保留原文
-    for (let i = 5; i < 15; i++) {
-      expect(String(msgs[i].content).startsWith("x".repeat(40_000))).toBe(true);
-    }
-  });
-
-  it("小结果不替换", () => {
-    const msgs = [
-      m("tool", "small", { tool_call_id: "c1" }),
-      m("tool", "tiny", { tool_call_id: "c2" }),
-    ];
-    microCompact(msgs);
-    expect(msgs[0].content).toBe("small");
-  });
-});
-
-describe("toolResultBudget（S4, L3）", () => {
-  it("尾部工具结果超预算时大结果落盘并留预览", () => {
-    runWithWorkdir(ws, () => {
-      const big = "y".repeat(30_000); // ~8400 tok > 6000 阈值
-      const msgs = [
-        m("tool", big, { tool_call_id: "big_call" }),
-        m("tool", "ok", { tool_call_id: "small_call" }),
-      ];
-      toolResultBudget(msgs, 1000); // 预算压到 1000 触发
-      const replaced = String(msgs[0].content);
-      expect(replaced).toContain("<persisted-output>");
-      expect(replaced).toContain("tool-results/big_call.txt");
-      expect(replaced).toContain("Preview:");
-      const persisted = fs.readFileSync(path.join(ws, ".task_outputs", "tool-results", "big_call.txt"), "utf8");
-      expect(persisted).toBe(big);
-      expect(msgs[1].content).toBe("ok");
-    });
-  });
-
-  it("总预算未超时原样返回", () => {
-    const msgs = [m("tool", "small", { tool_call_id: "c1" })];
-    expect(toolResultBudget(msgs)).toBe(msgs);
-  });
-});
-
 describe("truncateToTokens（S4）", () => {
   it("超限时二分截断并加后缀（含后缀估算略超预算）", () => {
     const text = "z".repeat(10_000);
@@ -215,7 +105,8 @@ describe("LLM 摘要压缩（S4）", () => {
     const out = await compactHistory([userMsg(1), ...round(1)]);
     expect(out).toHaveLength(1);
     expect(out[0].role).toBe("user");
-    expect(String(out[0].content)).toContain("[Compacted]");
+    expect(String(out[0].content)).toContain("compacted into the following summary");
+    expect(String(out[0].content)).toContain("<summary>");
     expect(String(out[0].content)).toContain("总结内容");
   });
 
@@ -224,7 +115,109 @@ describe("LLM 摘要压缩（S4）", () => {
     const msgs = Array.from({ length: 10 }, (_, i) => userMsg(i));
     const out = await reactiveCompact(msgs);
     expect(out[0].role).toBe("user");
-    expect(String(out[0].content)).toContain("[Reactive compact]");
+    expect(String(out[0].content)).toContain("compacted into the following summary");
     expect(out).toHaveLength(1 + 5);
+  });
+});
+
+describe("truncateToolOutput（CC 式单条截断）", () => {
+  it(">30K 字符截断 + [N lines truncated] 标记", () => {
+    const big = "l".repeat(35_000);
+    const out = truncateToolOutput(big);
+    expect(out.length).toBeLessThan(30_500);
+    expect(out).toMatch(/\[(\d+) lines truncated\]/);
+    expect(out).toContain("... [");
+  });
+
+  it("未超限原样返回", () => {
+    const small = "ok".repeat(100);
+    expect(truncateToolOutput(small)).toBe(small);
+  });
+});
+
+describe("maxOutputReserve / getCompactionThreshold（CC 式触发）", () => {
+  it("默认预留 32000；haiku/3-5 模型 8192；env 可覆盖", () => {
+    expect(maxOutputReserve("claude-sonnet-4-20250514")).toBe(32_000);
+    expect(maxOutputReserve("claude-3-5-sonnet")).toBe(8192);
+    expect(maxOutputReserve("claude-haiku-3-5")).toBe(8192);
+    process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = "64000";
+    try {
+      expect(maxOutputReserve("any")).toBe(64_000);
+    } finally {
+      delete process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS;
+    }
+  });
+
+  it("阈值 = 0.92 × (window − 预留)；pct 可覆盖", () => {
+    expect(getCompactionThreshold(128_000)).toBe(Math.round((128_000 - 32_000) * 0.92));
+    expect(getCompactionThreshold(1_000_000, 0.95)).toBe(Math.round((1_000_000 - 32_000) * 0.95));
+  });
+});
+
+describe("estimateContextTokensByUsage（kE 口径）", () => {
+  it("取尾部最近带 usage 的 assistant 消息的 prompt tokens", () => {
+    const msgs = [
+      { role: "user", content: "q" },
+      { role: "assistant", content: "a", usage: { input: 100, output: 10, cacheRead: 90, cacheWrite: 5, totalTokens: 205, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } },
+      { role: "tool", tool_call_id: "t", content: "r" },
+      { role: "assistant", content: "b", usage: { input: 500, output: 20, cacheRead: 400, cacheWrite: 0, totalTokens: 920, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } },
+    ] as ChatMessage[];
+    expect(estimateContextTokensByUsage(msgs)).toBe(500 + 400);
+  });
+
+  it("无 usage → null（调用方兜底字符估算）", () => {
+    expect(estimateContextTokensByUsage([{ role: "user", content: "hi" }])).toBeNull();
+  });
+});
+
+describe("pickRetainedTail（keepRecentTokens 预算）", () => {
+  it("从尾向前累计不超预算；单条超预算也保留", () => {
+    const msgs = [
+      { role: "user", content: "a".repeat(50) },
+      { role: "assistant", content: "b".repeat(50) },
+      { role: "user", content: "c".repeat(50) },
+    ] as ChatMessage[];
+    const budget = estimateMessageTokens(msgs[1]) + estimateMessageTokens(msgs[2]) + 1;
+    const tail = pickRetainedTail(msgs, budget);
+    expect(tail).toHaveLength(2);
+    expect(tail[0].content).toBe("b".repeat(50));
+  });
+
+  it("空或单条", () => {
+    expect(pickRetainedTail([], 20000)).toEqual([]);
+    const one = [{ role: "user", content: "x" }] as ChatMessage[];
+    expect(pickRetainedTail(one, 1)).toEqual(one);
+  });
+});
+
+describe("summarizeHistory pi 式更新（previousSummary）", () => {
+  it("首次压缩：请求体含 <conversation> 包装与 7 节模板关键词", async () => {
+    mock.always(() => ({ kind: "sse", chunks: [{ content: "## Goal\n继续工作", finishReason: "stop" }] }));
+    const msgs = [userMsg(1), ...round(1)];
+    const { summary } = await summarizeHistory(msgs);
+    expect(summary).toContain("## Goal");
+    const req = mock.requests[0];
+    const body = JSON.stringify(req.messages);
+    expect(body).toContain("<conversation>");
+    expect(body).toContain("## Key Decisions");
+    expect(body).not.toContain("<previous-summary>");
+  });
+
+  it("第二次压缩：previousSummary 传入，请求体含 <previous-summary> 与更新式指令", async () => {
+    mock.always(() => ({ kind: "sse", chunks: [{ content: "## Goal\n更新后", finishReason: "stop" }] }));
+    const msgs = [userMsg(2)];
+    await summarizeHistory(msgs, { previousSummary: "## Goal\n旧目标" });
+    const body = JSON.stringify(mock.requests[0].messages);
+    expect(body).toContain("<previous-summary>");
+    expect(body).toContain("旧目标");
+    expect(body).toContain("Preserve existing goals");
+    expect(body).toContain("PRESERVE all existing information");
+  });
+
+  it("instructions → Additional focus 后缀", async () => {
+    mock.always(() => ({ kind: "sse", chunks: [{ content: "s", finishReason: "stop" }] }));
+    await summarizeHistory([userMsg(3)], { instructions: "关注 typescript 改动" });
+    const body = JSON.stringify(mock.requests[0].messages);
+    expect(body).toContain("Additional focus: 关注 typescript 改动");
   });
 });

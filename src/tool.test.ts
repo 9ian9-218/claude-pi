@@ -245,3 +245,25 @@ describe("load_skill 工具（S7）", () => {
     }
   });
 });
+
+describe("run_bash 大输出（L3 CC 式）", () => {
+  it(">30K 字符截断 + lines truncated 标记", async () => {
+    runWithWorkdir(ws, async () => {
+      const r = await executeToolCall(
+        mkCall("run_bash", { command: "python3 -c \"print('l' * 35000)\"", run_in_background: false }),
+      );
+      expect(r).toMatch(/\[\d+ lines truncated\]/);
+    });
+  });
+
+  it(">6K tokens 完整落盘 + 引用预览（小于 30K 时不截断）", async () => {
+    runWithWorkdir(ws, async () => {
+      const r = await executeToolCall(
+        mkCall("run_bash", { command: "python3 -c \"print('y' * 20000)\"", run_in_background: false }),
+      );
+      expect(r).toContain("<persisted-output>");
+      expect(r).toContain("Full output:");
+      expect(fs.readdirSync(path.join(ws, ".task_outputs", "tool-results")).length).toBeGreaterThan(0);
+    });
+  });
+});

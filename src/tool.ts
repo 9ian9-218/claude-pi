@@ -8,11 +8,12 @@
  * background（06）、subagent/teammates/mcp 工具（09/10/19）、memory 索引联动（05）后续接入。
  */
 import { spawnSync } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { randomBytes } from "node:crypto";
 import { globSync } from "glob";
 import { getWorkdir } from "./workdir.ts";
+import { finalizeToolOutput } from "./compact.ts";
 import { sanitizeOpenaiTool, type OpenaiTool } from "./schema-strict.ts";
 import { getSkillContent } from "./skill-load.ts";
 import { SUBAGENT_IDENTITY } from "./prompt.ts";
@@ -99,7 +100,6 @@ export function safePath(p: string): string {
 // ── run_bash ──────────────────────────────────────────────────────────────
 
 const BASH_TIMEOUT_MS = 120_000;
-const BASH_MAX_OUTPUT = 50_000;
 
 function execRunBash(args: Record<string, unknown>): string {
   const command = String(args["command"]);
@@ -116,7 +116,7 @@ function execRunBash(args: Record<string, unknown>): string {
     }
     const out = `${r.stdout ?? ""}${r.stderr ?? ""}`.trim();
     if (!out) return "(no output)";
-    return out.slice(0, BASH_MAX_OUTPUT);
+    return out;
   } catch (e) {
     return `Error: ${String(e)}`;
   }
@@ -875,9 +875,14 @@ export async function executeToolCall(
   }
 
   const result = tool.run(args);
-  if (typeof result === "string") return result;
-  if (result instanceof Promise) return String(await result);
-  return JSON.stringify(result);
+  const out =
+    typeof result === "string"
+      ? result
+      : result instanceof Promise
+        ? String(await result)
+        : JSON.stringify(result);
+  // L3（CC 式）：所有工具输出统一截断 + 大输出落盘引用
+  return finalizeToolOutput(name, toolCall.id, out);
 }
 
 // validate_args（由 hook.ts 的 validateHook 调用；对齐 hook.py validate_args）

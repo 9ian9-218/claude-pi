@@ -130,15 +130,12 @@ export function wrapRelevantMemories(memoriesBody: string): string {
 }
 
 export function formatCompactedUserMessage(summary: string): string {
-  return `[Compacted]\n\n${summary}`;
+  // 对齐 pi COMPACTION_SUMMARY_PREFIX/SUFFIX（CC 同文）
+  return `The conversation history before this point was compacted into the following summary:\n\n<summary>\n${summary}\n</summary>`;
 }
 
 export function formatReactiveCompactedUserMessage(summary: string): string {
-  return `[Reactive compact]\n\n${summary}`;
-}
-
-export function formatSnippedUserMessage(count: number): string {
-  return `[snipped ${count} messages]`;
+  return formatCompactedUserMessage(summary);
 }
 
 // ── 错误恢复 prompt（03） ──────────────────────────────────────────────────
@@ -149,14 +146,100 @@ export const CONTINUATION_PROMPT =
 
 // ── Compact LLM 总结 prompt（04） ──────────────────────────────────────────
 
-export const COMPACT_SUMMARY_TEMPLATE =
-  "Summarize this coding-agent conversation so work can continue.\n" +
-  "Preserve: 1. current goal, 2. key findings/decisions, 3. files read/changed, " +
-  "4. remaining work, 5. user constraints.\n" +
-  "Be compact but concrete.\n\n{conversation}";
+// pi 式结构化检查点模板（对齐 pi dist/core/compaction/compaction.js
+// SUMMARIZATION_PROMPT——文本同源 CC 家族但为 7 节检查点式，替代旧 5 点简版）
+export const COMPACT_SUMMARY_TEMPLATE = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
 
-export function formatCompactSummary(conversation: string): string {
-  return COMPACT_SUMMARY_TEMPLATE.replace("{conversation}", conversation);
+Use this EXACT format:
+
+## Goal
+[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]
+
+## Constraints & Preferences
+- [Any constraints, preferences, or requirements mentioned by user]
+- [Or "(none)" if none were mentioned]
+
+## Progress
+### Done
+- [x] [Completed tasks/changes]
+
+### In Progress
+- [ ] [Current work]
+
+### Blocked
+- [Issues preventing progress, if any]
+
+## Key Decisions
+- **[Decision]**: [Brief rationale]
+
+## Next Steps
+1. [Ordered list of what should happen next]
+
+## Critical Context
+- [Any data, examples, or references needed to continue]
+- [Or "(none)" if not applicable]
+
+Keep each section concise. Preserve exact file paths, function names, and error messages.`;
+
+// 更新式模板：已有摘要时增量合并（对齐 pi UPDATE_SUMMARIZATION_PROMPT）
+export const COMPACT_UPDATE_TEMPLATE = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
+
+Update the existing structured summary with new information. RULES:
+- PRESERVE all existing information from the previous summary
+- ADD new progress, decisions, and context from the new messages
+- UPDATE the Progress section: move items from "In Progress" to "Done" when completed
+- UPDATE "Next Steps" based on what was accomplished
+- PRESERVE exact file paths, function names, and error messages
+- If something is no longer relevant, you may remove it
+
+Use this EXACT format:
+
+## Goal
+[Preserve existing goals, add new ones if the task expanded]
+
+## Constraints & Preferences
+- [Preserve existing, add new ones discovered]
+
+## Progress
+### Done
+- [x] [Preserve completed, add newly completed]
+
+### In Progress
+- [ ] [Preserve in-progress, update state]
+
+### Blocked
+- [Preserve blockers, add new ones]
+
+## Key Decisions
+- **[Decision]**: [Preserve existing, add new with brief rationale]
+
+## Next Steps
+1. [Preserve remaining, update order based on progress]
+
+## Critical Context
+- [Preserve important context, add new data/refs]
+- [Or "(none)" if not applicable]
+
+Keep each section concise. Preserve exact file paths, function names, and error messages.`;
+
+/**
+ * 组装摘要 prompt（pi 式）：<conversation> 包装 + 可选 <previous-summary>
+ * （多次压缩走更新式）+ 可选 /compact 指令（Additional focus）。
+ */
+export function formatCompactSummary(
+  conversation: string,
+  previousSummary?: string,
+  instructions?: string,
+): string {
+  let prompt = `<conversation>\n${conversation}\n</conversation>\n\n`;
+  if (previousSummary) {
+    prompt += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
+  }
+  prompt += previousSummary ? COMPACT_UPDATE_TEMPLATE : COMPACT_SUMMARY_TEMPLATE;
+  if (instructions) {
+    prompt += `\n\nAdditional focus: ${instructions}`;
+  }
+  return prompt;
 }
 
 // ── Memory LLM 任务 prompt（05） ───────────────────────────────────────────
