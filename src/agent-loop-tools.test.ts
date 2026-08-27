@@ -117,7 +117,7 @@ describe("agentLoop 工具链（S4）", () => {
       (t) => t.function.name,
     );
     expect(names).toEqual(
-      expect.arrayContaining(["run_bash", "read_file", "write_file", "edit_file", "glob", "todo_write"]),
+      expect.arrayContaining(["run_bash", "read_file", "write_file", "edit_file", "glob", "grep", "todo_write"]),
     );
     const readFile = (req.tools as Array<{ function: { name: string; strict?: boolean } }>).find(
       (t) => t.function.name === "read_file",
