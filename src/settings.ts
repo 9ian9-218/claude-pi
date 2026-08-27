@@ -1,8 +1,10 @@
 /**
- * settings.ts — pi 全局设置读取（~/.pi/agent/settings.json，ADR-0007）
+ * settings.ts — cpi 全局设置（~/.claude-pi/settings.json，独立配置）
  *
- * 只读 claude-pi 用到的键：retry（agent 级重试）、defaultModel、enabledModels。
- * 与 pi 共享同一文件；文件缺失/损坏时回落 pi 默认值。
+ * cpi 使用独立全局配置目录（默认 ~/.claude-pi，与 pi 的 ~/.pi/agent 分离；
+ * PI_CODING_AGENT_DIR 仍可覆盖）。读写的键：retry（agent 级重试）、
+ * defaultModel、enabledModels、compaction。
+ * 文件缺失/损坏时回落默认值；提供从 ~/.pi/agent 的一次性迁移。
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -45,13 +47,13 @@ export const DEFAULT_COMPACTION: {
   autoCompactPct: 0.92,
 };
 
+/** 从指定根目录加载默认配置引用（解耦 import）；cpi 独立配置位于 ~/.claude-pi */
 let _cache: PiSettings | null = null;
 let _override: PiSettings | null = null;
 
 /**
- * pi 全局配置目录（~/.pi/agent，PI_CODING_AGENT_DIR 可覆盖）。
- * 与 pi 的 getAgentDir() 等价但本地实现——避免启动时引入 pi-coding-agent
- * 的巨大模块图（懒加载原则）。
+ * cpi 全局配置目录（~/.claude-pi，PI_CODING_AGENT_DIR 可覆盖）。
+ * 与 pi 不再共享（旧 pi 配置经 migrateFromPi 一次性迁移）。
  */
 export function getAgentDir(): string {
   const envDir =
@@ -59,7 +61,7 @@ export function getAgentDir(): string {
   if (envDir) {
     return envDir.startsWith("~") ? path.join(os.homedir(), envDir.slice(1)) : envDir;
   }
-  return path.join(os.homedir(), ".pi", "agent");
+  return path.join(os.homedir(), ".claude-pi");
 }
 
 export function getSettingsPath(): string {
@@ -130,4 +132,68 @@ export function setSettingsOverrideForTest(settings: PiSettings | null): void {
 /** 清除缓存（resetClient 调用；/settings 修改后也应调用） */
 export function resetSettingsCache(): void {
   _cache = null;
+}
+
+// ── 写入（/settings 设置页用）─────────────────────────────────────────────
+
+/** 把设置合并写入全局 settings.json（保留既有键），成功后清缓存 */
+export function writePiSettings(patch: Partial<PiSettings>): boolean {
+  const current = readPiSettings();
+  const merged: Record<string, unknown> = {};
+  // patch 键级合并（retry/compaction 按完整对象替换，避免深层 merge 复杂度）
+  for (const key of Object.keys(current) as Array<keyof PiSettings>) {
+    merged[key] = current[key];
+  }
+  for (const [k, v] of Object.entries(patch)) {
+    if (v !== undefined) merged[k] = v;
+  }
+  try {
+    fs.mkdirSync(getAgentDir(), { recursive: true });
+    fs.writeFileSync(getSettingsPath(), JSON.stringify(merged, null, 2) + "\n");
+    resetSettingsCache();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ── 一次性迁移（~/.pi/agent → ~/.claude-pi）──────────────────────────────
+
+const MIGRATABLE_FILES = ["auth.json", "models.json", "settings.json"] as const;
+
+/** 需要迁移：旧目录存在配置且新目录缺失至少一个配置文件 */
+export function migrateNeeded(fromDir: string, toDir: string): boolean {
+  if (fromDir === toDir) return false;
+  for (const f of MIGRATABLE_FILES) {
+    if (fs.existsSync(path.join(fromDir, f)) && !fs.existsSync(path.join(toDir, f))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 从旧 pi 配置目录复制缺失的配置文件到新目录。
+ * 返回是否发生了复制；新目录已有同名文件时不覆盖。
+ */
+export function migrateFromPi(
+  fromDir: string = path.join(os.homedir(), ".pi", "agent"),
+  toDir: string = getAgentDir(),
+): boolean {
+  let copied = false;
+  for (const f of MIGRATABLE_FILES) {
+    const src = path.join(fromDir, f);
+    const dst = path.join(toDir, f);
+    if (fs.existsSync(src) && !fs.existsSync(dst)) {
+      try {
+        fs.mkdirSync(toDir, { recursive: true });
+        fs.copyFileSync(src, dst);
+        copied = true;
+      } catch {
+        // 复制失败：继续其余文件
+      }
+    }
+  }
+  resetSettingsCache();
+  return copied;
 }

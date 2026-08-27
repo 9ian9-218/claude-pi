@@ -79,7 +79,7 @@ export async function resolveCurrentModel(): Promise<Model<Api>> {
     return _currentModel;
   }
   throw new Error(
-    "No model configured. Run /login or add models to ~/.pi/agent/models.json",
+    "No model configured. Run /login or add models to ~/.claude-pi/models.json",
   );
 }
 

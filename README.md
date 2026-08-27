@@ -44,7 +44,9 @@
 
 ### 模型与配置
 
-- **与 pi 共享配置**——LLM 传输层基于 `@earendil-works/pi-ai`；模型/凭据/设置与 pi 共用全局目录 `~/.pi/agent/`（auth.json / models.json / settings.json），登录一次两边通用
+- **独立配置**——LLM 传输层基于 `@earendil-works/pi-ai`；模型/凭据/设置走 cpi 独立全局目录 `~/.claude-pi/`（auth.json / models.json / settings.json，`PI_CODING_AGENT_DIR` 可覆盖），不再与 pi 共享；提供 `cpi --migrate-config` 从旧 `~/.pi/agent/` 一次性迁移
+- **会话轨迹导出**——TUI `/export` 双模式：analysis（整树事件流 JSONL，含每步耗时/token/错误标记、大输出全文合并，存 `.agent/exports/`）/ portable（活动分支线性化 JSONL 供 `/import` 恢复，存 cwd）；`/import <path>` 恢复外部会话；`/settings` 配置导出模式/重试/压缩
+- **运行时耗时补记**——每条 assistant/tool 消息随落盘记录真实执行耗时（durationMs）与失败标记（toolError），支撑轨迹分析与性能诊断
 - **多 Provider**——openai / anthropic / gemini / deepseek 等，模型以 `provider/model` 标识，支持自定义模型（Ollama / vLLM / 代理）
 - **数据根跟随项目**——在任意项目运行，`.agent/`（会话/团队/记忆/任务/Skill/worktree/扩展）自动落在该项目下，不写用户目录
 
@@ -70,15 +72,17 @@ cpi                   # 交互模式（TTY 自动进入 TUI；管道/非 TTY 走
 | `cpi --fork <id>` | fork 会话到新文件 |
 | `cpi --no-session` | 临时会话（不落盘） |
 
-TUI 内可用斜杠命令：`/tree`（会话树）、`/fork`、`/clone`、`/resume`、`/new`、`/name`、`/session`、`/login`、`/logout`、`/model`、`/settings`、`/reload`（扩展热重载）等，可扩展注册。
+TUI 内可用斜杠命令：`/tree`（会话树）、`/fork`、`/clone`、`/resume`、`/new`、`/name`、`/session`、`/export`（导出轨迹）、`/import`（导入会话）、`/settings`（设置）、`/login`、`/logout`、`/model`、`/reload`（扩展热重载）等，可扩展注册。
 
 ## 模型配置
 
-优先使用与 pi 共享的全局配置（`PI_CODING_AGENT_DIR` 可覆盖 `~/.pi/agent/`）：
+优先使用 cpi 独立全局配置（`PI_CODING_AGENT_DIR` 可覆盖 `~/.claude-pi/`）：
 
 - `auth.json` — `/login` 保存的 API key / OAuth 凭据
 - `models.json` — 自定义 provider/模型（Ollama / vLLM / 代理等）
-- `settings.json` — retry 设置、defaultModel、enabledModels
+- `settings.json` — retry 设置、defaultModel、enabledModels、compaction
+
+首次使用旧版 pi 配置（`~/.pi/agent/`）时，可运行 `cpi --migrate-config` 一次性复制到新目录。
 
 也可直接用各 provider 的标准环境变量（如 `ANTHROPIC_API_KEY`、`OPENAI_API_KEY`），或项目内 `.env` 文件。传输错误按 retry 设置自动重试。
 
@@ -94,6 +98,9 @@ src/
 ├── compact.ts           # L1–L4 上下文压缩
 ├── error-recovery.ts    # 重试/fallback/续写
 ├── session-manager.ts   # 树形 JSONL 会话与 fork/clone/resume
+├── session-export.ts    # 会话导出（analysis 整树 trace / portable 分支）
+├── session-import.ts    # 会话导入（/import，复制到会话目录）
+├── project-config.ts    # 项目级配置（.agent/config.json，导出模式）
 ├── memory.ts            # Markdown 长期记忆
 ├── tasks.ts             # 任务看板
 ├── worktree.ts          # Git worktree 隔离

@@ -1,11 +1,22 @@
 /**
  * session-commands.ts — TUI 会话命令（15b）
  *
- * /tree 树导航（分支 + branch_summary）/fork /clone /resume /name /session。
+ * /tree 树导航（分支 + branch_summary）/fork /clone /resume /name /session；
+ * /export（双模式轨迹导出）/import（导入外部会话，替换当前会话）。
  */
 import type { TuiApp } from "./app.ts";
 import { SessionManager } from "../session-manager.ts";
 import type { ChatMessage } from "../client.ts";
+import { ui } from "./ui-provider.ts";
+import {
+  parseExportArgs,
+  analysisDefaultPath,
+  portableDefaultPath,
+  exportSessionToAnalysisTrace,
+  exportSessionToPortable,
+} from "../session-export.ts";
+import { importSessionFromJsonl, SessionImportError } from "../session-import.ts";
+import { getExportMode } from "../project-config.ts";
 
 /** 相对时间（对齐 pi formatSessionDate：now/m/h/d/w/mo/y） */
 function relativeTime(ts: number): string {
@@ -154,6 +165,57 @@ export async function handleSessionCommand(
           `父会话: ${session.getHeader().parentSession ?? "(无)"}`,
         ].join("\n"),
       );
+      return;
+    }
+    case "export": {
+      if (!session) {
+        app.appendMessage("system", "会话已禁用（--no-session）。");
+        return;
+      }
+      try {
+        const args = parseExportArgs(rest);
+        // 模式：参数临时覆盖 > 项目配置（/settings 中设置）
+        const mode = args.mode ?? getExportMode();
+        const cwd = process.cwd();
+        const output =
+          mode === "portable"
+            ? exportSessionToPortable(session, args.path ?? portableDefaultPath(cwd))
+            : exportSessionToAnalysisTrace(session, args.path ?? analysisDefaultPath(session.getSessionId()));
+        app.appendMessage(
+          "system",
+          `已导出（${mode === "analysis" ? "分析模式：整树 + 耗时/token 明细" : "会话移植模式：活动分支"}）→ ${output}`,
+        );
+      } catch (e) {
+        app.appendSystem(`导出失败：${(e as Error).message}`, "warning");
+      }
+      return;
+    }
+    case "import": {
+      const inputPath = rest.trim();
+      if (!inputPath) {
+        app.appendSystem("用法：/import <路径.jsonl>", "warning");
+        return;
+      }
+      const confirmed = await ui.confirm("导入会话", false);
+      if (!confirmed) {
+        app.appendMessage("system", "已取消。");
+        return;
+      }
+      try {
+        const imported = importSessionFromJsonl(inputPath, process.cwd());
+        sessionRef.current = imported;
+        app.renderHistory(imported.buildSessionContext().messages);
+        app.appendMessage(
+          "system",
+          `已导入会话（共 ${imported.getBranch().length} 条记录）→ ${imported.getSessionFile()}`,
+        );
+      } catch (e) {
+        if (e instanceof SessionImportError) {
+          app.appendSystem(`导入失败：${e.message}`, "warning");
+        } else {
+          app.appendSystem(`导入失败：${String((e as Error).message)}`, "warning");
+        }
+      }
       return;
     }
     default:

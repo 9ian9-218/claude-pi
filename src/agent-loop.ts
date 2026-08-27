@@ -38,6 +38,11 @@ import type { TurnEndEvent } from "./ui-events.ts";
 import { processPendingLeadPermissions } from "./permission-sync.ts";
 import { formatIdleNotificationInjection } from "./teammates/protocol.ts";
 
+/** 耗时补记：把模型请求耗时挂到 assistant 裸消息上（S4 轨迹分析用，0ms 也记录） */
+function attachDuration(msg: ChatMessage, startedAt: number): ChatMessage {
+  return { ...msg, durationMs: Math.round(performance.now() - startedAt) };
+}
+
 export interface AgentLoopOptions {
   maxTurn?: number;
   maxTokens?: number;
@@ -142,6 +147,7 @@ async function agentLoopInner(
 
     // 本次 LLM 调用前的最新落盘点：中断回滚目标（ADR-0008：不落脏数据）
     const llmStartLeaf = session?.getLeafId() ?? null;
+    const llmStartedAt = performance.now();
     const llmResult = await sendMessagesWithRecovery({
       requestMessages,
       messages,
@@ -214,7 +220,7 @@ async function agentLoopInner(
     }
 
     if (message.toolCalls) {
-      const assistantMsg = message.modelDump() as unknown as ChatMessage;
+      const assistantMsg = attachDuration(message.modelDump() as unknown as ChatMessage, llmStartedAt);
       messages.push(assistantMsg);
       session?.appendMessage(assistantMsg);
       for (const toolCall of message.toolCalls) {
@@ -224,6 +230,7 @@ async function agentLoopInner(
           opts.uiEvents?.emit("turnEnd", { stopReason: "aborted", errorMessage: undefined });
           return null;
         }
+        const toolStartedAt = performance.now();
         let args: unknown;
         let parseError = "";
         try {
@@ -289,18 +296,22 @@ async function agentLoopInner(
             `Tool >\t ${toolCall.function.name}(${toolCall.function.arguments}) -> ${toolResult}`,
           );
         }
-        messages.push({
+        const toolDurationMs = Math.round(performance.now() - toolStartedAt);
+        const toolMsg: ChatMessage = {
           role: "tool",
           tool_call_id: toolCall.id,
           content: toolResult,
-        });
-        session?.appendMessage(messages[messages.length - 1]);
+          durationMs: toolDurationMs,
+          ...(toolError ? { toolError: true as const } : {}),
+        };
+        messages.push(toolMsg);
+        session?.appendMessage(toolMsg);
       }
       continue;
     }
 
     if (message.content !== null) {
-      const assistantMsg = message.modelDump() as unknown as ChatMessage;
+      const assistantMsg = attachDuration(message.modelDump() as unknown as ChatMessage, llmStartedAt);
       messages.push(assistantMsg);
       session?.appendMessage(assistantMsg);
       if (opts.exitOnFinalContent) {

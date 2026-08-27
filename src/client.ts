@@ -35,6 +35,10 @@ export interface ChatMessage {
   tool_call_id?: string;
   /** 响应计费信息（仅 assistant 真实响应落盘；回放/历史消息无此字段） */
   usage?: Usage;
+  /** 运行时补记：本条消息的产生耗时 ms（assistant=模型请求；tool=工具执行） */
+  durationMs?: number;
+  /** 运行时补记：工具调用失败标记（仅 role=tool 消息） */
+  toolError?: boolean;
 }
 
 export interface ToolCallData {

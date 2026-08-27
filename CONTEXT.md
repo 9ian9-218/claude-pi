@@ -47,6 +47,18 @@ _Avoid_: 压缩标记
 裁剪未闭合回合，保证发给模型的序列合法。
 _Avoid_: 自动续写
 
+**导出 (Export)**:
+`/export` 命令的双模式轨迹导出：analysis（整棵树导出为 JSONL 事件流，含每步 durationMs/usage/toolError、大输出全文合并）+ portable（活动分支线性化 JSONL，剥离性能字段，供 `/import` 恢复）。
+
+**导入 (Import)**:
+`/import <path>` 读取外部会话 JSONL 并复制到当前项目会话目录打开（替换当前会话前需确认）。
+
+**运行耗时应答 (Runtime Timing)**:
+agent-loop 为每条落盘消息补记的真实执行耗时（assistant=模型请求 ms、tool=工具执行 ms），随 message 持久化；旧会话导出时按 entry 时间差推导为 durationMsInferred。
+
+**项目配置 (Project Config)**:
+`.agent/config.json` 承载项目相关设置（如导出模式 export.mode，/settings 设置页可改），与用户级全局配置（~/.claude-pi/settings.json）分离。
+
 ## 多 Agent
 
 **Lead**:
@@ -167,10 +179,10 @@ _Avoid_: 预加载、缓存预热
 
 **.agent/ 数据根 (.agent Data Root)**:
 项目内运行时数据目录（teams / memory / tasks / skills / worktrees / sessions / extensions），不写用户目录。
-_Avoid_: .claude（旧名）；例外：扩展的全局位置是 `~/.claude-pi/extensions/`；模型凭据/自定义模型/设置（auth.json / models.json / settings.json）与 pi 共享 `~/.pi/agent/`
+_Avoid_: .claude（旧名）；例外：扩展的全局位置是 `~/.claude-pi/extensions/`；模型凭据/自定义模型/设置（auth.json / models.json / settings.json）在 cpi 独立全局目录 `~/.claude-pi/`
 
 **凭据 (Credential)**:
-auth.json 中存储的 API key 或 OAuth token，与 pi 共享同一全局存储。
+auth.json 中存储的 API key 或 OAuth token，存于 cpi 独立全局目录（`~/.claude-pi/auth.json`；`cpi --migrate-config` 可从旧 pi 配置迁移）。
 _Avoid_: 密钥、token 文件
 
 **对拍测试 (Parity Test)**:

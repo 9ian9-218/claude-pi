@@ -35,6 +35,7 @@ import { TurnController } from "./turn-controller.ts";
 import { ToolBlockRegistry } from "./tool-registry.ts";
 import { Keymap } from "./keymap.ts";
 import { handleLoginCommand } from "./login.ts";
+import { handleSettingsCommand } from "./settings-commands.ts";
 import { getSlashCommand, listSlashCommands } from "../commands.ts";
 import { theme } from "./theme/theme.ts";
 import type { SwarmPermissionRequest, PermissionResolution } from "../permission-sync.ts";
@@ -610,7 +611,7 @@ export class TuiApp {
           this.startupMessage.setExpanded(true);
         } else {
           this.appendSystem(
-            ["/login 登录模型服务商", "/new 开新会话", "/help 显示帮助", "/quit 退出", "/status 显示状态", "Ctrl+C / Esc 退出"].join("\n"),
+            ["/login 登录模型服务商", "/settings 设置（导出模式/重试/压缩）", "/export 导出会话轨迹", "/import 导入会话", "/new 开新会话", "/help 显示帮助", "/quit 退出", "/status 显示状态", "Ctrl+C / Esc 退出"].join("\n"),
             "accent",
           );
         }
@@ -646,6 +647,9 @@ export class TuiApp {
         break;
       case "status":
         this.appendSystem(this.statusTextFn?.() ?? "no status");
+        break;
+      case "settings":
+        await handleSettingsCommand(this);
         break;
       case "reload":
         this.onReload?.();

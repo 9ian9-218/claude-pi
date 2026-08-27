@@ -7,6 +7,7 @@
  * 运行模式分派（-p / --mode json）归工单 13，TUI 归 14。
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import readline from "node:readline/promises";
 import { PROJECT_ROOT, initRuntime } from "./config.ts";
@@ -32,6 +33,36 @@ import {
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { computeUsageTotals, latestCacheHitRate, computeContextUsage } from "./usage-stats.ts";
 import { getGitBranch } from "./git-branch.ts";
+import { migrateFromPi, migrateNeeded } from "./settings.ts";
+
+/** cpi 独立全局配置目录（~/.claude-pi；不再与 pi 共享 ~/.pi/agent） */
+export const CPI_CONFIG_DIR = path.join(os.homedir(), ".claude-pi");
+
+/**
+ * 配置独立（ADR-0007 修订）：未显式设置 PI_CODING_AGENT_DIR 时，
+ * 把 cpi 的全局配置目录注入环境，使 pi-ai 的 ModelRuntime 与本地
+ * settings 读取都指向 ~/.claude-pi（进程级 env，不污染系统）。
+ */
+function ensureOwnConfigDir(): void {
+  if (!process.env.PI_CODING_AGENT_DIR && !process.env.TAU_CODING_AGENT_DIR) {
+    process.env.PI_CODING_AGENT_DIR = CPI_CONFIG_DIR;
+  }
+}
+
+/** 一次性迁移提示（旧 pi 配置存在且新位置缺失时输出提示） */
+function maybeWarnMigrate(): void {
+  const piDir = path.join(os.homedir(), ".pi", "agent");
+  try {
+    if (migrateNeeded(piDir, CPI_CONFIG_DIR)) {
+      console.warn(
+        `  \x1b[33m[config] 检测到旧 pi 配置（${piDir}）且新配置目录（${CPI_CONFIG_DIR}）为空。\n` +
+          `  运行 \`cpi --migrate-config\` 一次性复制 auth/models/settings。\x1b[0m`,
+      );
+    }
+  } catch {
+    // 提示失败静默
+  }
+}
 
 /** 状态行思考强度后缀：非 off 时显示 `:level`（对齐 pi footer model:level） */
 function thinkingLabel(): string {
@@ -252,6 +283,18 @@ async function runTui(
         description: "登录模型服务商",
       },
       {
+        name: "settings",
+        description: "设置（导出模式 / 重试 / 压缩）",
+      },
+      {
+        name: "export",
+        description: "导出会话轨迹（--analysis 整树分析 / --portable 会话移植）",
+      },
+      {
+        name: "import",
+        description: "导入会话文件（替换当前会话）",
+      },
+      {
         name: "model",
         description: "切换模型",
         getArgumentCompletions: async () => {
@@ -393,12 +436,27 @@ async function main(): Promise<void> {
   installFatalHandlers();
   const args = process.argv.slice(2);
 
+  // 配置独立：注入 ~/.claude-pi 全局目录（须在一切配置读取前）
+  ensureOwnConfigDir();
+
   if (args.includes("--version") || args.includes("-v")) {
     process.stdout.write(readVersion() + "\n");
     process.exit(0);
   }
 
+  // 一次性迁移：从 ~/.pi/agent 复制 auth/models/settings 到 ~/.claude-pi
+  if (args.includes("--migrate-config")) {
+    const copied = migrateFromPi();
+    if (copied) {
+      process.stdout.write(`配置已从 ~/.pi/agent 迁移到 ${CPI_CONFIG_DIR}\n`);
+    } else {
+      process.stdout.write(`无需迁移：${CPI_CONFIG_DIR} 已存在全部配置文件（或旧目录为空）\n`);
+    }
+    process.exit(0);
+  }
+
   initRuntime();
+  maybeWarnMigrate();
 
   // 模式分派（ADR-0003：显式模式，无自动回退）；print/json 不初始化团队/轮询器
   if (args.includes("-p") || args.includes("--print")) {
