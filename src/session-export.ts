@@ -4,15 +4,17 @@
  * 双模式：
  * - analysis（测试/分析）：导出整棵会话树为 JSONL 事件流（meta 首行 +
  *   每 entry 一行事件 {type,id,parentId,time,data}），message 带运行时
- *   补记的 durationMs/usage/toolError，大输出从 .task_outputs 合并全文，
- *   旧会话无 durationMs 时按相邻 entry 时间差推导 inferred。
+ *   补记的 durationMs/usage/toolError，工具失败结构化 error 提取，
+ *   大输出从 .task_outputs 合并全文，旧会话无 durationMs 时按相邻 entry
+ *   时间差推导 inferred。
  * - portable（会话移植）：仅导出当前活动分支，pi exportToJsonl 式线性化
- *   JSONL（header + 链式 parentId），剥离全部性能字段，供 /import 读取。
+ *   JSONL（header + 链式 parentId），剥离全部性能字段（耗时/token/失败
+ *   标记），供 /import 读取。
  */
 import fs from "node:fs";
 import path from "node:path";
 import { AGENT_ROOT } from "./config.ts";
-import type { SessionManager, SessionEntry } from "./session-manager.ts";
+import type { SessionManager, SessionEntry, SessionMessageEntry } from "./session-manager.ts";
 import type { ChatMessage } from "./client.ts";
 import { computeUsageTotals } from "./usage-stats.ts";
 import type { ExportMode } from "./project-config.ts";
@@ -39,10 +41,9 @@ export function parseExportArgs(rest: string): ExportArgs {
   return args;
 }
 
-/** analysis 默认路径：.agent/exports/trace-<sessionId>-<ts>.jsonl */
+/** analysis 默认路径：.agent/exports/trace-<sessionId>-<ts>.jsonl（纯路径计算） */
 export function analysisDefaultPath(sessionId: string): string {
   const dir = path.join(AGENT_ROOT, ".agent", "exports");
-  fs.mkdirSync(dir, { recursive: true });
   return path.join(dir, `trace-${sessionId}-${Math.trunc(Date.now() / 1000)}.jsonl`);
 }
 
@@ -77,7 +78,24 @@ interface TraceEventData {
   [key: string]: unknown;
 }
 
-function messageData(msg: ChatMessage, entry: SessionMessageEntryLike): TraceEventData {
+/** 工具失败结构化提取：content 为 {"status":"error","message":...} 时转为 error 对象 */
+function toolErrorOf(msg: ChatMessage): { name: string; message: string } | undefined {
+  const m = msg as ChatMessage & { toolError?: boolean };
+  if (m.toolError !== true) return undefined;
+  const content = msg.content;
+  if (typeof content !== "string") return undefined;
+  try {
+    const parsed = JSON.parse(content) as { status?: string; message?: string };
+    if (parsed.status === "error") {
+      return { name: "tool_error", message: String(parsed.message ?? "") };
+    }
+  } catch {
+    // 非 JSON 失败内容：仅保留布尔标记
+  }
+  return undefined;
+}
+
+function messageData(msg: ChatMessage): TraceEventData {
   const d: TraceEventData = { role: msg.role };
   if (msg.content !== undefined && msg.content !== null) {
     d.content = expandPersistedOutputs(String(msg.content));
@@ -88,14 +106,11 @@ function messageData(msg: ChatMessage, entry: SessionMessageEntryLike): TraceEve
   const m = msg as ChatMessage & { durationMs?: number; toolError?: boolean };
   if (typeof m.durationMs === "number") d.durationMs = m.durationMs;
   if (m.toolError === true) d.toolError = true;
-  if (typeof (msg as { durationMsInferred?: number }).durationMsInferred === "number") {
-    d.durationMsInferred = (msg as { durationMsInferred?: number }).durationMsInferred;
-  }
+  const err = toolErrorOf(msg);
+  if (err) d.error = err;
+  const inferred = (msg as { durationMsInferred?: number }).durationMsInferred;
+  if (typeof inferred === "number") d.durationMsInferred = inferred;
   return d;
-}
-
-interface SessionMessageEntryLike {
-  message: ChatMessage;
 }
 
 function eventLine(entry: SessionEntry, inferredDurationMs?: number): object {
@@ -103,8 +118,7 @@ function eventLine(entry: SessionEntry, inferredDurationMs?: number): object {
   const base = { type: entry.type, id: entry.id, parentId: entry.parentId, time };
   switch (entry.type) {
     case "message": {
-      const msg = (entry as SessionMessageEntryLike).message;
-      const data = messageData(msg, entry);
+      const data = messageData((entry as SessionMessageEntry).message);
       if (inferredDurationMs !== undefined) {
         data.durationMsInferred = Math.max(0, inferredDurationMs);
       }
@@ -122,7 +136,8 @@ function eventLine(entry: SessionEntry, inferredDurationMs?: number): object {
         data: {
           summary: c.summary,
           tokensBefore: c.tokensBefore,
-          ...(c.retainedTail ? { retainedTail: c.retainedTail.map((m) => stripPerf(m)) } : {}),
+          // analysis 口径：压缩保留的消息保留全部性能字段（与 message 事件一致）
+          ...(c.retainedTail ? { retainedTail: c.retainedTail } : {}),
           ...(c.usage ? { usage: c.usage } : {}),
         },
       };
@@ -179,9 +194,7 @@ export function exportSessionToAnalysisTrace(session: SessionManager, outputPath
     let inferred: number | undefined;
     const e = entries[i];
     if (e.type === "message") {
-      const m = (e as SessionMessageEntryLike).message as ChatMessage & {
-        durationMs?: number;
-      };
+      const m = (e as SessionMessageEntry).message as ChatMessage & { durationMs?: number };
       const next = entries[i + 1];
       if (typeof m.durationMs !== "number" && next) {
         const diff = Date.parse(next.timestamp) - Date.parse(e.timestamp);
@@ -197,13 +210,13 @@ export function exportSessionToAnalysisTrace(session: SessionManager, outputPath
 
 // ── portable：活动分支线性化（pi exportToJsonl 形状）─────────────────────
 
-/** 剥离性能字段（portable 只含会话内容） */
+/** 剥离性能字段（portable 只含会话内容：耗时/token/失败标记一律不带） */
 function stripPerf(m: ChatMessage): ChatMessage {
-  const { durationMs: _d, toolError: _t, ...rest } = m as ChatMessage & {
+  const { durationMs: _d, toolError: _t, usage: _u, ...rest } = m as ChatMessage & {
     durationMs?: number;
     toolError?: boolean;
   };
-  void _d; void _t;
+  void _d; void _t; void _u;
   return rest;
 }
 
@@ -212,13 +225,12 @@ export function exportSessionToPortable(session: SessionManager, outputPath?: st
   const branch = session.getBranch();
   const header = session.getHeader();
   const path_ = outputPath ?? portableDefaultPath(header.cwd);
-  const timestamp = new Date().toISOString();
   const lines: string[] = [
     JSON.stringify({
       type: "session",
       version: 1,
       id: header.id,
-      timestamp,
+      timestamp: header.timestamp,
       cwd: header.cwd,
       ...(header.parentSession ? { parentSession: header.parentSession } : {}),
     }),
@@ -230,7 +242,7 @@ export function exportSessionToPortable(session: SessionManager, outputPath?: st
         JSON.stringify({
           ...entry,
           parentId,
-          message: stripPerf((entry as SessionMessageEntryLike).message),
+          message: stripPerf((entry as SessionMessageEntry).message),
         }),
       );
     } else {

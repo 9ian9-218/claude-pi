@@ -33,10 +33,7 @@ import {
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { computeUsageTotals, latestCacheHitRate, computeContextUsage } from "./usage-stats.ts";
 import { getGitBranch } from "./git-branch.ts";
-import { migrateFromPi, migrateNeeded } from "./settings.ts";
-
-/** cpi 独立全局配置目录（~/.claude-pi；不再与 pi 共享 ~/.pi/agent） */
-export const CPI_CONFIG_DIR = path.join(os.homedir(), ".claude-pi");
+import { migrateFromPi, migrateNeeded, defaultAgentDir, legacyPiAgentDir, getAgentDir } from "./settings.ts";
 
 /**
  * 配置独立（ADR-0007 修订）：未显式设置 PI_CODING_AGENT_DIR 时，
@@ -45,17 +42,17 @@ export const CPI_CONFIG_DIR = path.join(os.homedir(), ".claude-pi");
  */
 function ensureOwnConfigDir(): void {
   if (!process.env.PI_CODING_AGENT_DIR && !process.env.TAU_CODING_AGENT_DIR) {
-    process.env.PI_CODING_AGENT_DIR = CPI_CONFIG_DIR;
+    process.env.PI_CODING_AGENT_DIR = defaultAgentDir();
   }
 }
 
-/** 一次性迁移提示（旧 pi 配置存在且新位置缺失时输出提示） */
+/** 一次性迁移提示（旧 pi 配置存在且新位置缺失时输出提示；新位置尊重 env 覆盖） */
 function maybeWarnMigrate(): void {
-  const piDir = path.join(os.homedir(), ".pi", "agent");
+  const piDir = legacyPiAgentDir();
   try {
-    if (migrateNeeded(piDir, CPI_CONFIG_DIR)) {
+    if (migrateNeeded(piDir, getAgentDir())) {
       console.warn(
-        `  \x1b[33m[config] 检测到旧 pi 配置（${piDir}）且新配置目录（${CPI_CONFIG_DIR}）为空。\n` +
+        `  \x1b[33m[config] 检测到旧 pi 配置（${piDir}）且新配置目录（${getAgentDir()}）为空。\n` +
           `  运行 \`cpi --migrate-config\` 一次性复制 auth/models/settings。\x1b[0m`,
       );
     }
@@ -448,9 +445,9 @@ async function main(): Promise<void> {
   if (args.includes("--migrate-config")) {
     const copied = migrateFromPi();
     if (copied) {
-      process.stdout.write(`配置已从 ~/.pi/agent 迁移到 ${CPI_CONFIG_DIR}\n`);
+      process.stdout.write(`配置已从 ~/.pi/agent 迁移到 ${getAgentDir()}\n`);
     } else {
-      process.stdout.write(`无需迁移：${CPI_CONFIG_DIR} 已存在全部配置文件（或旧目录为空）\n`);
+      process.stdout.write(`无需迁移：${getAgentDir()} 已存在全部配置文件（或旧目录为空）\n`);
     }
     process.exit(0);
   }

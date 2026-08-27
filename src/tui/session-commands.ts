@@ -10,8 +10,6 @@ import type { ChatMessage } from "../client.ts";
 import { ui } from "./ui-provider.ts";
 import {
   parseExportArgs,
-  analysisDefaultPath,
-  portableDefaultPath,
   exportSessionToAnalysisTrace,
   exportSessionToPortable,
 } from "../session-export.ts";
@@ -174,13 +172,13 @@ export async function handleSessionCommand(
       }
       try {
         const args = parseExportArgs(rest);
-        // 模式：参数临时覆盖 > 项目配置（/settings 中设置）
+        // 模式：参数临时覆盖 > 项目配置（/settings 中设置）；
+        // 默认路径由导出函数内部决定（模式相关），args.path 显式指定时覆盖
         const mode = args.mode ?? getExportMode();
-        const cwd = process.cwd();
         const output =
           mode === "portable"
-            ? exportSessionToPortable(session, args.path ?? portableDefaultPath(cwd))
-            : exportSessionToAnalysisTrace(session, args.path ?? analysisDefaultPath(session.getSessionId()));
+            ? exportSessionToPortable(session, args.path)
+            : exportSessionToAnalysisTrace(session, args.path);
         app.appendMessage(
           "system",
           `已导出（${mode === "analysis" ? "分析模式：整树 + 耗时/token 明细" : "会话移植模式：活动分支"}）→ ${output}`,

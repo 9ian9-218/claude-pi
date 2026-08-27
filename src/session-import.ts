@@ -5,9 +5,7 @@
  * 后复制到当前项目的会话目录并打开——继续对话落在副本上，不污染源文件。
  */
 import fs from "node:fs";
-import path from "node:path";
-import { randomUUID } from "node:crypto";
-import { SessionManager, defaultSessionDir } from "./session-manager.ts";
+import { SessionManager, createSessionPath } from "./session-manager.ts";
 
 export class SessionImportError extends Error {}
 
@@ -47,21 +45,13 @@ function parseImportableHeader(filePath: string): ImportableHeader {
   return h;
 }
 
-/** 当前项目会话目录（对齐 session-manager 内部布局 --<cwd 替换>--） */
-function sessionsDirFor(cwd: string): string {
-  const dirName = `--${cwd.replace(/\//g, "-")}--`;
-  return path.join(defaultSessionDir(), dirName);
-}
-
 /**
- * 导入会话：校验文件 → 复制到当前项目会话目录 → 打开。
- * 返回导入后的 SessionManager；失败抛 SessionImportError。
+ * 导入会话：校验文件 → 复制到当前项目会话目录（复用 createSessionPath 命名）
+ * → 打开。返回导入后的 SessionManager；失败抛 SessionImportError。
  */
 export function importSessionFromJsonl(filePath: string, cwd: string): SessionManager {
   parseImportableHeader(filePath);
-  const dir = sessionsDirFor(cwd);
-  fs.mkdirSync(dir, { recursive: true });
-  const target = path.join(dir, `${Math.trunc(Date.now() / 1000)}_${randomUUID()}.jsonl`);
+  const target = createSessionPath(cwd);
   fs.copyFileSync(filePath, target);
   return SessionManager.open(target);
 }

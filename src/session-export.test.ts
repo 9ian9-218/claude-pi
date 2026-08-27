@@ -141,6 +141,36 @@ describe("session-export", () => {
       const user = msgs.find((m) => m.role === "user");
       expect(typeof user.durationMsInferred).toBe("number");
     });
+
+    it("工具失败内容为 error JSON 时提取结构化 error 对象", () => {
+      session.appendMessage(u("go"));
+      session.appendMessage(toolMsg(JSON.stringify({ status: "error", message: "权限不足" }), {
+        durationMs: 5,
+        toolError: true,
+      }));
+      const out = path.join(tmp, "trace.jsonl");
+      exportSessionToAnalysisTrace(session, out);
+      const lines = fs.readFileSync(out, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+      const tool = lines
+        .filter((l) => l.type === "message")
+        .map((l) => l.data)
+        .find((m) => m.role === "tool");
+      expect(tool.toolError).toBe(true);
+      expect(tool.error).toEqual({ name: "tool_error", message: "权限不足" });
+    });
+
+    it("compaction retainedTail 在 analysis 中保留性能字段（口径与 message 一致）", () => {
+      session.appendMessage(u("q"));
+      session.appendMessage(a("r", { durationMs: 200, usage: { input: 3, output: 1, totalTokens: 4 } as ChatMessage["usage"] }));
+      session.appendCompaction("摘要", 100, [a("tail-msg", { durationMs: 60, usage: { input: 1, output: 1, totalTokens: 2 } as ChatMessage["usage"] })]);
+      const out = path.join(tmp, "trace.jsonl");
+      exportSessionToAnalysisTrace(session, out);
+      const lines = fs.readFileSync(out, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+      const comp = lines.find((l) => l.type === "compaction");
+      const tail = comp.data.retainedTail[0];
+      expect(tail.durationMs).toBe(60);
+      expect(tail.usage.totalTokens).toBe(2);
+    });
   });
 
   describe("exportSessionToPortable", () => {
@@ -151,7 +181,9 @@ describe("session-export", () => {
       session.branch(root);
       session.appendMessage(u("第二问"));
       session.appendMessage(toolMsg("r", { durationMs: 50, toolError: true }));
-      session.appendMessage(a("回答B", { durationMs: 800 }));
+      session.appendMessage(
+        a("回答B", { durationMs: 800, usage: { input: 10, output: 5, totalTokens: 15 } as ChatMessage["usage"] }),
+      );
 
       const out = path.join(tmp, "s.jsonl");
       exportSessionToPortable(session, out);
@@ -166,11 +198,12 @@ describe("session-export", () => {
       const contents = lines.filter((l) => l.type === "message").map((l) => l.message.content);
       expect(contents).toContain("回答B");
       expect(contents).not.toContain("回答A");
-      // 性能字段剥离
+      // 性能字段剥离：耗时/token/失败标记一律不带
       const msgs = lines.filter((l) => l.type === "message").map((l) => l.message);
       for (const m of msgs) {
         expect("durationMs" in m).toBe(false);
         expect("toolError" in m).toBe(false);
+        expect("usage" in m).toBe(false);
       }
     });
   });

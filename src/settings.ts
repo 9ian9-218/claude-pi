@@ -47,9 +47,19 @@ export const DEFAULT_COMPACTION: {
   autoCompactPct: 0.92,
 };
 
-/** 从指定根目录加载默认配置引用（解耦 import）；cpi 独立配置位于 ~/.claude-pi */
+/** 配置缓存与测试覆盖（/settings 修改后 resetSettingsCache） */
 let _cache: PiSettings | null = null;
 let _override: PiSettings | null = null;
+
+/** FROM 控注释：cpi 独立全局配置目录与旧 pi 配置目录的唯一事实源 */
+export function defaultAgentDir(): string {
+  return path.join(os.homedir(), ".claude-pi");
+}
+
+/** 旧 pi 全局配置目录（一次性迁移来源） */
+export function legacyPiAgentDir(): string {
+  return path.join(os.homedir(), ".pi", "agent");
+}
 
 /**
  * cpi 全局配置目录（~/.claude-pi，PI_CODING_AGENT_DIR 可覆盖）。
@@ -61,7 +71,7 @@ export function getAgentDir(): string {
   if (envDir) {
     return envDir.startsWith("~") ? path.join(os.homedir(), envDir.slice(1)) : envDir;
   }
-  return path.join(os.homedir(), ".claude-pi");
+  return defaultAgentDir();
 }
 
 export function getSettingsPath(): string {
@@ -161,15 +171,18 @@ export function writePiSettings(patch: Partial<PiSettings>): boolean {
 
 const MIGRATABLE_FILES = ["auth.json", "models.json", "settings.json"] as const;
 
+/** 旧目录中缺失于新目录的配置文件列表（空 = 无需迁移） */
+function missingMigratableFiles(fromDir: string, toDir: string): string[] {
+  return MIGRATABLE_FILES.filter((f) => {
+    const src = path.join(fromDir, f);
+    return fs.existsSync(src) && !fs.existsSync(path.join(toDir, f));
+  });
+}
+
 /** 需要迁移：旧目录存在配置且新目录缺失至少一个配置文件 */
 export function migrateNeeded(fromDir: string, toDir: string): boolean {
   if (fromDir === toDir) return false;
-  for (const f of MIGRATABLE_FILES) {
-    if (fs.existsSync(path.join(fromDir, f)) && !fs.existsSync(path.join(toDir, f))) {
-      return true;
-    }
-  }
-  return false;
+  return missingMigratableFiles(fromDir, toDir).length > 0;
 }
 
 /**
@@ -177,23 +190,18 @@ export function migrateNeeded(fromDir: string, toDir: string): boolean {
  * 返回是否发生了复制；新目录已有同名文件时不覆盖。
  */
 export function migrateFromPi(
-  fromDir: string = path.join(os.homedir(), ".pi", "agent"),
+  fromDir: string = legacyPiAgentDir(),
   toDir: string = getAgentDir(),
 ): boolean {
-  let copied = false;
-  for (const f of MIGRATABLE_FILES) {
-    const src = path.join(fromDir, f);
-    const dst = path.join(toDir, f);
-    if (fs.existsSync(src) && !fs.existsSync(dst)) {
-      try {
-        fs.mkdirSync(toDir, { recursive: true });
-        fs.copyFileSync(src, dst);
-        copied = true;
-      } catch {
-        // 复制失败：继续其余文件
-      }
+  const missing = missingMigratableFiles(fromDir, toDir);
+  for (const f of missing) {
+    try {
+      fs.mkdirSync(toDir, { recursive: true });
+      fs.copyFileSync(path.join(fromDir, f), path.join(toDir, f));
+    } catch {
+      // 复制失败：继续其余文件
     }
   }
   resetSettingsCache();
-  return copied;
+  return missing.length > 0;
 }

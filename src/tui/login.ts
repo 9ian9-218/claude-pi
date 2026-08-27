@@ -51,7 +51,7 @@ export async function handleLoginCommand(app: TuiApp, providerRef: string): Prom
   } else if (providers.length === 1) {
     provider = providers[0];
   } else if (providers.length === 0) {
-    app.appendSystem("无可用登录：当前没有支持交互登录的服务商（可手动配置 ~/.pi/agent/auth.json 或 models.json）。", "warning");
+    app.appendSystem("无可用登录：当前没有支持交互登录的服务商（可手动配置 ~/.claude-pi/auth.json 或 models.json）。", "warning");
     return;
   } else {
     const items = providers.map((p) => ({

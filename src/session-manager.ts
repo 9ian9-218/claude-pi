@@ -187,10 +187,14 @@ export function defaultSessionDir(): string {
 }
 
 function newSessionPath(cwd: string): string {
+  return createSessionPath(cwd);
+}
+
+/** 新会话文件全路径：`<会话目录>/<ts>_<uuid>.jsonl`（创建/导入共用同一命名规则） */
+export function createSessionPath(cwd: string): string {
   const dir = sessionDirFor(cwd);
   fs.mkdirSync(dir, { recursive: true });
-  const file = `${Math.trunc(Date.now() / 1000)}_${randomUUID()}.jsonl`;
-  return path.join(dir, file);
+  return path.join(dir, `${Math.trunc(Date.now() / 1000)}_${randomUUID()}.jsonl`);
 }
 
 // ── SessionManager ────────────────────────────────────────────────────────
