@@ -56,7 +56,8 @@ function truncateLine(text: string, max = GREP_MAX_LINE_LENGTH): { text: string;
 export async function runGrepSearch(args: GrepArgs, opts: GrepRunOptions): Promise<string> {
   const { workdir, rgPath } = opts;
   const timeoutMs = opts.timeoutMs ?? GREP_TIMEOUT_MS;
-  const limit = Math.max(1, Math.floor(args.limit ?? GREP_DEFAULT_LIMIT));
+  const rawLimit = args.limit ?? GREP_DEFAULT_LIMIT;
+  const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.floor(rawLimit)) : GREP_DEFAULT_LIMIT;
 
   const rawPath = args.path?.trim();
   const searchPath = rawPath ? path.resolve(workdir, rawPath) : workdir;

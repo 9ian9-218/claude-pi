@@ -187,7 +187,7 @@ let ensurePromise: Promise<string> | null = null;
 
 /**
  * 确保 rg 可用（解析 → 下载兜底）。单飞：并发调用共享同一次解析/下载。
- * 解析成功返回路径或命令名；彻底不可用抛错。
+ * 解析成功返回路径或命令名；下载失败不回填缓存，下次调用可重试。
  */
 export function ensureRipgrep(): Promise<string> {
   if (ensurePromise === null) {
@@ -197,6 +197,7 @@ export function ensureRipgrep(): Promise<string> {
       try {
         return await downloadRipgrep();
       } catch (e) {
+        ensurePromise = null; // 失败不缓存：临时网络故障后允许重试
         throw new Error(
           `ripgrep (rg) is not available: ${(e as Error).message}. ` +
             "Install ripgrep on PATH, set RIPGREP_PATH, or allow the automatic download.",

@@ -405,6 +405,10 @@ async function execGrep(args: Record<string, unknown>): Promise<string> {
     const err = checkPath(rawPath);
     if (err !== null) return `Error: ${err}`;
   }
+  if (args["limit"] !== undefined) {
+    const n = Number(args["limit"]);
+    if (!Number.isInteger(n) || n < 1) return "Error: limit must be an integer >= 1";
+  }
   let rgPath: string;
   try {
     rgPath = await ensureRipgrep();
