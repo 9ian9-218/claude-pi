@@ -366,13 +366,12 @@ export class SessionManager {
 
   /** fork：把源会话全路径复制到新文件（新 cwd），血缘 parentSession */
   static forkFrom(sourcePath: string, targetCwd: string): SessionManager {
+    // clone/fork 收敛：复制分支逻辑唯一实现（createBranchedSession），
+    // fork 只是「新 cwd + 血缘 parentSession」的参数差异
     const source = SessionManager.open(sourcePath);
-    const mgr = SessionManager.create(targetCwd);
+    const mgr = source.createBranchedSession(source.getLeafId() ?? undefined);
+    mgr.header.cwd = targetCwd;
     mgr.header.parentSession = sourcePath;
-    const rootEntries = source.getBranch(source.getLeafId() ?? undefined);
-    for (const entry of rootEntries) {
-      mgr.appendRawEntry(entry);
-    }
     return mgr;
   }
 
