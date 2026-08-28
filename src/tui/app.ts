@@ -899,27 +899,58 @@ export class TuiApp {
     }
   }
 
+  /**
+   * Overlay 通用样板（#4 收敛）：showOverlay + 输入转发 + 关闭
+   * （隐藏 → 恢复焦点 → 解绑）。onKey 返回 true 表示已消费并触发重绘；
+   * onEscape 在 Esc 时调用。
+   */
+  private openOverlay(
+    content: Component,
+    opts: {
+      onKey?: (data: string) => boolean | void;
+      onEscape?: () => void;
+    } = {},
+  ): { close: () => void } {
+    const handle = this.tui.showOverlay(content, { width: "70%", anchor: "center" });
+    const removeListener = this.tui.addInputListener((data) => {
+      const consumed = opts.onKey ? opts.onKey(data) : undefined;
+      if (consumed) {
+        // 监听器链路径不自动 requestRender：消费后显式重绘（回归：高亮不移动）
+        this.tui.requestRender();
+        return { consume: true };
+      }
+      if (data === "" && opts.onEscape) {
+        opts.onEscape();
+      }
+      return { consume: true };
+    });
+    const close = () => {
+      removeListener();
+      handle.hide();
+      this.tui.setFocus(this.editor);
+      this.tui.requestRender();
+    };
+    return { close };
+  }
+
   /** 通用选择器（15b：树节点/fork 目标/会话列表），返回选中项或 null */
   showSelector(items: SelectItem[], title: string): Promise<SelectItem | null> {
     return new Promise((resolve) => {
       const list = new SelectList(items, 8, SELECT_LIST_THEME);
       const overlay = new Container();
-      overlay.addChild(new Text(`${overlayTitle(title)}\n`, 1, 1));
+      overlay.addChild(new Text(overlayTitle(title) + "\n", 1, 1));
       overlay.addChild(list);
-      const handle = this.tui.showOverlay(overlay, { width: "70%", anchor: "center" });
-      const removeListener = this.tui.addInputListener((data) => {
-        list.handleInput(data);
-        // 监听器链路径不会自动 requestRender（仅焦点组件路径有），
-        // 方向键移动选中后必须显式重绘（回归：高亮不移动）
-        this.tui.requestRender();
-        return { consume: true };
-      });
       const finish = (item: SelectItem | null) => {
-        removeListener();
-        handle.hide();
-        this.tui.setFocus(this.editor);
+        close();
         resolve(item);
       };
+      const { close } = this.openOverlay(overlay, {
+        onKey: (data) => {
+          list.handleInput(data);
+          return true;
+        },
+        onEscape: () => finish(null),
+      });
       list.onSelect = (item) => finish(item);
       list.onCancel = () => finish(null);
     });
@@ -970,19 +1001,19 @@ export class TuiApp {
     return new Promise((resolve) => {
       const input = new Input();
       const overlay = new Container();
-      overlay.addChild(new Text(`${overlayTitle(message)}\n`, 1, 1));
+      overlay.addChild(new Text(overlayTitle(message) + "\n", 1, 1));
       overlay.addChild(input);
-      const handle = this.tui.showOverlay(overlay, { width: "70%", anchor: "center" });
-      const removeListener = this.tui.addInputListener((data) => {
-        input.handleInput(data);
-        return { consume: true };
-      });
       const finish = (value: string | null) => {
-        removeListener();
-        handle.hide();
-        this.tui.setFocus(this.editor);
+        close();
         resolve(value);
       };
+      const { close } = this.openOverlay(overlay, {
+        onKey: (data) => {
+          input.handleInput(data);
+          return true;
+        },
+        onEscape: () => finish(null),
+      });
       input.onSubmit = (value) => finish(value);
       input.onEscape = () => finish(null);
     });
@@ -990,26 +1021,12 @@ export class TuiApp {
 
   /** 挂载扩展自定义组件（17 ctx.ui.custom） */
   mountCustomComponent(component: Component): void {
-    const handle = this.tui.showOverlay(component, { width: "70%", anchor: "center" });
-    // 自定义组件负责自身交互；Esc 关闭
-    const removeListener = this.tui.addInputListener((data) => {
-      if (component.handleInput) {
-        component.handleInput(data);
-      }
-      return { consume: true };
-    });
-    const close = () => {
-      removeListener();
-      handle.hide();
-      this.tui.setFocus(this.editor);
-    };
-    // Esc 关闭
-    const esc = this.tui.addInputListener((data) => {
-      if (data === "\x1b") {
-        close();
-        esc();
-      }
-      return { consume: false };
+    const { close } = this.openOverlay(component, {
+      onKey: (data) => {
+        if (component.handleInput) component.handleInput(data);
+        return true;
+      },
+      onEscape: () => close(),
     });
   }
 }
