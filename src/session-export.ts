@@ -13,7 +13,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { AGENT_ROOT } from "./config.ts";
+import { AGENT_ROOT, resolveAgentDirs } from "./config.ts";
 import type { SessionManager, SessionEntry, SessionMessageEntry } from "./session-manager.ts";
 import type { ChatMessage } from "./client.ts";
 import { computeUsageTotals } from "./usage-stats.ts";
@@ -43,7 +43,7 @@ export function parseExportArgs(rest: string): ExportArgs {
 
 /** analysis 默认路径：.agent/exports/trace-<sessionId>-<ts>.jsonl（纯路径计算） */
 export function analysisDefaultPath(sessionId: string): string {
-  const dir = path.join(AGENT_ROOT, ".agent", "exports");
+  const dir = path.join(resolveAgentDirs(AGENT_ROOT).agentsDir, "exports");
   return path.join(dir, `trace-${sessionId}-${Math.trunc(Date.now() / 1000)}.jsonl`);
 }
 

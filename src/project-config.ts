@@ -6,6 +6,7 @@
  * 随项目走、不写用户目录（对齐「数据根跟随项目」）。
  */
 import fs from "node:fs";
+import { resolveAgentDirs } from "./config.ts";
 import path from "node:path";
 import { AGENT_ROOT } from "./config.ts";
 
@@ -29,7 +30,7 @@ export function setProjectConfigRootForTest(root: string | null): void {
 }
 
 export function getProjectConfigPath(): string {
-  return path.join(cfgRoot ?? AGENT_ROOT, ".agent", "config.json");
+  return path.join(resolveAgentDirs(cfgRoot ?? AGENT_ROOT).agentsDir, "config.json");
 }
 
 export function readProjectConfig(): ProjectConfig {
