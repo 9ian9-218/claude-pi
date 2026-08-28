@@ -13,6 +13,7 @@ import readline from "node:readline/promises";
 import { PROJECT_ROOT, initRuntime } from "./config.ts";
 import { installFatalHandlers } from "./fatal.ts";
 import { agentLoop } from "./agent-loop.ts";
+import { runQuery } from "./query-pipeline.ts";
 import { triggerHooks } from "./hook.ts";
 import type { ChatMessage } from "./client.ts";
 import { UiEventSink } from "./ui-events.ts";
@@ -136,17 +137,7 @@ async function runRepl(initialSession: SessionManager | null): Promise<void> {
       continue;
     }
     if (["q", "exit", ""].includes(query.trim().toLowerCase())) break;
-    await triggerHooks("UserPromptSubmit", query);
-    void triggerHooks("user_prompt_submit", query);
-    if (session) {
-      session.appendMessage({ role: "user", content: query });
-      const ctx = session.buildSessionContext();
-      const messages: ChatMessage[] = ctx.messages;
-      await agentLoop(messages, { session });
-    } else {
-      const messages: ChatMessage[] = [{ role: "user", content: query }];
-      await agentLoop(messages);
-    }
+    await runQuery(query, { session });
     process.stdout.write(USER_PROMPT);
   }
   rl.close();
@@ -203,14 +194,9 @@ async function runSingleTurn(args: string[], mode: "print" | "json"): Promise<vo
     process.exit(1);
   }
   const session = pickSession(args);
-  const loopOptions = { quietOutput: true };
-  const { LoopOptions } = await import("./loop-options.ts");
-  const opts = new LoopOptions(loopOptions);
 
   if (session) {
-    session.appendMessage({ role: "user", content: query });
-    const ctx = session.buildSessionContext();
-    await agentLoop(ctx.messages, { session, loopOptions: opts });
+    await runQuery(query, { session, quietOutput: true, runHooks: false });
     const messages = session.buildSessionContext().messages;
     const final = finalContent(messages);
     if (mode === "print") {
@@ -220,7 +206,7 @@ async function runSingleTurn(args: string[], mode: "print" | "json"): Promise<vo
     }
   } else {
     const messages: ChatMessage[] = [{ role: "user", content: query }];
-    await agentLoop(messages, { loopOptions: opts });
+    await runQuery(query, { quietOutput: true, runHooks: false });
     const final = finalContent(messages);
     if (mode === "print") {
       process.stdout.write((final ?? "(no output)") + "\n");
@@ -355,29 +341,15 @@ async function runTui(
       sink.on("turnEnd", (e) => app.finishAssistantTurn(e));
       app.beginAssistantTurn();
       try {
-        if (session) {
-          session.appendMessage({ role: "user", content: query });
-          const ctx = session.buildSessionContext();
-          await agentLoop(ctx.messages, {
-            session,
-            loopOptions: new LoopOptions({
-              quietOutput: true,
-              uiEvents: sink,
-              signal,
-              thinkingLevel: getThinkingLevel(),
-            }),
-          });
-        } else {
-          const messages: ChatMessage[] = [{ role: "user", content: query }];
-          await agentLoop(messages, {
-            loopOptions: new LoopOptions({
-              quietOutput: true,
-              uiEvents: sink,
-              signal,
-              thinkingLevel: getThinkingLevel(),
-            }),
-          });
-        }
+        // SessionRunner：统一 Turn 装配（Hook 由 onQuery 前置触发，保持 TUI 即时性）
+        await runQuery(query, {
+          session,
+          uiEvents: sink,
+          signal,
+          thinkingLevel: getThinkingLevel(),
+          quietOutput: true,
+          runHooks: false,
+        });
       } finally {
         app.endAssistantTurn();
         app.endTurn();
