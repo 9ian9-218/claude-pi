@@ -19,7 +19,7 @@ import {
 import { reactiveCompact } from "./compact.ts";
 import { CONTINUATION_PROMPT } from "./prompt.ts";
 import { readPiSettings, setSettingsOverrideForTest } from "./settings.ts";
-import type { UiEventSink } from "./ui-events.ts";
+import { emitNoticeOrLog, type UiEventSink } from "./ui-events.ts";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 
 export { DEFAULT_MAX_TOKENS };
@@ -137,7 +137,8 @@ export async function sendMessagesWithRecovery(
       signal,
       {
         onRetryScheduled: (attempt, maxAttempts, delayMs, errorMessage) => {
-          console.log(
+          emitNoticeOrLog(
+            uiEvents,
             `  \x1b[33m[retry ${attempt}/${maxAttempts}] ${String(errorMessage).slice(0, 80)}, wait ${(delayMs / 1000).toFixed(1)}s\x1b[0m`,
           );
         },
@@ -145,7 +146,7 @@ export async function sendMessagesWithRecovery(
     )) as unknown as AssistantMessage;
   } catch (e) {
     const errText = (e as Error).message ?? String(e);
-    console.log(`  \x1b[31m[unrecoverable] ${errText.slice(0, 100)}\x1b[0m`);
+    emitNoticeOrLog(uiEvents, `  \x1b[31m[unrecoverable] ${errText.slice(0, 100)}\x1b[0m`);
     // ADR-0008：用户中断不落脏数据；仅真实错误才 appendErrorMessage
     if (!signal?.aborted) {
       appendErrorMessage(messages, errText.slice(0, 200));
@@ -167,17 +168,17 @@ export async function sendMessagesWithRecovery(
     // Path 2: context overflow → reactive compact（一次）
     if (isContextOverflow(message as unknown as PiAssistantMessage)) {
       if (!state.hasAttemptedReactiveCompact) {
-        console.log("  \x1b[31m[reactive compact]\x1b[0m");
+        emitNoticeOrLog(uiEvents, "  \x1b[31m[reactive compact]\x1b[0m");
         messages.splice(0, messages.length, ...(await reactiveCompact(messages)));
         state.hasAttemptedReactiveCompact = true;
         return { action: "retry" };
       }
-      console.log("  \x1b[31m[unrecoverable] still too long after compact\x1b[0m");
+      emitNoticeOrLog(uiEvents, "  \x1b[31m[unrecoverable] still too long after compact\x1b[0m");
       appendErrorMessage(messages, "Context too large, cannot continue.");
       return { action: "abort", reason: "error", errorMessage: "Context too large, cannot continue." };
     }
 
-    console.log(`  \x1b[31m[unrecoverable] ${errText.slice(0, 100)}\x1b[0m`);
+    emitNoticeOrLog(uiEvents, `  \x1b[31m[unrecoverable] ${errText.slice(0, 100)}\x1b[0m`);
     appendErrorMessage(messages, errText.slice(0, 200));
     return { action: "abort", reason: "error", errorMessage: errText.slice(0, 200) };
   }
@@ -187,19 +188,20 @@ export async function sendMessagesWithRecovery(
     if (!state.hasEscalated) {
       const newMax = ESCALATED_MAX_TOKENS;
       state.hasEscalated = true;
-      console.log(`  \x1b[33m[max_tokens] escalating ${maxTokens} -> ${newMax}\x1b[0m`);
+      emitNoticeOrLog(uiEvents, `  \x1b[33m[max_tokens] escalating ${maxTokens} -> ${newMax}\x1b[0m`);
       return { action: "retry", maxTokens: newMax };
     }
     messages.push(message.modelDump() as unknown as ChatMessage);
     if (state.recoveryCount < MAX_RECOVERY_RETRIES) {
       messages.push({ role: "user", content: CONTINUATION_PROMPT });
       state.recoveryCount += 1;
-      console.log(
+      emitNoticeOrLog(
+        uiEvents,
         `  \x1b[33m[max_tokens] continuation ${state.recoveryCount}/${MAX_RECOVERY_RETRIES}\x1b[0m`,
       );
       return { action: "retry", maxTokens };
     }
-    console.log("  \x1b[31m[max_tokens] recovery limit reached\x1b[0m");
+    emitNoticeOrLog(uiEvents, "  \x1b[31m[max_tokens] recovery limit reached\x1b[0m");
     return { action: "abort", reason: "error", errorMessage: "Max tokens recovery limit reached." };
   }
 

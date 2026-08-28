@@ -26,6 +26,15 @@ export interface ToolUiEvent {
   isError?: boolean;
 }
 
+/** 诊断/状态通知（架构 C 扩展）：核心机制的状态行（inject/compact/retry/escalate 等）。
+ * 有 UI 订阅者时走通道渲染，无订阅者时由 emitNoticeOrLog 回退 console（REPL/对拍不变）。 */
+export interface NoticeUiEvent {
+  /** 单行状态文本（含 ANSI 色码，与原有 console 输出一致） */
+  text: string;
+  /** inject：队友消息/后台任务注入；status：其余诊断 */
+  kind?: "status" | "inject";
+}
+
 /** 回合结束事件：stopReason 与错误信息（pi-ai 语义：stop/length/toolUse/error/aborted） */
 export interface TurnEndEvent {
   stopReason?: string;
@@ -43,6 +52,7 @@ export interface UiEventMap {
   stream: UiStreamDelta;
   tool: ToolUiEvent;
   turnEnd: TurnEndEvent;
+  notice: NoticeUiEvent;
 }
 
 type UiEventKey = keyof UiEventMap;
@@ -84,3 +94,20 @@ export class UiEventSink {
     return this.listeners.get(type)?.size ?? 0;
   }
 }
+
+/**
+ * 诊断打印统一出口：有 UI 订阅者走 notice 通道（TUI 聊天渲染），
+ * 无订阅者回退 console.log（REPL / -p / --mode json 行为字节不变）。
+ */
+export function emitNoticeOrLog(
+  sink: UiEventSink | undefined,
+  text: string,
+  kind: NoticeUiEvent["kind"] = "status",
+): void {
+  if (sink && sink.listenerCount("notice") > 0) {
+    sink.emit("notice", { kind, text });
+  } else {
+    console.log(text);
+  }
+}
+

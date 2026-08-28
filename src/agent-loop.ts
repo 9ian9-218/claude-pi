@@ -34,7 +34,7 @@ import type { SessionManager } from "./session-manager.ts";
 import type { ChatMessage } from "./client.ts";
 import { consumePendingInjections, consumePendingIdleNotifications } from "./teammates/poller.ts";
 import { detectCacheMiss, CACHE_TTL_MS } from "./cache-stats.ts";
-import type { TurnEndEvent } from "./ui-events.ts";
+import { UiEventSink, emitNoticeOrLog, type TurnEndEvent } from "./ui-events.ts";
 import { processPendingLeadPermissions } from "./permission-sync.ts";
 import { formatIdleNotificationInjection } from "./teammates/protocol.ts";
 
@@ -85,13 +85,13 @@ async function agentLoopInner(
         const msg: ChatMessage = { role: "user", content };
         messages.push(msg);
         session?.appendMessage(msg);
-        console.log(`  \x1b[33m[inject] teammate inbox message\x1b[0m`);
+        emitNoticeOrLog(opts.uiEvents, `  \x1b[33m[inject] teammate inbox message\x1b[0m`, "inject");
       }
       for (const parsed of consumePendingIdleNotifications()) {
         const msg: ChatMessage = { role: "user", content: formatIdleNotificationInjection(parsed) };
         messages.push(msg);
         session?.appendMessage(msg);
-        console.log(`  \x1b[33m[inject] teammate idle notification\x1b[0m`);
+        emitNoticeOrLog(opts.uiEvents, `  \x1b[33m[inject] teammate idle notification\x1b[0m`, "inject");
       }
     }
     if (opts.injectBackgroundNotifications) {
@@ -99,7 +99,7 @@ async function agentLoopInner(
         const msg: ChatMessage = { role: "user", content: notif };
         messages.push(msg);
         session?.appendMessage(msg);
-        console.log(`  \x1b[32m[inject] task_notification\x1b[0m`);
+        emitNoticeOrLog(opts.uiEvents, `  \x1b[32m[inject] task_notification\x1b[0m`, "inject");
       }
     }
     // L4：会话模式写 compaction entry；非会话模式 LLM 摘要替换。
@@ -113,7 +113,7 @@ async function agentLoopInner(
       const overThreshold =
         (byUsage ?? estimateMessagesTokens(messages)) > getCompactionThreshold();
       if (gate !== false && overThreshold) {
-        console.log("  \x1b[31m[auto compact]\x1b[0m");
+        emitNoticeOrLog(opts.uiEvents, "  \x1b[31m[auto compact]\x1b[0m");
         try {
           if (session) {
             const tokensBefore = byUsage ?? estimateMessagesTokens(messages);

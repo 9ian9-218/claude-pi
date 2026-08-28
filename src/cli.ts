@@ -339,6 +339,11 @@ async function runTui(
       });
       sink.on("tool", (e) => app.handleToolEvent(e));
       sink.on("turnEnd", (e) => app.finishAssistantTurn(e));
+      // 架构 C 扩展：核心诊断/注入经 notice 通道进聊天区（不再污染 TTY stdout）
+      sink.on("notice", (e) => {
+        if (e.kind === "inject") app.appendSystem(e.text, "accent");
+        else app.appendSystem(e.text);
+      });
       app.beginAssistantTurn();
       try {
         // SessionRunner：统一 Turn 装配（Hook 由 onQuery 前置触发，保持 TUI 即时性）
