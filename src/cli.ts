@@ -264,37 +264,6 @@ async function runTui(
   const app = new TuiApp({
     terminal: new ProcessTerminal(),
     initialText: "claude-pi — 输入 /help 查看命令\n\n",
-    autocompleteCommands: () => [
-      {
-        name: "login",
-        description: "登录模型服务商",
-      },
-      {
-        name: "settings",
-        description: "设置（导出模式 / 重试 / 压缩）",
-      },
-      {
-        name: "export",
-        description: "导出会话轨迹（--analysis 整树分析 / --portable 会话移植）",
-      },
-      {
-        name: "import",
-        description: "导入会话文件（替换当前会话）",
-      },
-      {
-        name: "model",
-        description: "切换模型",
-        getArgumentCompletions: async () => {
-          const { getModelRuntime } = await import("./ai-runtime.ts");
-          const runtime = await getModelRuntime();
-          const models = runtime.getAvailableSnapshot();
-          return models.map((m) => ({
-            value: `${m.provider}/${m.id}`,
-            label: `${m.provider}/${m.id}`,
-          }));
-        },
-      },
-    ],
     onNewSession: () => {
       sessionRef.current = SessionManager.create(process.cwd());
     },

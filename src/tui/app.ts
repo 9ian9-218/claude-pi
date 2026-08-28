@@ -36,24 +36,10 @@ import { ToolBlockRegistry } from "./tool-registry.ts";
 import { Keymap } from "./keymap.ts";
 import { handleLoginCommand } from "./login.ts";
 import { handleSettingsCommand } from "./settings-commands.ts";
-import { getSlashCommand, listSlashCommands } from "../commands.ts";
+import { getCommandEntry, listCommandEntries, registerCommand, splitCommandLine } from "../commands.ts";
 import { theme } from "./theme/theme.ts";
 import type { SwarmPermissionRequest, PermissionResolution } from "../permission-sync.ts";
 import type { ToolUiEvent, TurnEndEvent } from "../ui-events.ts";
-
-const BUILTIN_COMMANDS: Array<AutocompleteItem | SlashCommand> = [
-  { name: "new", description: "开新会话" },
-  { name: "help", description: "显示帮助" },
-  { name: "quit", description: "退出" },
-  { name: "status", description: "显示状态" },
-  { name: "reload", description: "重载扩展" },
-  { name: "tree", description: "会话树导航" },
-  { name: "fork", description: "Fork 当前会话" },
-  { name: "clone", description: "Clone 当前会话" },
-  { name: "resume", description: "恢复历史会话" },
-  { name: "name", description: "设置会话名" },
-  { name: "session", description: "显示会话信息" },
-];
 
 export interface TuiAppOptions {
   /** 测试注入 FakeTerminal；生产传 ProcessTerminal */
@@ -191,6 +177,7 @@ export class TuiApp {
       },
       { paddingX: 1 },
     );
+    this.registerCommands();
     this.refreshAutocomplete();
     this.root.addChild(this.chat);
     this.root.addChild(this.editor);
@@ -277,9 +264,15 @@ export class TuiApp {
   /** 06：重建自动补全（/reload 后扩展命令变化时调用） */
   refreshAutocomplete(): void {
     const extra = this.autocompleteCommands?.() ?? [];
+    // 单一目录：注册表 → autocomplete（内置 + 会话 + 扩展）
     const commands: Array<AutocompleteItem | SlashCommand> = [
-      ...BUILTIN_COMMANDS,
-      ...listSlashCommands().map((c) => ({ name: c.name, description: c.description })),
+      ...listCommandEntries().map((c) => ({
+        name: c.name,
+        description: c.description,
+        ...(c.getArgumentCompletions
+          ? { getArgumentCompletions: c.getArgumentCompletions }
+          : {}),
+      })),
       ...extra,
     ];
     this.editor.setAutocompleteProvider(
@@ -598,85 +591,156 @@ export class TuiApp {
   }
 
   private async handleCommand(cmd: string): Promise<void> {
-    const [name] = cmd.slice(1).split(/\s+/);
-    switch (name) {
-      case "new":
-      case "n":
+    // CommandRouter：注册表（内置/会话/扩展）单一目录分发
+    const { name, rest } = splitCommandLine(cmd);
+    const entry = getCommandEntry<TuiApp>(name);
+    if (entry) {
+      try {
+        const result = await entry.handler(rest, this);
+        if (typeof result === "string") this.appendSystem(result);
+      } catch (e) {
+        const label = entry.kind === "extension" ? "扩展命令错误" : "命令错误";
+        this.appendSystem(`${label}：${String((e as Error).message)}`, "error");
+      }
+    } else if (this.onSessionCommand) {
+      await this.onSessionCommand(name, rest, this);
+    } else {
+      this.appendSystem(`未知命令：/${name}（/help 查看）`, "warning");
+    }
+    this.tui.setFocus(this.editor);
+  }
+
+  /** 内置 + 会话命令注册（唯一目录；扩展经 registerSlashCommand 进同一注册表） */
+  private registerCommands(): void {
+    registerCommand<TuiApp>({
+      name: "new",
+      aliases: ["n"],
+      description: "开新会话",
+      kind: "builtin",
+      handler: () => {
         this.onNewSession?.();
         this.chat.clear();
         this.appendSystem("新会话已开始。输入 /help 查看命令。", "accent");
-        break;
-      case "help":
+      },
+    });
+    registerCommand<TuiApp>({
+      name: "help",
+      description: "显示帮助",
+      kind: "builtin",
+      handler: () => {
         if (this.startupMessage) {
           this.startupMessage.setExpanded(true);
         } else {
           this.appendSystem(
-            ["/login 登录模型服务商", "/settings 设置（导出模式/重试/压缩）", "/export 导出会话轨迹", "/import 导入会话", "/new 开新会话", "/help 显示帮助", "/quit 退出", "/status 显示状态", "Ctrl+C / Esc 退出"].join("\n"),
+            [
+              "/login 登录模型服务商",
+              "/settings 设置（导出模式/重试/压缩）",
+              "/export 导出会话轨迹",
+              "/import 导入会话",
+              "/new 开新会话",
+              "/help 显示帮助",
+              "/quit 退出",
+              "/status 显示状态",
+              "Ctrl+C / Esc 退出",
+            ].join("\n"),
             "accent",
           );
         }
-        break;
-      case "login":
-        await handleLoginCommand(this, cmd.slice(1 + "login".length).trim());
-        break;
-      case "model": {
-        // /model：无参数开选择器（同 Ctrl+L）；带参数按 provider/id 切换
-        const spec = cmd.slice(1 + "model".length).trim();
-        if (spec) {
-          await this.setModelBySpec(spec);
-        } else {
-          await this.openModelSelector();
-        }
-        break;
-      }
-      case "thinking": {
-        // /thinking [level]：无参数显示当前；带参数显式设置
-        const spec = cmd.slice(1 + "thinking".length).trim();
-        if (spec) {
-          await this.setThinkingBySpec(spec);
-        } else {
-          await this.showThinkingStatus();
-        }
-        break;
-      }
-      case "quit":
-      case "exit":
-      case "q":
+      },
+    });
+    registerCommand<TuiApp>({
+      name: "login",
+      description: "登录模型服务商",
+      kind: "builtin",
+      handler: async (rest) => {
+        await handleLoginCommand(this, rest);
+      },
+    });
+    registerCommand<TuiApp>({
+      name: "model",
+      description: "切换模型",
+      kind: "builtin",
+      getArgumentCompletions: async () => {
+        const { getModelRuntime } = await import("../ai-runtime.ts");
+        const runtime = await getModelRuntime();
+        const models = runtime.getAvailableSnapshot();
+        return models.map((m) => ({
+          value: `${m.provider}/${m.id}`,
+          label: `${m.provider}/${m.id}`,
+        }));
+      },
+      handler: async (rest) => {
+        if (rest) await this.setModelBySpec(rest);
+        else await this.openModelSelector();
+      },
+    });
+    registerCommand<TuiApp>({
+      name: "thinking",
+      description: "切换思考强度（Shift+Tab）",
+      kind: "builtin",
+      handler: async (rest) => {
+        if (rest) await this.setThinkingBySpec(rest);
+        else await this.showThinkingStatus();
+      },
+    });
+    registerCommand<TuiApp>({
+      name: "quit",
+      aliases: ["exit", "q"],
+      description: "退出",
+      kind: "builtin",
+      handler: () => {
         this.running = false;
         this.tui.stop();
-        break;
-      case "status":
+      },
+    });
+    registerCommand<TuiApp>({
+      name: "status",
+      description: "显示状态",
+      kind: "builtin",
+      handler: () => {
         this.appendSystem(this.statusTextFn?.() ?? "no status");
-        break;
-      case "settings":
+      },
+    });
+    registerCommand<TuiApp>({
+      name: "settings",
+      description: "设置（导出模式/重试/压缩）",
+      kind: "builtin",
+      handler: async () => {
         await handleSettingsCommand(this);
-        break;
-      case "reload":
+      },
+    });
+    registerCommand<TuiApp>({
+      name: "reload",
+      description: "重载扩展",
+      kind: "builtin",
+      handler: () => {
         this.onReload?.();
         this.refreshAutocomplete();
         this.appendSystem("扩展已重载。", "success");
-        break;
-      default: {
-        // 扩展命令注册表（16）
-        const ext = getSlashCommand(name);
-        if (ext) {
-          try {
-            const result = await ext.handler(cmd.slice(1 + name.length).trim());
-            this.appendSystem(String(result));
-          } catch (e) {
-            this.appendSystem(`扩展命令错误：${String((e as Error).message)}`, "error");
-          }
-          break;
-        }
-        if (this.onSessionCommand) {
-          await this.onSessionCommand(name, cmd.slice(1 + name.length).trim(), this);
-          break;
-        }
-        this.appendSystem(`未知命令：/${name}（/help 查看）`, "warning");
-      }
+      },
+    });
+    // 会话命令（树形会话）：委托 onSessionCommand
+    const sessionCommands: Array<[string, string]> = [
+      ["tree", "会话树导航"],
+      ["fork", "Fork 当前会话"],
+      ["clone", "Clone 当前会话"],
+      ["resume", "恢复历史会话"],
+      ["name", "设置会话名"],
+      ["session", "显示会话信息"],
+      ["export", "导出会话轨迹（--analysis 整树分析 / --portable 会话移植）"],
+      ["import", "导入会话文件（替换当前会话）"],
+    ];
+    for (const [cmdName, desc] of sessionCommands) {
+      registerCommand<TuiApp>({
+        name: cmdName,
+        description: desc,
+        kind: "session",
+        handler: (rest) =>
+          this.onSessionCommand ? this.onSessionCommand(cmdName, rest, this) : undefined,
+      });
     }
-    this.tui.setFocus(this.editor);
   }
+
 
   /** /thinking 实现（Shift+Tab 与 /thinking 共用） */
   private async cycleThinkingLevel(): Promise<void> {
