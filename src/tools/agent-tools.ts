@@ -11,7 +11,7 @@ import {
   setAgentContext,
 } from "../teammates/context.ts";
 import { createTeam, readTeamConfig } from "../teammates/team-helpers.ts";
-import { startLeadInboxPoller } from "../teammates/poller.ts";
+import { startLeadInboxPoller, stopLeadInboxPoller, getPolledTeam } from "../teammates/poller.ts";
 import {
   spawnTeammate,
   requestTeammateShutdown,
@@ -112,18 +112,20 @@ function execCreateTeam(args: Record<string, unknown>): string {
   }
   createTeam(name);
   const ctx = getAgentContext();
-  if (!ctx.teamName) {
-    // 写入 ALS（mutate 无 store 时的默认对象会被丢弃）
-    setAgentContext(
-      createAgentContext({
-        teamName: name,
-        role: ctx.role === "teammate" ? "teammate" : "lead",
-        agentName: ctx.agentName,
-        agentId: ctx.agentId,
-        color: ctx.color,
-        agentType: ctx.agentType,
-      }),
-    );
+  // lead 加入新团队并让收件箱轮询指向它（poller 单例：当前团队即 lead 驻在团队；
+  // 旧代码 if(!ctx.teamName) 在 initLeadTeam 之后恒不命中 → 二队队友权限/消息无人消费）
+  setAgentContext(
+    createAgentContext({
+      teamName: name,
+      role: ctx.role === "teammate" ? "teammate" : "lead",
+      agentName: ctx.agentName,
+      agentId: ctx.agentId,
+      color: ctx.color,
+      agentType: ctx.agentType,
+    }),
+  );
+  if (getPolledTeam() !== name) {
+    stopLeadInboxPoller();
     void startLeadInboxPoller(name);
   }
   return `Created team '${name}' with lead inbox`;

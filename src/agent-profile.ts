@@ -116,8 +116,9 @@ function base(role: AgentRole, init: Partial<AgentProfile> = {}): AgentProfile {
     quietOutput: init.quietOutput ?? d.quietOutput,
     exitOnFinalContent: init.exitOnFinalContent ?? d.exitOnFinalContent,
     skipMemoryStopHook: init.skipMemoryStopHook ?? d.skipMemoryStopHook,
-    useSubagentToolFace: init.useSubagentToolFace ?? d.useSubagentToolFace,
-    useSubagentPrompt: init.useSubagentPrompt ?? d.useSubagentPrompt,
+    // role 是唯一身份源：工具面/提示面不可被 init 覆盖（防提示注入绕过）
+    useSubagentToolFace: role === "subagent",
+    useSubagentPrompt: role === "subagent",
   };
 }
 

@@ -9,6 +9,7 @@ import { sanitizeOpenaiTool, type OpenaiTool } from "../schema-strict.ts";
 import { getMCPHub } from "../mcp/hub.ts";
 import { isMcpTool } from "../mcp/names.ts";
 import { checkPath } from "./path.ts";
+import { getAgentContext } from "../teammates/context.ts";
 import { Tool, buildTool, type ExecuteFn } from "./core.ts";
 export { Tool, buildTool, type ExecuteFn } from "./core.ts";
 import { RUN_BASH_TOOL } from "./bash.ts";
@@ -107,6 +108,14 @@ export async function executeToolCall(
   args?: Record<string, unknown>,
 ): Promise<string> {
   const name = toolCall.function.name;
+
+  // 角色门禁：subagent 不可直接执行受限工具（展示层 SUBAGENT_EXCLUDED 之外的第二道闸）
+  if (getAgentContext().role === "subagent" && SUBAGENT_EXCLUDED.has(name)) {
+    return JSON.stringify({
+      status: "error",
+      message: `Tool '${name}' is not available to subagents`,
+    });
+  }
 
   if (args === undefined) {
     let parsed: unknown;

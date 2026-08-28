@@ -4,8 +4,9 @@ import { installMockModels } from "../tests/helpers/test-client.ts";
 import { resetClient, type ChatMessage } from "./client.ts";
 import { agentLoop } from "./agent-loop.ts";
 import { LoopOptions } from "./loop-options.ts";
-import { getOpenaiTools, spawnSubagent } from "./tool.ts";
-import { getAgentContext, isSubagent } from "./teammates/context.ts";
+import { getOpenaiTools, spawnSubagent, executeToolCall } from "./tool.ts";
+import { getAgentContext, isSubagent, runWithAgentContext, resetAgentContext } from "./teammates/context.ts";
+import { AgentProfile, profileToContext } from "./agent-profile.ts";
 import { setAskUserImpl, resetAskUserImpl } from "./permission-sync.ts";
 
 let mock: MockOpenAI;
@@ -117,3 +118,24 @@ describe("subagent 身份（Agent Profile）", () => {
     expect(names).not.toContain("create_team");
   });
 });
+
+describe("subagent 角色门禁（executeToolCall 第二道闸）", () => {
+  it("subagent 身份下直接调用受限工具被拒", async () => {
+    const profile = AgentProfile.subagent({ agentName: "s1", agentId: "s1" });
+    await runWithAgentContext(profileToContext(profile), async () => {
+      const out = await executeToolCall({
+        function: { name: "create_team", arguments: '{ "name": "x" }' },
+      });
+      expect(out).toContain("not available to subagents");
+    });
+  });
+
+  it("lead 身份下不受门禁影响", async () => {
+    resetAgentContext();
+    const out = await executeToolCall({
+      function: { name: "no_such_tool", arguments: "{}" },
+    });
+    expect(out).toContain("Unknown tool");
+  });
+});
+

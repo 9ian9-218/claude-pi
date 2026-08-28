@@ -42,12 +42,23 @@ export function isWorker(ctx: AgentContext): boolean {
 
 const ctxStore = new AsyncLocalStorage<AgentContext>();
 
+/** 进程级 Lead 默认上下文（Python 版全局 agent_context 语义）：
+ * 无 ALS store（Lead 主线程/非 teammate 路径）时返回它；
+ * create_team / initLeadTeam 更新它，回合间与测试间持久。 */
+let leadContext: AgentContext | null = null;
+
 export function getAgentContext(): AgentContext {
-  return ctxStore.getStore() ?? createAgentContext();
+  return ctxStore.getStore() ?? leadContext ?? createAgentContext();
 }
 
+/** 设置进程级 Lead 上下文（无 store 的所有读取者可见；worker 仍被 run() 隔离） */
 export function setAgentContext(ctx: AgentContext): void {
-  ctxStore.enterWith(ctx);
+  leadContext = ctx;
+}
+
+/** 测试/进程清理：清除 Lead 默认上下文 */
+export function resetAgentContext(): void {
+  leadContext = null;
 }
 
 export function runWithAgentContext<T>(ctx: AgentContext, fn: () => T): T {

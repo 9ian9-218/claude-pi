@@ -1,10 +1,11 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { AgentProfile, profileToContext } from "./agent-profile.ts";
 import { LoopOptions } from "./loop-options.ts";
 import {
   getAgentContext,
   runWithAgentContext,
   setAgentContext,
+  resetAgentContext,
   createAgentContext,
   isSubagent,
   isTeammate,
@@ -13,6 +14,9 @@ import {
 import { TEAM_LEAD_NAME } from "./teammates/constants.ts";
 
 describe("AgentProfile", () => {
+  afterEach(() => {
+    resetAgentContext();
+  });
   it("lead / subagent / teammate derive distinct loop strategies", () => {
     const lead = AgentProfile.lead();
     const sub = AgentProfile.subagent();
@@ -47,6 +51,15 @@ describe("AgentProfile", () => {
     expect(opts.useSubagentToolFace).toBe(true);
     expect(opts.useSubagentPrompt).toBe(true);
     expect(opts.enableMemory).toBe(false);
+  });
+
+  it("工具面/提示面由 role 派生，init 覆盖无效（防提示注入绕过）", () => {
+    const sub = AgentProfile.subagent({ useSubagentToolFace: false, useSubagentPrompt: false });
+    expect(sub.useSubagentToolFace).toBe(true);
+    expect(sub.useSubagentPrompt).toBe(true);
+    const opts = new LoopOptions({ role: "subagent", useSubagentToolFace: false });
+    expect(opts.useSubagentToolFace).toBe(true);
+    expect(opts.useSubagentPrompt).toBe(true);
   });
 
   it("LoopOptions.subagent/teammate/lead factories match profiles", () => {

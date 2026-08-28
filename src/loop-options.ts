@@ -49,8 +49,9 @@ export class LoopOptions {
     this.quietOutput = init.quietOutput ?? profile.quietOutput;
     this.exitOnFinalContent = init.exitOnFinalContent ?? profile.exitOnFinalContent;
     this.skipMemoryStopHook = init.skipMemoryStopHook ?? profile.skipMemoryStopHook;
-    this.useSubagentToolFace = init.useSubagentToolFace ?? profile.useSubagentToolFace;
-    this.useSubagentPrompt = init.useSubagentPrompt ?? profile.useSubagentPrompt;
+    // role 是唯一身份源：工具面/提示面由 role 派生，禁止覆盖
+    this.useSubagentToolFace = role === "subagent";
+    this.useSubagentPrompt = role === "subagent";
     this.uiEvents = init.uiEvents;
     this.thinkingLevel = init.thinkingLevel;
     this.signal = init.signal;

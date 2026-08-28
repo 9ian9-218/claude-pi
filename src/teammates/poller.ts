@@ -101,6 +101,10 @@ export async function startLeadInboxPoller(teamName: string): Promise<void> {
   pollTimer.unref();
 }
 
+export function getPolledTeam(): string | null {
+  return pollTeamName;
+}
+
 export function stopLeadInboxPoller(): void {
   if (pollTimer) {
     clearInterval(pollTimer);

@@ -76,7 +76,11 @@ async function agentLoopInner(
   for (let turn = 0; turn < maxTurn; turn++) {
     // teammate/通知注入
     if (opts.injectLeadNotifications) {
-      await processPendingLeadPermissions(getAgentContext().teamName ?? "");
+      // 仅 Lead 消费队友权限队列；subagent 走同步冒泡（bubbleSubagentPermission），
+      // teammate 无 UI 不消费（否则 subagent 会替 Lead 弹 askUser）
+      if (opts.isLeadRole) {
+        await processPendingLeadPermissions(getAgentContext().teamName ?? "");
+      }
       for (const content of consumePendingInjections()) {
         const msg: ChatMessage = { role: "user", content };
         messages.push(msg);
@@ -153,10 +157,10 @@ async function agentLoopInner(
       messages,
       state: recoveryState,
       maxTokens: effectiveMaxTokens,
-      isSubagent: opts.useSubagentPrompt,
+      isSubagent: opts.isSubagentRole,
       preserveSystem: opts.preserveSystem,
       quietOutput: opts.quietOutput,
-      tools: getOpenaiTools(opts.useSubagentToolFace),
+      tools: getOpenaiTools(opts.isSubagentRole),
       uiEvents: opts.uiEvents,
       thinkingLevel: opts.thinkingLevel,
       signal: opts.signal,
