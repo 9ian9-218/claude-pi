@@ -64,8 +64,10 @@ function isMaxTokensFinish(finishReason: string | null): boolean {
   return finishReason === "length" || finishReason === "max_tokens";
 }
 
+export const ERROR_PREFIX = "[Error]";
+
 function appendErrorMessage(messages: ChatMessage[], text: string): void {
-  messages.push({ role: "assistant", content: `[Error] ${text}` });
+  messages.push({ role: "assistant", content: `${ERROR_PREFIX} ${text}` });
 }
 
 export type LLMInvokeResult =

@@ -15,7 +15,8 @@
 import type { Usage } from "@earendil-works/pi-ai";
 import type { SessionEntry, CompactionEntry } from "./session-manager.ts";
 import type { ChatMessage } from "./client.ts";
-import { estimateMessagesTokens } from "./compact.ts";
+import { estimateMessagesTokens, hasValidPostCompactionUsage } from "./compact.ts";
+export { hasValidPostCompactionUsage } from "./compact.ts";
 
 export interface UsageTotals {
   input: number;
@@ -87,27 +88,7 @@ export interface ContextUsage {
   contextWindow: number;
 }
 
-/**
- * 分支内最近 compaction 之后是否存在有效 assistant usage（pi 的
- * hasPostCompactionUsage 语义）。
- * - null：分支无 compaction（门闩不限制）；
- * - true：压缩后已有有效响应（上下文量可知）；
- * - false：压缩后尚无有效响应（上下文量未知——触发方应等待）。
- * 有效 = usage.totalTokens > 0 的 assistant 消息。中断/出错回合已被
- * truncateTo 回滚，无需 pi 的 stopReason 过滤。
- */
-export function hasValidPostCompactionUsage(entries: SessionEntry[]): boolean | null {
-  let latestCompactionIdx = -1;
-  for (let i = 0; i < entries.length; i++) {
-    if (entries[i].type === "compaction") latestCompactionIdx = i;
-  }
-  if (latestCompactionIdx < 0) return null;
-  for (let i = entries.length - 1; i > latestCompactionIdx; i--) {
-    const usage = usageOf(entries[i]);
-    if (usage && usage.totalTokens > 0) return true;
-  }
-  return false;
-}
+
 
 /**
  * 上下文占用（pi 语义）：

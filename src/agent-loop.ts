@@ -12,24 +12,14 @@ import { sendMessages } from "./client.ts";
 import { triggerHooks } from "./hook.ts";
 import { LoopOptions } from "./loop-options.ts";
 import { executeToolCall, getOpenaiTools } from "./tool.ts";
-import { RecoveryState, sendMessagesWithRecovery } from "./error-recovery.ts";
+import { RecoveryState, sendMessagesWithRecovery, ERROR_PREFIX } from "./error-recovery.ts";
 import { loadMemories, findMemoryInjectionIndex, snapshotMessages } from "./memory.ts";
-import { RELEVANT_MEMORIES_OPEN } from "./prompt.ts";
+import { RELEVANT_MEMORIES_OPEN, SUBAGENT_STOPPED_MESSAGE } from "./prompt.ts";
 import { consumePendingNotifications } from "./message-queue.ts";
 import { shouldRunBackground, startBackgroundTask } from "./background-task.ts";
 import { getWorkdir, runWithWorkdir } from "./workdir.ts";
 import { getAgentContext } from "./teammates/context.ts";
-import {
-  estimateMessagesTokens,
-  compactHistory,
-  summarizeHistory,
-  getCompactionThreshold,
-  isAutoCompactEnabled,
-  estimateContextTokensByUsage,
-  pickRetainedTail,
-  DEFAULT_KEEP_RECENT_TOKENS,
-} from "./compact.ts";
-import { hasValidPostCompactionUsage } from "./usage-stats.ts";
+import { maybeCompact } from "./compact.ts";
 import type { SessionManager } from "./session-manager.ts";
 import type { ChatMessage } from "./client.ts";
 import { consumePendingInjections, consumePendingIdleNotifications } from "./teammates/poller.ts";
@@ -102,51 +92,8 @@ async function agentLoopInner(
         emitNoticeOrLog(opts.uiEvents, `  \x1b[32m[inject] task_notification\x1b[0m`, "inject");
       }
     }
-    // L4：会话模式写 compaction entry；非会话模式 LLM 摘要替换。
-    // 触发（CC 式）：kE（真实 usage）≥ 0.92 × (window − maxOutput 预留)；
-    // 无 usage 时兜底字符估算；压缩后门闩：最近 compaction 之后无有效 assistant
-    // usage（上下文量未知）→ 不触发，等第一条新响应（避免旧 usage 高估重复压缩）
-    if (isAutoCompactEnabled()) {
-      const branch = session?.getBranch() ?? null;
-      const gate = branch ? hasValidPostCompactionUsage(branch) : null;
-      const byUsage = estimateContextTokensByUsage(messages);
-      const overThreshold =
-        (byUsage ?? estimateMessagesTokens(messages)) > getCompactionThreshold();
-      if (gate !== false && overThreshold) {
-        emitNoticeOrLog(opts.uiEvents, "  \x1b[31m[auto compact]\x1b[0m");
-        try {
-          if (session) {
-            const tokensBefore = byUsage ?? estimateMessagesTokens(messages);
-            // previousSummary：分支链上最近 compaction 的摘要（树形检查点链 = 更新式输入）
-            const prevCompaction = [...branch!]
-              .reverse()
-              .find((e) => e.type === "compaction") as
-              | { summary: string }
-              | undefined;
-            const { summary, usage } = await summarizeHistory(messages, {
-              previousSummary: prevCompaction?.summary,
-            });
-            // retainedTail：keepRecentTokens token 预算（对齐 pi）
-            const tail = pickRetainedTail(messages, DEFAULT_KEEP_RECENT_TOKENS);
-            session.appendCompaction(
-              summary,
-              tokensBefore,
-              tail.length > 0 ? tail : undefined,
-              usage,
-            );
-            replaceMessages(messages, session.buildSessionContext().messages);
-          } else {
-            replaceMessages(messages, await compactHistory(messages));
-          }
-        } catch (e) {
-          // CC 语义：压缩失败不写 entry、回合继续（不阻断；分类提示）
-          console.log(
-            `  \x1b[31m[auto compact failed] ${e instanceof Error ? e.message : String(e)}\x1b[0m` +
-              " 上下文已超限时请 Esc 后重试或 /compact",
-          );
-        }
-      }
-    }
+    // L4：自动压缩（#7 加深：门控/会话 entry/失败语义内吞，公共面一个调用）
+    await maybeCompact(messages, { session, sink: opts.uiEvents });
     const requestMessages = buildRequestMessages(messages, memoriesContent);
 
     // 本次 LLM 调用前的最新落盘点：中断回滚目标（ADR-0008：不落脏数据）
@@ -184,7 +131,7 @@ async function agentLoopInner(
             last &&
             last.role === "assistant" &&
             typeof last.content === "string" &&
-            last.content.startsWith("[Error]")
+            last.content.startsWith(ERROR_PREFIX)
           ) {
             session.appendMessage(last);
           }
@@ -323,7 +270,7 @@ async function agentLoopInner(
       }
     }
     if (opts.exitOnFinalContent) {
-      return "Subagent stopped after 30 turns without final answer.";
+      return SUBAGENT_STOPPED_MESSAGE;
     }
 
     // 自然结束 → Stop hook（memory 提取）
@@ -354,9 +301,4 @@ function buildRequestMessages(messages: ChatMessage[], memoriesContent: string):
     content: memoriesContent + "\n\n" + original,
   };
   return requestMessages;
-}
-
-/** 原地替换 messages 内容（对齐 Python messages[:] = ...） */
-function replaceMessages(messages: ChatMessage[], next: ChatMessage[]): void {
-  messages.splice(0, messages.length, ...next);
 }

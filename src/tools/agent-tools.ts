@@ -3,7 +3,7 @@
  */
 import { randomBytes } from "node:crypto";
 import type { ChatMessage } from "../client.ts";
-import { SUBAGENT_IDENTITY } from "../prompt.ts";
+import { SUBAGENT_IDENTITY, SUBAGENT_STOPPED_MESSAGE } from "../prompt.ts";
 import {
   getAgentContext,
   createAgentContext,
@@ -73,7 +73,7 @@ export async function spawnSubagent(description: string): Promise<string> {
     console.log("[35m[Subagent done][0m");
     return result;
   }
-  return "Subagent stopped after 30 turns without final answer.";
+  return SUBAGENT_STOPPED_MESSAGE;
 }
 
 function execSubagentTask(args: Record<string, unknown>): Promise<string> {

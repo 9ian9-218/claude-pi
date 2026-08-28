@@ -11,7 +11,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { getWorkdir } from "./workdir.ts";
+import { emitNoticeOrLog, type UiEventSink } from "./ui-events.ts";
+import type { SessionManager } from "./session-manager.ts";
 import { completeTextWithUsage, type ChatMessage } from "./client.ts";
+import type { Usage } from "@earendil-works/pi-ai";
+import type { SessionEntry, CompactionEntry } from "./session-manager.ts";
 import { getCurrentModel } from "./ai-runtime.ts";
 import { readPiSettings, DEFAULT_COMPACTION } from "./settings.ts";
 import {
@@ -238,4 +242,80 @@ export async function reactiveCompact(messages: ChatMessage[]): Promise<ChatMess
     { role: "user", content: formatReactiveCompactedUserMessage(summary) },
     ...messages.slice(-5),
   ];
+}
+
+/** 分支内最近 compaction 之后是否存在有效 assistant usage（pi hasPostCompactionUsage 语义）。
+ * null=无 compaction；true=已有有效响应；false=压缩后尚无（触发方应等待）。 */
+export function hasValidPostCompactionUsage(entries: SessionEntry[]): boolean | null {
+  let latestCompactionIdx = -1;
+  for (let i = 0; i < entries.length; i++) {
+    if (entries[i].type === "compaction") latestCompactionIdx = i;
+  }
+  if (latestCompactionIdx < 0) return null;
+  for (let i = entries.length - 1; i > latestCompactionIdx; i--) {
+    const usage = usageOf(entries[i]);
+    if (usage && usage.totalTokens > 0) return true;
+  }
+  return false;
+}
+
+function usageOf(entry: SessionEntry): Usage | null {
+  if (entry.type === "message") {
+    const u = (entry as { message?: { usage?: Usage | null } }).message?.usage;
+    return u ?? null;
+  }
+  if (entry.type === "compaction") {
+    return (entry as CompactionEntry).usage ?? null;
+  }
+  return null;
+}
+/**
+ * 自动压缩统一入口（#7 加深）：门控（阈值估算 + usage 门闩）→ 会话 L4 entry /
+ * 非会话摘要替换 → 失败内吞（不阻断回合；分类提示）。公共面：一个调用。
+ */
+export async function maybeCompact(
+  messages: ChatMessage[],
+  opts: { session?: SessionManager | null; sink?: UiEventSink } = {},
+): Promise<void> {
+  if (!isAutoCompactEnabled()) return;
+  const branch = opts.session?.getBranch() ?? null;
+  const gate = branch ? hasValidPostCompactionUsage(branch) : null;
+  const byUsage = estimateContextTokensByUsage(messages);
+  const overThreshold =
+    (byUsage ?? estimateMessagesTokens(messages)) > getCompactionThreshold();
+  if (gate === false || !overThreshold) return;
+
+  emitNoticeOrLog(opts.sink, "  \x1b[31m[auto compact]\x1b[0m");
+  try {
+    if (opts.session) {
+      const tokensBefore = byUsage ?? estimateMessagesTokens(messages);
+      // previousSummary：分支链上最近 compaction 的摘要（树形检查点链 = 更新式输入）
+      const prevCompaction = [...branch!]
+        .reverse()
+        .find((e) => e.type === "compaction") as
+        | { summary: string }
+        | undefined;
+      const { summary, usage } = await summarizeHistory(messages, {
+        previousSummary: prevCompaction?.summary,
+      });
+      // retainedTail：keepRecentTokens token 预算（对齐 pi）
+      const tail = pickRetainedTail(messages, DEFAULT_KEEP_RECENT_TOKENS);
+      opts.session.appendCompaction(
+        summary,
+        tokensBefore,
+        tail.length > 0 ? tail : undefined,
+        usage,
+      );
+      messages.splice(0, messages.length, ...opts.session.buildSessionContext().messages);
+    } else {
+      messages.splice(0, messages.length, ...(await compactHistory(messages)));
+    }
+  } catch (e) {
+    // CC 语义：压缩失败不写 entry、回合继续（不阻断；分类提示）
+    emitNoticeOrLog(
+      opts.sink,
+      `  \x1b[31m[auto compact failed] \${e instanceof Error ? e.message : String(e)}\x1b[0m` +
+        " 上下文已超限时请 Esc 后重试或 /compact",
+    );
+  }
 }

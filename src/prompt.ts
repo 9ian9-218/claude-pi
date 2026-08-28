@@ -93,6 +93,8 @@ export const MCP_SECTION =
   "Use connect_mcp to attach external MCP servers (stdio); their tools appear " +
   "as mcp__{server}__{tool}. Use list_mcp_servers to inspect connections.";
 
+export const SUBAGENT_STOPPED_MESSAGE = "Subagent stopped after 30 turns without final answer.";
+
 export const SUBAGENT_IDENTITY =
   "You are a coding agent at {workspace}. " +
   "Complete the task you were given, then return a concise summary. " +
