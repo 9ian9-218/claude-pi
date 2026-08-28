@@ -68,35 +68,10 @@ export function checkRules(toolName: string, args: Record<string, unknown>): str
   return null;
 }
 
-/** Gate 3：用户确认（15a 接入 TUI 弹窗；02b 默认拒绝） */
-export function askUser(toolName: string, args: Record<string, unknown>, reason: string): "allow" | "deny" {
-  console.log(`\n\x1b[33m⚠  ${reason}\x1b[0m`);
-  console.log(`   Tool: ${toolName}(${JSON.stringify(args)})`);
-  return "deny";
-}
-
-/** 三道门权限管线：返回 null 通过，返回字符串拒绝原因 */
-export function checkPermission(toolName: string, args: Record<string, unknown>): string | null {
-  const effectiveName = underlyingToolName(toolName);
-  if (effectiveName === "run_bash") {
-    const reason = checkDenyList(typeof args["command"] === "string" ? args["command"] : "");
-    if (reason) {
-      console.log(`\n\x1b[31m⛔ ${reason}\x1b[0m`);
-      return reason;
-    }
-  }
-
-  const reason = checkRules(toolName, args);
-  if (reason) {
-    const decision = askUser(toolName, args, reason);
-    if (decision === "deny") {
-      return `Permission denied: ${reason}`;
-    }
-  }
-  return null;
-}
-
-/** PreToolUse hook：block 需含 name 与 input */
-export function permissionHook(block: { name: string; input: Record<string, unknown> }): string | null {
-  return checkPermission(block.name, block.input);
-}
+/**
+ * permission.ts — 权限规则数据（PermissionGate 的唯一规则面）
+ *
+ * 生产 PermissionGate 的唯一实现是 permission-sync 的 checkPermissionWithBubble
+ * （按身份分流：lead 本地 askUser / subagent 同步冒泡 / teammate 邮箱冒泡），
+ * 本模块只承载规则数据不承载流程。
+ */

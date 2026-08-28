@@ -10,7 +10,7 @@ import {
   logHook,
   largeOutputHook,
 } from "./hook.ts";
-import { permissionHook } from "./permission.ts";
+import { permissionHookWithBubble } from "./permission-sync.ts";
 import { runWithWorkdir } from "./workdir.ts";
 
 let ws: string;
@@ -92,12 +92,14 @@ describe("内置 hook 单元（S3）", () => {
     });
   });
 
-  it("permissionHook 转发 checkPermission 语义", () => {
+  it("permissionHookWithBubble 转发规则语义（唯一 PermissionGate）", async () => {
+    // Gate1：黑名单直接拒绝（不弹 askUser）
     expect(
-      permissionHook({ name: "run_bash", input: { command: "reboot", run_in_background: false } }),
+      await permissionHookWithBubble({ name: "run_bash", input: { command: "reboot", run_in_background: false } }),
     ).toContain("deny list");
+    // Gate2+3：规则命中 → 默认 askUserImpl 拒绝
     expect(
-      permissionHook({ name: "run_bash", input: { command: "rm -rf build", run_in_background: false } }),
+      await permissionHookWithBubble({ name: "run_bash", input: { command: "rm -rf build", run_in_background: false } }),
     ).toContain("Permission denied");
   });
 

@@ -5,9 +5,9 @@ import path from "node:path";
 import {
   checkDenyList,
   checkRules,
-  checkPermission,
   DENY_LIST,
 } from "./permission.ts";
+import { permissionHookWithBubble } from "./permission-sync.ts";
 import { runWithWorkdir } from "./workdir.ts";
 
 let ws: string;
@@ -62,23 +62,27 @@ describe("checkRules（S2）", () => {
   });
 });
 
-describe("checkPermission 管线（S2，02b：规则命中直接拒绝）", () => {
-  it("run_bash 黑名单命令被拒", () => {
-    expect(checkPermission("run_bash", { command: "sudo apt install x" })).toContain(
-      "deny list",
-    );
+describe("PermissionGate 管线（唯一实现 checkPermissionWithBubble）", () => {
+  it("run_bash 黑名单命令被拒（Gate1 不弹 askUser）", async () => {
+    expect(
+      await permissionHookWithBubble({ name: "run_bash", input: { command: "sudo apt install x" } }),
+    ).toContain("deny list");
   });
 
-  it("规则命中被拒（15a 前为直接拒绝）", () => {
-    expect(checkPermission("write_file", { path: "../evil", content: "x" })).toContain(
-      "Permission denied",
-    );
+  it("规则命中 → 默认 askUserImpl 拒绝（Gate2+3）", async () => {
+    expect(
+      await permissionHookWithBubble({ name: "write_file", input: { path: "../evil", content: "x" } }),
+    ).toContain("Permission denied");
   });
 
-  it("安全操作通过返回 null", () => {
-    runWithWorkdir(ws, () => {
-      expect(checkPermission("read_file", { path: "src/index.ts" })).toBeNull();
-      expect(checkPermission("run_bash", { command: "ls" })).toBeNull();
+  it("安全操作通过返回 null", async () => {
+    await runWithWorkdir(ws, async () => {
+      expect(
+        await permissionHookWithBubble({ name: "read_file", input: { path: "src/index.ts" } }),
+      ).toBeNull();
+      expect(
+        await permissionHookWithBubble({ name: "run_bash", input: { command: "ls" } }),
+      ).toBeNull();
     });
   });
 });

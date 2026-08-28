@@ -555,20 +555,18 @@ export class TuiApp {
         ),
       );
       overlay.addChild(list);
-      const handle = this.tui.showOverlay(overlay, { width: "70%", anchor: "center" });
-      // Container 无 handleInput——用全局输入监听把按键转发给 SelectList
-      const removeListener = this.tui.addInputListener((data) => {
-        list.handleInput(data);
-        // 监听器链路径不自动 requestRender：方向键后显式重绘
-        this.tui.requestRender();
-        return { consume: true };
-      });
       const finish = (resolution: PermissionResolution) => {
-        removeListener();
-        handle.hide();
-        this.tui.setFocus(this.editor);
+        close();
         resolve(resolution);
       };
+      const { close } = this.openOverlay(overlay, {
+        onKey: (data) => {
+          list.handleInput(data);
+          return true;
+        },
+        onEscape: () =>
+          finish({ decision: "rejected", resolvedBy: "leader", feedback: "Permission denied by user" }),
+      });
       list.onSelect = (item) => {
         if (item.value === "allow") {
           finish({ decision: "approved", resolvedBy: "leader" });
