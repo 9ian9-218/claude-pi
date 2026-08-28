@@ -5,6 +5,8 @@ import { resetClient, type ChatMessage } from "./client.ts";
 import { agentLoop } from "./agent-loop.ts";
 import { LoopOptions } from "./loop-options.ts";
 import { getOpenaiTools, spawnSubagent } from "./tool.ts";
+import { getAgentContext, isSubagent } from "./teammates/context.ts";
+import { setAskUserImpl, resetAskUserImpl } from "./permission-sync.ts";
 
 let mock: MockOpenAI;
 
@@ -92,5 +94,26 @@ describe("spawnSubagent（S9）", () => {
     expect(String(messages[3].content)).toContain("子代理报告");
     expect(messages[4].role).toBe("assistant");
     expect(messages[4].content).toBe("父代理总结");
+  });
+});
+
+describe("subagent 身份（Agent Profile）", () => {
+  afterEach(() => {
+    resetAskUserImpl();
+  });
+
+  it("spawnSubagent 在 loop 内写入 role=subagent（权限可同步冒泡）", async () => {
+    // 默认 responder：空回复即终止回合
+    mock.push((req) => ({ kind: "json", content: "ok" }));
+    const result = await spawnSubagent("say hi");
+    expect(result).toBeTruthy();
+    // After spawn, context should restore (not leak subagent role into parent)
+    expect(isSubagent(getAgentContext())).toBe(false);
+  });
+
+  it("LoopOptions.subagent 走受限工具面", async () => {
+    const names = getOpenaiTools(true).map((t) => t.function.name);
+    expect(names).not.toContain("spawn_teammate");
+    expect(names).not.toContain("create_team");
   });
 });

@@ -69,7 +69,12 @@ agent-loop 为每条落盘消息补记的真实执行耗时（assistant=模型�
 _Avoid_: worker、子代理（Subagent 是另一机制）
 
 **Subagent**:
-进程内一次性子 Agent，用于委派单个任务，结束后返回结果。
+进程内一次性子 Agent，用于委派单个任务，结束后返回结果；不拥有用户交互权，工具面受限（无队友孵化/看板 claim/嵌套 subagent），权限同步冒泡给当前 Lead。
+
+
+**身份档案 (Agent Profile)**:
+Lead / Subagent / Teammate 的身份 + 由其派生的 loop 策略（工具面、邮箱注入、Memory、后台任务、Stop Hook）。Turn 级选项（UiEventSink、AbortSignal、Thinking Level）不属于档案。
+_Avoid_: 角色配置、agent options（LoopOptions 是档案策略与 Turn 选项的合并运行时袋）
 
 **邮箱 (Mailbox)**:
 Teammate 之间基于 JSON 数组文件的消息通道，写操作用文件锁保护。

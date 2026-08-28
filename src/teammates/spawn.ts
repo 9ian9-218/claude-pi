@@ -5,7 +5,7 @@
  * idle 阶段归 11（autonomous），10 中空闲等待 + shutdown 检查。
  */
 import { TEAM_LEAD_NAME, TEAMMATE_WORK_MAX_TURNS, getTeamsDir } from "./constants.ts";
-import { createAgentContext, runWithAgentContext } from "./context.ts";
+import { runWithAgentContext } from "./context.ts";
 import { dispatchInboxBatch, maybeReinjectIdentity } from "./inbox-dispatch.ts";
 import { idlePoll } from "./autonomous.ts";
 import { sendIdleNotification, notifyTeammateTerminated, sendShutdownRequest } from "./lifecycle.ts";
@@ -14,6 +14,7 @@ import { ensureTeammateForSpawn, readTeamConfig, getLeaderName } from "./team-he
 import { getSkillCatalog } from "../skill-load.ts";
 import { SUBAGENT_IDENTITY } from "../prompt.ts";
 import { LoopOptions } from "../loop-options.ts";
+import { AgentProfile, profileToContext } from "../agent-profile.ts";
 import { lockedPrint } from "../output-queue.ts";
 
 interface ActiveTeammate {
@@ -54,14 +55,14 @@ async function runTeammateLoop(options: {
   runId: number;
 }): Promise<void> {
   const { name, role, teamName, color, initialPrompt, runId } = options;
-  const ctx = createAgentContext({
+  const profile = AgentProfile.teammate({
     teamName,
     agentName: name,
     agentId: `${name}@${teamName}`,
     color,
-    role: "teammate",
     agentType: role,
   });
+  const ctx = profileToContext(profile);
 
   const { agentLoop } = await import("../agent-loop.ts");
 
@@ -87,7 +88,7 @@ async function runTeammateLoop(options: {
         const result = await agentLoop(messages, {
           maxTurn: TEAMMATE_WORK_MAX_TURNS,
           maxTokens: 6000,
-          loopOptions: LoopOptions.teammate(),
+          loopOptions: LoopOptions.fromProfile(profile),
         });
         if (result) {
           await sendPlainMessage({

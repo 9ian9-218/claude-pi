@@ -73,7 +73,7 @@ import { warmUp } from "./warmup.ts";
 import { TEAM_LEAD_NAME } from "./teammates/constants.ts";
 import { createTeam, readTeamConfig } from "./teammates/team-helpers.ts";
 import { startLeadInboxPoller } from "./teammates/poller.ts";
-import { createAgentContext } from "./teammates/context.ts";
+import { createAgentContext, setAgentContext } from "./teammates/context.ts";
 
 const USER_PROMPT = "\x1b[36mUser >\t \x1b[0m";
 
@@ -156,13 +156,17 @@ const DEFAULT_TEAM = "default";
 
 /** 确保 default 团队存在并启动 lead 收件箱轮询（对齐 main.py _init_lead_team） */
 function initLeadTeam(): void {
-  const ctx = createAgentContext();
-  ctx.agentName = TEAM_LEAD_NAME;
-  ctx.role = "lead";
   if (readTeamConfig(DEFAULT_TEAM) === null) {
     createTeam(DEFAULT_TEAM, TEAM_LEAD_NAME);
   }
-  ctx.teamName = DEFAULT_TEAM;
+  // 写入 ALS：此前 mutate createAgentContext() 返回的默认对象在无 store 时会被丢弃
+  setAgentContext(
+    createAgentContext({
+      role: "lead",
+      agentName: TEAM_LEAD_NAME,
+      teamName: DEFAULT_TEAM,
+    }),
+  );
   void startLeadInboxPoller(DEFAULT_TEAM);
 }
 
