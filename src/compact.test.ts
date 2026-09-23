@@ -345,6 +345,63 @@ describe("compactContext（手动 /compact 与自动压缩共用的执行体）"
     expect(String(messages[0].content)).toContain("摘要内容");
   });
 
+  it("同前缀的两条分支：第二次压缩复用已有摘要（不调 API），并记录 reusedFrom", async () => {
+    setSessionRoot(ws);
+    let calls = 0;
+    mock.always(() => ({ kind: "sse", chunks: [{ content: `摘要${++calls}`, finishReason: "stop" }] }));
+    const session = SessionManager.create(ws);
+    session.appendMessage({ role: "user", content: "共同的开头" });
+    session.appendMessage({ role: "assistant", content: "共同的回答" });
+    const forkPoint = session.getLeafId() as string;
+
+    // 分支 A：就地压缩（覆盖「根…分叉点」）
+    await compactContext(session.buildSessionContext().messages, { session });
+    const first = session
+      .getEntries()
+      .find((e) => e.type === "compaction") as { id: string; summary: string; inputHash?: string };
+
+    // 回到分叉点 → 分支 B 的前缀与 A 一字不差
+    session.branch(forkPoint);
+    const out = await compactContext(session.buildSessionContext().messages, { session });
+    const compactions = session
+      .getEntries()
+      .filter((e) => e.type === "compaction") as Array<{
+      id: string;
+      summary: string;
+      inputHash?: string;
+      reusedFrom?: string;
+    }>;
+
+    expect(mock.requests).toHaveLength(1); // 只调用了一次摘要 API
+    expect(compactions).toHaveLength(2);
+    expect(compactions[1].summary).toBe(compactions[0].summary);
+    expect(compactions[1].reusedFrom).toBe(first.id);
+    expect(compactions[1].inputHash).toBe(first.inputHash);
+    expect(out.reusedFrom).toBe(first.id);
+  });
+
+  it("前缀不同的分支（各自先说话再压）：不复用，各自调用 API", async () => {
+    setSessionRoot(ws);
+    let calls = 0;
+    mock.always(() => ({ kind: "sse", chunks: [{ content: `摘要${++calls}`, finishReason: "stop" }] }));
+    const session = SessionManager.create(ws);
+    session.appendMessage({ role: "user", content: "共同开头" });
+    const forkPoint = session.getLeafId() as string;
+
+    session.appendMessage({ role: "user", content: "A 的问题" });
+    await compactContext(session.buildSessionContext().messages, { session });
+    session.branch(forkPoint);
+    session.appendMessage({ role: "user", content: "B 的问题" });
+    await compactContext(session.buildSessionContext().messages, { session });
+
+    expect(mock.requests).toHaveLength(2);
+    const compactions = session.getEntries().filter((e) => e.type === "compaction") as Array<{
+      reusedFrom?: string;
+    }>;
+    expect(compactions).toHaveLength(2);
+    expect(compactions.every((c) => c.reusedFrom === undefined)).toBe(true);
+  });
+
   it("摘要失败：抛错且不写 compaction entry", async () => {
     setSessionRoot(ws);
     mock.always(() => ({ kind: "error", status: 500, body: "boom" }));

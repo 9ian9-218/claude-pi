@@ -287,10 +287,13 @@ export function writeTranscript(messages: ChatMessage[]): string {
   return p;
 }
 
-export async function summarizeHistory(
-  messages: ChatMessage[],
-  options: { previousSummary?: string; instructions?: string } = {},
-): Promise<{ summary: string; usage?: import("@earendil-works/pi-ai").Usage }> {
+type SummaryOptions = { previousSummary?: string; instructions?: string };
+
+/**
+ * 构造摘要调用的**完整 prompt**（含输入上限截断）——发送与指纹计算共用同一份，
+ * 保证"指纹相同 ⇔ 送给模型的输入一字不差"。
+ */
+function buildSummaryPrompt(messages: ChatMessage[], options: SummaryOptions = {}): string {
   let messagesToSummarize = messages;
   const totalEst = estimateMessagesTokens(messages);
   const inputCap = summarizeInputCap();
@@ -307,9 +310,45 @@ export async function summarizeHistory(
   }
   const conversation = JSON.stringify(messagesToSummarize);
   // pi 式模板：<conversation> 包装 + （有旧摘要时）<previous-summary> 更新式
-  const prompt = formatCompactSummary(conversation, options.previousSummary, options.instructions);
+  return formatCompactSummary(conversation, options.previousSummary, options.instructions);
+}
+
+/**
+ * 摘要输入指纹：prompt 全文（已含对话渲染 / previousSummary / 额外指令 / 模板版本）
+ * + 当前模型。换模型或改模板 → 指纹变 → 不复用旧摘要。
+ */
+function summaryInputHash(prompt: string): string {
+  const model = getCurrentModel();
+  const modelSpec = model ? `${model.provider}/${model.id}` : "?";
+  return createHash("sha256").update(`${modelSpec}\n${prompt}`).digest("hex").slice(0, 32);
+}
+
+/** 摘要调用（prompt 已构造好）——复用与新建的唯一出口 */
+async function completeSummary(
+  prompt: string,
+): Promise<{ summary: string; usage?: import("@earendil-works/pi-ai").Usage }> {
   const r = await completeTextWithUsage(prompt, { maxTokens: summaryOutputBudget() });
   return { summary: r.text || "(empty summary)", ...(r.usage ? { usage: r.usage } : {}) };
+}
+
+export async function summarizeHistory(
+  messages: ChatMessage[],
+  options: SummaryOptions = {},
+): Promise<{ summary: string; usage?: import("@earendil-works/pi-ai").Usage }> {
+  return completeSummary(buildSummaryPrompt(messages, options));
+}
+
+/** 全树查同指纹的 compaction entry（同前缀的其它分支 / 更早的同输入压缩） */
+function findReusableSummary(
+  session: SessionManager,
+  inputHash: string,
+): { id: string; summary: string } | null {
+  for (const e of session.getEntries()) {
+    if (e.type === "compaction" && e.inputHash === inputHash) {
+      return { id: e.id, summary: e.summary };
+    }
+  }
+  return null;
 }
 
 export async function compactHistory(messages: ChatMessage[]): Promise<ChatMessage[]> {
@@ -366,6 +405,8 @@ export interface CompactOutcome {
   tokensAfter: number;
   /** 会话路径写入的检查点 entry id；非会话路径无 */
   checkpointId?: string;
+  /** 命中复用：本摘要抄自哪个 compaction entry（未复用则缺省） */
+  reusedFrom?: string;
 }
 
 /**
@@ -392,20 +433,33 @@ export async function compactContext(
   const prev = [...branch].reverse().find((e) => e.type === "compaction") as
     | { summary: string }
     | undefined;
-  const { summary, usage } = await summarizeHistory(messages, {
+  const summaryOptions: SummaryOptions = {
     ...(prev ? { previousSummary: prev.summary } : {}),
     ...(opts.instructions ? { instructions: opts.instructions } : {}),
-  });
-  // retainedTail：固定 20K 预算（settings.compaction.keepRecentTokens 可覆盖）
+  };
+  // 指纹查重：同前缀（另一条分支 / 更早的同输入压缩）已有摘要 → 直接复用，省一次调用
+  const prompt = buildSummaryPrompt(messages, summaryOptions);
+  const inputHash = summaryInputHash(prompt);
+  const reusable = findReusableSummary(session, inputHash);
+  const { summary, usage } = reusable
+    ? { summary: reusable.summary, usage: undefined }
+    : await completeSummary(prompt);
+  // retainedTail：固定 20K 预算（settings.compaction.keepRecentTokens 可覆盖），本地重算
   const tail = pickRetainedTail(messages, retainedTailBudget());
   const checkpointId = session.appendCompaction(
     summary,
     tokensBefore,
     tail.length > 0 ? tail : undefined,
     usage,
+    { inputHash, ...(reusable ? { reusedFrom: reusable.id } : {}) },
   );
   messages.splice(0, messages.length, ...session.buildSessionContext().messages);
-  return { tokensBefore, tokensAfter: estimateMessagesTokens(messages), checkpointId };
+  return {
+    tokensBefore,
+    tokensAfter: estimateMessagesTokens(messages),
+    checkpointId,
+    ...(reusable ? { reusedFrom: reusable.id } : {}),
+  };
 }
 
 /**

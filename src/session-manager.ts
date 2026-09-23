@@ -46,6 +46,13 @@ export interface CompactionEntry extends SessionEntryBase {
   retainedTail?: ChatMessage[];
   /** 摘要生成响应的计费信息（footer 累计用） */
   usage?: Usage;
+  /**
+   * 摘要输入指纹（prompt 全文 + 模型）。同指纹 ⇒ 摘要可原样复用：
+   * 同一前缀的不同分支、同一点重问，都省掉一次全量摘要调用（见 compact.ts）。
+   */
+  inputHash?: string;
+  /** 复用来源：本摘要抄自哪个 compaction entry（自己生成时缺省） */
+  reusedFrom?: string;
 }
 
 export interface BranchSummaryEntry extends SessionEntryBase {
@@ -471,6 +478,7 @@ export class SessionManager {
     tokensBefore: number,
     retainedTail?: ChatMessage[],
     usage?: Usage,
+    meta?: { inputHash?: string; reusedFrom?: string },
   ): string {
     const id = genId();
     this.appendRawEntry({
@@ -482,6 +490,8 @@ export class SessionManager {
       tokensBefore,
       ...(retainedTail ? { retainedTail } : {}),
       ...(usage ? { usage } : {}),
+      ...(meta?.inputHash ? { inputHash: meta.inputHash } : {}),
+      ...(meta?.reusedFrom ? { reusedFrom: meta.reusedFrom } : {}),
     });
     return id;
   }

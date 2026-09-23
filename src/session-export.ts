@@ -130,6 +130,8 @@ function eventLine(entry: SessionEntry, inferredDurationMs?: number): object {
         tokensBefore: number;
         retainedTail?: ChatMessage[];
         usage?: unknown;
+        inputHash?: string;
+        reusedFrom?: string;
       };
       return {
         ...base,
@@ -139,6 +141,8 @@ function eventLine(entry: SessionEntry, inferredDurationMs?: number): object {
           // analysis 口径：压缩保留的消息保留全部性能字段（与 message 事件一致）
           ...(c.retainedTail ? { retainedTail: c.retainedTail } : {}),
           ...(c.usage ? { usage: c.usage } : {}),
+          ...(c.inputHash ? { inputHash: c.inputHash } : {}),
+          ...(c.reusedFrom ? { reusedFrom: c.reusedFrom } : {}),
         },
       };
     }

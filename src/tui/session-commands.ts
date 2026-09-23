@@ -184,7 +184,8 @@ export async function handleSessionCommand(
         });
         app.appendSystem(
           `已压缩：${out.tokensBefore} → ≈${out.tokensAfter} tokens` +
-            `（检查点已写入会话树${out.checkpointId ? ` ${out.checkpointId}` : ""}）`,
+            `（检查点已写入会话树${out.checkpointId ? ` ${out.checkpointId}` : ""}` +
+            `${out.reusedFrom ? "，复用已有摘要" : ""}）`,
           "success",
         );
       } catch (e) {

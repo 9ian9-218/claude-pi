@@ -35,7 +35,7 @@ _Avoid_: 新会话
 _Avoid_: 续聊、继续会话（resume 特指文件级操作）
 
 **Compaction Entry**:
-上下文压缩产生的树内记录，含摘要与 retainedTail 检查点，压缩后上下文可从该点重建。
+上下文压缩产生的树内记录，含摘要、retainedTail 检查点与**摘要输入指纹**（`inputHash`），压缩后上下文可从该点重建。指纹相同（同前缀的其它分支 / 同一点重问）时**复用已有摘要、不再调用摘要 API**，并在 entry 上留 `reusedFrom` 指向抄自哪一条——摘要复用不跨会话文件。
 _Avoid_: 压缩标记
 
 **Branch Summary**:
