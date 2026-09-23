@@ -8,7 +8,7 @@ parent: ../map.md
 
 工程化基线盘点：
 
-1. 无 CI（无 .github/workflows）；测试 48 文件/367 用例但无覆盖率门槛；parity 测试依赖 python3 环境（本机 ENOENT）——CI 应该跑什么、怎么隔离环境。
+1. 无 CI（无 .github/workflows）；测试 56 文件/484 用例但无覆盖率门槛——CI 应该跑什么。
 2. 无 lint/format 配置（无 eslint/prettier）；tsconfig 严格度现状。
 3. 依赖 pin 策略：`@earendil-works/pi-ai` 等锁 0.83.0 exact，其余 `^`；pi-ai 快速迭代的升级面（breaking 成本）与 supply chain（jiti/MCP SDK 审计面）。
 4. 发布流程：无 version/release 脚本、无 changelog、无 npm auth 说明；`docs/research/` 与 `.scratch/` 是否应进发行包。

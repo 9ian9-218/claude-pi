@@ -9,4 +9,4 @@
 - [ ] REPL 中输入任意文本，agent 流式回复完整可见
 - [ ] `q`/`exit`/`/new` 等既有交互命令行为与 Python 版一致
 - [ ] mock OpenAI 服务器驱动下，vitest 全链路测试绿灯（含流式、finish_reason=stop）
-- [ ] 系统提示、消息结构与 Python 版逐字段对齐（对拍基础）
+- [ ] 系统提示与消息结构稳定，可被测试断言（测试基准）

@@ -105,7 +105,7 @@ _Avoid_: 回调、事件（Hook 是项目机制名）
 _Avoid_: 权限系统
 
 **上下文压缩 (Context Compaction)**:
-L3 出口（超大工具结果落盘 + 预览，树上只留引用）与 L4（LLM 摘要，写 compaction entry）两层。L4 有自动（超阈值，`maybeCompact`）与手动（`/compact`，强制压、不写 entry 即为失败）两个入口，共用同一执行体；压缩后保留固定 20K token 的原文尾巴（retainedTail）。L1 Snip / L2 Micro 已移除（CC 无对应物，且就地改写会破坏缓存前缀）。
+L3 出口（超大工具结果落盘 + 预览，树上只留引用）与 L4（LLM 摘要，写 compaction entry）两层。L4 有自动（超阈值，`maybeCompact`）与手动（`/compact`，强制压、不写 entry 即为失败）两个入口，共用同一执行体。**触发阈值 = 模型真实上下文窗口的百分比（默认 0.92，`compaction.autoCompactPct` 可覆盖），不设固定窗口上限**；压缩后保留固定 20K token 的原文尾巴（retainedTail）。L1 Snip / L2 Micro 已移除（CC 无对应物，且就地改写会破坏缓存前缀）。
 _Avoid_: 摘要
 
 **后台任务 (Background Task)**:
@@ -189,10 +189,6 @@ _Avoid_: .claude（旧名）；例外：扩展的全局位置是 `~/.claude-pi/e
 **凭据 (Credential)**:
 auth.json 中存储的 API key 或 OAuth token，存于 cpi 独立全局目录（`~/.claude-pi/auth.json`；`cpi --migrate-config` 可从旧 pi 配置迁移）。
 _Avoid_: 密钥、token 文件
-
-**对拍测试 (Parity Test)**:
-同一场景脚本分别驱动 Python 版与 claude-pi（`--mode json`），比对输出以验证行为等价。
-_Avoid_: 对照测试、回归测试（对拍特指跨实现比对）
 
 **MCP 工具 (MCP Tool)**:
 经 MCP 协议接入的外部工具，以 `mcp__{server}__{tool}` 前缀命名暴露给 LLM；本地 server 暴露内置工具为 `mcp__local__{tool}`（权限/后台判定时映射回底层工具名）。

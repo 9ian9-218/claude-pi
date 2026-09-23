@@ -4,4 +4,4 @@ Python 版用线程实现队友 loop、轮询器、后台任务看门狗、线�
 
 **Considered Options**: worker_threads 严格镜像线程——被否决：Python 线程同样受 GIL 限制，机制等价（并发隔离 + 有序输出）而非实现等价才是移植目标，且 worker_threads 会复杂化共享状态。
 
-**Consequences**: 行为等价靠对拍测试保证；CPU 密集工具结果（如图像处理）若成为瓶颈，再单独引入 worker_threads。
+**Consequences**: 全链路为 async-first，测试以 mock OpenAI 驱动主循环；CPU 密集工具结果（如图像处理）若成为瓶颈，再单独引入 worker_threads。

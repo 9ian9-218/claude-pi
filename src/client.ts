@@ -2,7 +2,7 @@
  * client.ts — LLM 传输层（pi-ai，ADR-0007）
  *
  * 对外接口不变：裸 OpenAI JSON 消息进（ChatMessage[]），AssistantMessage 出
- * （modelDump() 还原裸结构，ADR-0005「裸 OpenAI 消息结构」条款保留）。
+ * （modelDump() 还原裸结构；裸 OpenAI 消息结构见 ADR-0010 §2 保留的技术选择）。
  * 内部经 pi-ai Models/stream 收发，provider 差异由 pi-ai 归一化。
  *
  * 配置面：模型/凭据来自 ModelRuntime（~/.pi/agent/，见 ai-runtime.ts）；

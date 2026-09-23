@@ -34,8 +34,8 @@ claude-pi 现有（`src/error-recovery.ts` + `session-manager.ts`）：
 
 | # | 机制 | CC 行为 | 移植要点 |
 |---|------|---------|----------|
-| B1 | **Auto-compact 默认开启** | `autoCompactEnabled=true`、`autoCompactWindow`（100K–1M）、`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`（触发百分比）；1M 模型超 200K 自动压回 | 配置化窗口而非仅硬编码 |
-| B2 | **`/compact` 失败恢复** | 压缩失败（`Conversation too long`）→ 提示双击 Esc 回退几轮再试，或 `/clear` + `/resume` 找回 | 压缩失败不再重试，给用户路径 |
+| B1 | **Auto-compact 默认开启** | `autoCompactEnabled=true`、`autoCompactWindow`（100K–1M）、`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`（触发百分比）；1M 模型超 200K 自动压回 | **有意不采纳**（2026-09-23 决定）：本项目阈值 = 0.92 ×（模型真实窗口 − 输出预留），不引入固定压缩窗口；只有比例可配（`compaction.autoCompactPct`） |
+| B2 | **`/compact` 失败恢复** ✅ 已实现（2026-09-23） | 压缩失败（`Conversation too long`）→ 提示回退几轮再试 | 手动 `/compact [额外指令]`：强制压（不看阈值）、失败不写 entry、提示 `/tree` 回退重发。cpi 无 `/clear`，未照搬该建议 |
 | B3 | **`/context` 占用分解** | 查看系统提示/工具/记忆/消息各自占用量 | 诊断工具 |
 | B4 | **MCP 工具定义挤占上下文** | `/mcp disable` 移除未用 server 的工具定义释放窗口 | |
 | B5 | **图片自动降采样** | 8000px→2000px；无法处理 → 文本占位并重试；请求超 32MB 自动丢弃最旧附件 | 附件管理 |

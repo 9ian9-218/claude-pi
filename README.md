@@ -1,6 +1,6 @@
 # claude-pi
 
-类 Claude Code 架构的 TypeScript Agent 运行时——Python 版 [Claude-Code-simple](https://github.com/z9ian9/myproject/Claude-Code-simple) 的全功能移植，叠加 pi 风格的树形会话管理（含断线恢复）、pi-tui 终端界面与可扩展接口体系。
+类 Claude Code 架构的 TypeScript Agent 运行时（独立项目，见 ADR-0010）——pi 风格树形会话管理（含断线恢复）、pi-tui 终端界面与可扩展接口体系。
 
 > ⚠️ **安全警示**：扩展（`.agent/extensions/`、`~/.claude-pi/extensions/`、`-e`）执行任意代码。仅加载你信任的扩展。
 
@@ -13,14 +13,14 @@
 - **Hook 事件机制**——`UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `Stop` 等事件挂载点，用于拦截与扩展运行时行为
 - **三级权限门控**——黑名单 → 规则 → 用户确认，危险操作在 TUI 中弹窗审批
 - **错误恢复**——429/529 退避重试、fallback 模型、`max_tokens` 升级与续写
-- **四层上下文压缩**——L3 Budget（超大结果落盘预览）、L1 Snip（裁剪中间消息）、L2 Micro（旧结果占位）、L4 Auto Compact（LLM 摘要，写 compaction entry）
+- **上下文压缩**——L3 出口（超大工具结果落盘 + 预览引用）、L4 摘要（自动超阈值 / 手动 `/compact`，写 compaction entry，保留固定 20K 原文尾巴）；L1 Snip / L2 Micro 已移除（CC 无对应物，且就地改写会破坏缓存前缀）
 
 ### 树形会话
 
 - **树形 JSONL 会话**——会话文件内以 entry 树组织，分支在原地进行，不创建新文件
 - **fork / clone / resume**——从历史消息 fork 新会话、完整克隆会话、断线后从 leaf 恢复
 - **断线恢复**——进程崩溃后重新打开会话文件并 resume，从上下文压缩检查点重建
-- **多运行模式**——TTY 自动进入 TUI；`-p` 打印模式；`--mode json` 结构化输出（脚本/对拍接口）
+- **多运行模式**——TTY 自动进入 TUI；`-p` 打印模式；`--mode json` 结构化输出（脚本/自动化接口）
 
 ### 多 Agent 协作
 
@@ -66,13 +66,13 @@ cpi                   # 交互模式（TTY 自动进入 TUI；管道/非 TTY 走
 | --- | --- |
 | `cpi` | 交互模式，默认继续最近会话 |
 | `cpi -p` | 打印模式：`echo "任务" \| cpi -p` |
-| `cpi --mode json` | 结构化输出（对拍/脚本接口） |
+| `cpi --mode json` | 结构化输出（脚本/自动化接口） |
 | `cpi -c` | 继续最近会话（默认行为） |
 | `cpi --session <id>` | 恢复指定会话 |
 | `cpi --fork <id>` | fork 会话到新文件 |
 | `cpi --no-session` | 临时会话（不落盘） |
 
-TUI 内可用斜杠命令：`/tree`（会话树）、`/fork`、`/clone`、`/resume`、`/new`、`/name`、`/session`、`/export`（导出轨迹）、`/import`（导入会话）、`/settings`（设置）、`/login`、`/logout`、`/model`、`/reload`（扩展热重载）等，可扩展注册。
+TUI 内可用斜杠命令：`/tree`（会话树）、`/fork`、`/clone`、`/resume`、`/new`、`/name`、`/session`、`/export`（导出轨迹）、`/import`（导入会话）、`/compact`（手动压缩上下文）、`/settings`（设置）、`/login`、`/logout`、`/model`、`/reload`（扩展热重载）等，可扩展注册。
 
 ## 模型配置
 
@@ -95,7 +95,7 @@ src/
 ├── tool.ts              # 内置工具注册表与 Schema 校验
 ├── hook.ts              # Hook 事件机制
 ├── permission.ts        # 三级权限门控
-├── compact.ts           # L1–L4 上下文压缩
+├── compact.ts           # 上下文压缩（L3 出口 / L4 摘要，自动 + 手动）
 ├── error-recovery.ts    # 重试/fallback/续写
 ├── session-manager.ts   # 树形 JSONL 会话与 fork/clone/resume
 ├── session-export.ts    # 会话导出（analysis 整树 trace / portable 分支）

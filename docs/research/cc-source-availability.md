@@ -60,7 +60,13 @@ CC 阈值/行为的三层证据（按可信度排序）：
 ## 五、本会话落地（grill 共识）
 
 - L4 autocompact：形式向 pi 对齐（文案 `<summary>` 包裹 + window 驱动触发 +
-  settings `compaction` 键：enabled/reserveTokens，默认 16384）
+  settings `compaction` 键：enabled / autoCompactPct / keepRecentTokens）
 - 诊断：cache-stats 纯函数（idle 5min / 噪声 1024 / compaction 重置）+ 回合末
   提示（TUI turnEnd 事件 + REPL console 双通道）
-- L1/L2/L3：暂缓，待证据链齐备后单独会话处理
+- L1/L2/L3：L1/L2 判定**移除**（本文件 §三 结论：CC 无按条数裁剪、无旧结果回写；
+  且就地改写会破坏缓存前缀）；L3 = 单条输出截断 + 落盘预览，已落地 `finalizeToolOutput`
+
+> **2026-09-23 修正**：阈值/预留/摘要预算改为按模型窗口派生（窗口读不到兜底 256K，
+> 预留 = min(模型 maxTokens, 应用单次输出上限 64K, 窗口/2)），`retainedTail` 固定 20K，
+> `reserveTokens` 不再是默认值（仅显式覆盖项），手动 `/compact [额外指令]` 已实现。
+> 详见 `.scratch/cache-hit-plan.md` 文首修正块；词表见 `CONTEXT.md`。

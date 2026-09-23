@@ -2,7 +2,7 @@
  * test-client.ts — 测试用模型通道（pi-ai 自定义 provider，chat-completions 线协议）
  *
  * 单元测试：installMockModels(baseUrl) 程序化注册 provider 指向 MockOpenAI，
- * 无文件 I/O。子进程测试（CLI/对拍）：createTestAgentDir(baseUrl) 写临时
+ * 无文件 I/O。子进程测试（CLI）：createTestAgentDir(baseUrl) 写临时
  * ~/.pi/agent 目录（models.json + settings.json），经 PI_CODING_AGENT_DIR
  * 注入 —— 与 pi 的配置机制完全一致。
  */
@@ -64,7 +64,7 @@ export function installMockModels(baseUrl: string, modelId = "gpt-test"): Models
   return models;
 }
 
-/** 子进程测试/对拍：写临时 pi 配置目录（models.json + settings.json） */
+/** 子进程测试：写临时 pi 配置目录（models.json + settings.json） */
 export function createTestAgentDir(baseUrl: string, modelId = "gpt-test"): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-agent-"));
   fs.writeFileSync(

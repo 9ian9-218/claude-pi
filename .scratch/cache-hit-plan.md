@@ -7,17 +7,30 @@
 > 事实调研见
 > `docs/research/cc-source-availability.md`（网络连通性 + CC 源码可获取性）。
 
+> **⚠️ 2026-09-23 修正（优先于下方 v3 表）**：阈值不再写死 token 数——窗口取模型真实
+> `contextWindow`（读不到 → **256K 兜底**），输出预留 = `min(模型 maxTokens, 应用单次输出上限 64K, 窗口/2)`
+> （模型未报 maxTokens 时取窗口 16%），触发线 = 0.92 ×（窗口 − 预留）；摘要输出预算 =
+> `min(窗口 10%, 模型 maxTokens, 64K)`；`retainedTail` **固定 20K**（不随窗口缩放）；
+> `settings.compaction.reserveTokens / keepRecentTokens` 仅是**显式覆盖项**（前者此前从未被读取）。
+> 另：手动 `/compact [额外指令]` 已实现（强制压、失败不写 entry、提示 `/tree` 回退）。
+> **压缩窗口上限：不引入（2026-09-23 决定）** —— 不做 CC 式固定窗口（`autoCompactWindow`），
+> 阈值一律 = `0.92 ×（模型真实窗口 − 输出预留）`，比例本身可用
+> `settings.compaction.autoCompactPct` 覆盖；不提供"给大窗口模型设人工上限"的开关。
+> 落地见 commit `feat(compact): 手动 /compact + 阈值按模型窗口派生（tail 固定 20K）`；
+> 词表以 `CONTEXT.md` 为准。**三点五节的 CC 1.0.40 取证（PAA=8192/32000、PM2=20000）
+> 是事实记录，不是本项目规范**，勿据此回改实现。
+
 ## 〇、定稿执行方案（grill 共识 · v3，L1–L4 全 CC 语义 + pi 式摘要，与树形协同）
 
 ### 阶段 1（修订工作区已有实现）
 
 | # | 项 | 定稿内容 | 协同点 |
 |---|---|---|---|
-| 1 | L4 触发 | **CC 式**：`kE ≥ 0.92 × (window − maxOutput预留)`；kE = 分支尾部最近带 usage 的 assistant 消息的 `input+cacheRead+cacheWrite`（真实 usage，非字符估算）；maxOutput 预留照 PAA（model id 含 "3-5"/"haiku"→8192，`CLAUDE_CODE_MAX_OUTPUT_TOKENS` env，默认 32000）；0.92 可 settings 覆盖 | **压缩后门闩**：最近 compaction 之后无有效 assistant usage → 不触发（对齐 pi `hasValidPostCompactionUsage`；cpi `computeContextUsage` 已有同款逻辑可复用）——避免压缩后旧 usage 高估引发立即重复压缩 |
+| 1 | L4 触发 | **CC 式**：`kE ≥ 0.92 × (window − maxOutput预留)`；kE = 分支尾部最近带 usage 的 assistant 消息的 `input+cacheRead+cacheWrite`（真实 usage，非字符估算）；maxOutput 预留 = `min(模型 maxTokens, 应用单次输出上限 64K, 窗口/2)`（2026-09-23 修正；原 PAA 的 8192/32000 已不采用，见文首）；0.92 可 settings 覆盖 | **压缩后门闩**：最近 compaction 之后无有效 assistant usage → 不触发（对齐 pi `hasValidPostCompactionUsage`；cpi `computeContextUsage` 已有同款逻辑可复用）——避免压缩后旧 usage 高估引发立即重复压缩 |
 | 2 | L4 执行错误处理 | CC 式分类：摘要失败 `no_summary / api_error / prompt_too_long` → 提示"Conversation too long. Press esc to go up a few messages and try again." 之 cpi 版；失败**不写 compaction entry**、回合继续 | 树形无副作用（失败=无 entry 写入） |
 | 3 | 摘要模板 | **pi 式**（用户定 A）：`SUMMARIZATION_PROMPT` 7 节（Goal / Constraints & Preferences / Progress(Done/In Progress/Blocked) / Key Decisions / Next Steps / Critical Context）+ `<conversation>…</conversation>` 包装；多次压缩走**更新式**（`UPDATE_SUMMARIZATION_PROMPT` + `<previous-summary>`）；`/compact 指令` → "Additional focus: …" | **previousSummary 从分支链取**：appendCompaction 前在 getBranch() 找链上最近 compaction 的 summary——树形检查点链天然是摘要更新的输入 |
-| 4 | 摘要预算 | 12K → **20K**（CC PM2 实证） | — |
-| 5 | tail | `slice(-5)` 按条数 → **keepRecentTokens 20K token 预算**（pi）；**保持 cpi 复制式自包含**（retainedTail 存 entry 内，resume 单文件可重建；不采纳 pi 的 firstKeptEntryId 引用式，不采纳 CC 的已读文件式） | 自包含检查点 = 树形可恢复性核心 |
+| 4 | 摘要预算 | 12K → **min(窗口 10%, 模型 maxTokens, 64K)**（200K 窗口即 CC PM2 实证的 20K；2026-09-23 修正） | — |
+| 5 | tail | `slice(-5)` 按条数 → **固定 20K token 预算**（pi keepRecentTokens 默认；2026-09-23 确认不随窗口缩放）；**保持 cpi 复制式自包含**（retainedTail 存 entry 内，resume 单文件可重建；不采纳 pi 的 firstKeptEntryId 引用式，不采纳 CC 的已读文件式） | 自包含检查点 = 树形可恢复性核心 |
 | 6 | 诊断（cache-stats / footer） | **不动**（已实现，与触发算法正交） | kE 与 cache-stats 同数据源（usage 落盘）；compaction 重置点不变 |
 
 ### 阶段 2（next 会话：L1/L2/L3）
@@ -57,12 +70,13 @@ L3 budget 尾部预算（合理 ✅，只动尾部）；L4 autocompact 触发硬
 ### 3.1 L4 autocompact 向 pi 对齐
 
 - **触发参数化**：`estimateMessagesTokens(messages) > CONTEXT_LIMIT(480K 硬编码)`
-  → `> contextWindow - reserveTokens`；contextWindow 取当前模型
-  （`getCurrentModel()?.contextWindow`，兜底 `MODEL_MAX_CONTEXT_TOKENS`）；
-  reserveTokens 默认 **16384**（pi 默认），可关（enabled=false）。
+  → `> (contextWindow − 输出预留) × 0.92`；contextWindow 取当前模型真实值
+  （读不到兜底 `DEFAULT_CONTEXT_WINDOW = 256_000`），输出预留按模型派生
+  （见文首修正块；`reserveTokens` 仅为显式覆盖项），可关（enabled=false）。
 - **settings**：`PiSettings` 加 `compaction?: { enabled, reserveTokens }`
   （键名对齐 pi `settings.json` 的 `compaction` 键）；`settings.ts` 解析，
-  默认 `{ enabled: true, reserveTokens: 16384 }`。
+  默认 `{ enabled: true, autoCompactPct: 0.92, keepRecentTokens: 20000 }`；
+  `reserveTokens` 不设默认值（按模型窗口派生，写了才覆盖）。
 - **文案**：`formatCompactedUserMessage`/`formatReactiveCompactedUserMessage`
   的 `[Compacted]` / `[Reactive compact]` → pi 文案：
   `The conversation history before this point was compacted into the following summary:\n\n<summary>\n{summary}\n</summary>`
@@ -106,7 +120,7 @@ L3 budget 尾部预算（合理 ✅，只动尾部）；L4 autocompact 触发硬
 
 ### 3.4 验收
 
-- typecheck 干净；全量测试通过（parity python3 环境失败除外，已知）；
+- typecheck 干净；全量测试通过；
 - settings `compaction.enabled=false` 时 L4 不触发；
 - 老会话（无 usage 字段）scan 不崩、不误报；
 - REPL 与 TUI 均能看到 miss 提示。
