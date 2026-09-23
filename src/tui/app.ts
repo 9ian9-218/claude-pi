@@ -122,6 +122,26 @@ class ResizeAwareTerminal implements Terminal {
   }
 }
 
+/** 命令目录 → 帮助文本（单一事实源：内置/会话/扩展，不再各处手抄清单） */
+function renderCommandHelp(): string {
+  const groups: Array<[string, string]> = [
+    ["builtin", "内置"],
+    ["session", "会话"],
+    ["extension", "扩展"],
+  ];
+  const lines: string[] = [];
+  for (const [kind, label] of groups) {
+    const items = listCommandEntries()
+      .filter((c) => c.kind === kind)
+      .sort((a, b) => a.name.localeCompare(b.name));
+    if (items.length === 0) continue;
+    lines.push(`${label}：`);
+    for (const c of items) lines.push(`  /${c.name} ${c.description}`);
+  }
+  lines.push("", "Ctrl+C / Esc 退出");
+  return lines.join("\n");
+}
+
 export class TuiApp {
   readonly tui: TUI;
   readonly chat: MessageList;
@@ -600,8 +620,6 @@ export class TuiApp {
         const label = entry.kind === "extension" ? "扩展命令错误" : "命令错误";
         this.appendSystem(`${label}：${String((e as Error).message)}`, "error");
       }
-    } else if (this.onSessionCommand) {
-      await this.onSessionCommand(name, rest, this);
     } else {
       this.appendSystem(`未知命令：/${name}（/help 查看）`, "warning");
     }
@@ -629,20 +647,7 @@ export class TuiApp {
         if (this.startupMessage) {
           this.startupMessage.setExpanded(true);
         } else {
-          this.appendSystem(
-            [
-              "/login 登录模型服务商",
-              "/settings 设置（导出模式/重试/压缩）",
-              "/export 导出会话轨迹",
-              "/import 导入会话",
-              "/new 开新会话",
-              "/help 显示帮助",
-              "/quit 退出",
-              "/status 显示状态",
-              "Ctrl+C / Esc 退出",
-            ].join("\n"),
-            "accent",
-          );
+          this.appendSystem(renderCommandHelp(), "accent");
         }
       },
     });
@@ -727,6 +732,7 @@ export class TuiApp {
       ["session", "显示会话信息"],
       ["export", "导出会话轨迹（--analysis 整树分析 / --portable 会话移植）"],
       ["import", "导入会话文件（替换当前会话）"],
+      ["compact", "手动压缩上下文（可带额外指令）"],
     ];
     for (const [cmdName, desc] of sessionCommands) {
       registerCommand<TuiApp>({

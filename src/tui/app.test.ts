@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { TuiApp } from "./app.ts";
+import { getCommandEntry } from "../commands.ts";
 import { MessageList } from "./messages/message-list.ts";
 import { UserMessageComponent } from "./messages/user-message.ts";
 import { SystemMessageComponent } from "./messages/system-message.ts";
@@ -129,6 +130,34 @@ describe("TuiApp（S14 重构）", () => {
     app.editor.onSubmit?.("/help");
     await nextTick();
     expect(app.getChatText()).toContain("/new 开新会话");
+  });
+
+  it("会话命令全部登记进命令目录（kind=session，含 /compact）", () => {
+    const term = new FakeTerminal();
+    new TuiApp({ terminal: term, onQuery: () => {} });
+    for (const name of [
+      "tree",
+      "fork",
+      "clone",
+      "resume",
+      "name",
+      "session",
+      "export",
+      "import",
+      "compact",
+    ]) {
+      expect(getCommandEntry(name)?.kind, `/\${name} 未登记`).toBe("session");
+    }
+  });
+
+  it("/help 列出会话命令（含 /compact）", async () => {
+    const term = new FakeTerminal();
+    const app = new TuiApp({ terminal: term, onQuery: () => {} });
+    app.editor.onSubmit?.("/help");
+    await nextTick();
+    const text = app.getChatText();
+    expect(text).toContain("/compact");
+    expect(text).toContain("/export");
   });
 
   it("未知命令提示", async () => {

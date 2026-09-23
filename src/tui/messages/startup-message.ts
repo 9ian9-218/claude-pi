@@ -6,6 +6,7 @@
  */
 import { Container, Text } from "@earendil-works/pi-tui";
 import { theme } from "../theme/theme.ts";
+import { listCommandEntries } from "../../commands.ts";
 
 const KEY_HINTS = [
   "Ctrl+O 折叠/展开工具输出与帮助",
@@ -18,22 +19,16 @@ const KEY_HINTS = [
   "PgUp/PgDn 滚动聊天区",
 ];
 
-const COMMANDS = [
-  "/login 登录模型服务商",
-  "/new 开新会话",
-  "/tree 会话树导航",
-  "/fork 从历史消息分叉",
-  "/clone 克隆当前会话",
-  "/resume 恢复历史会话",
-  "/name 设置会话名",
-  "/session 会话信息",
-  "/model 切换模型",
-  "/thinking 设置思考强度",
-  "/status 显示状态",
-  "/reload 重载扩展",
-  "/help 显示帮助",
-  "/quit 退出",
-];
+/**
+ * 命令清单：从命令目录派生（单一事实源），不再手抄。
+ * 顺序 = 内置 → 会话 → 扩展，组内按名字排序。
+ */
+function commandLines(): string[] {
+  const order: Record<string, number> = { builtin: 0, session: 1, extension: 2 };
+  return [...listCommandEntries()]
+    .sort((a, b) => (order[a.kind] ?? 9) - (order[b.kind] ?? 9) || a.name.localeCompare(b.name))
+    .map((c) => `/${c.name} ${c.description}`);
+}
 
 export class StartupMessageComponent extends Container {
   private text: Text;
@@ -72,7 +67,7 @@ export class StartupMessageComponent extends Container {
       ...KEY_HINTS.map((k) => theme.fg("dim", `  ${k}`)),
       "",
       theme.fg("muted", "命令"),
-      ...COMMANDS.map((c) => theme.fg("dim", `  ${c}`)),
+      ...commandLines().map((c) => theme.fg("dim", `  ${c}`)),
       "",
       theme.fg("dim", "输入问题开始对话；Ctrl+O 折叠此帮助"),
     ];

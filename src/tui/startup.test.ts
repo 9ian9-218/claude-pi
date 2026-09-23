@@ -50,6 +50,9 @@ describe("启动屏/欢迎页（10）", () => {
       const expanded = app.chat.render(80).join("");
       expect(expanded).toContain("Ctrl+L 模型选择器");
       expect(expanded).toContain("/tree 会话树导航");
+      // 命令清单来自命令目录（单一事实源）：会话命令与新命令都在
+      expect(expanded).toContain("/compact");
+      expect(expanded).toContain("/settings");
       term.onInput?.("\x0f"); // 再按折叠
       expect(app.chat.render(80).join("")).not.toContain("Ctrl+L 模型选择器");
     } finally {

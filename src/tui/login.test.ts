@@ -227,6 +227,8 @@ describe("/login（回归：登录命令缺失）", () => {
     // 启动帮助展开（/help 复用）；渲染输出含 /login
     const startup = app["startupMessage"];
     expect(startup).not.toBeNull();
+    // 命令清单现由命令目录派生（含会话命令），内容超出默认视口 → 放大后断言
+    app.chat.setViewportHeight(100);
     expect(app.chat.render(80).join("")).toContain("/login 登录模型服务商");
     app.stop();
   });
