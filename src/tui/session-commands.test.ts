@@ -139,6 +139,62 @@ describe("会话命令（S15b）", () => {
   });
 });
 
+describe("会话命令：/compact（手动压缩）", () => {
+  let mock: import("../../tests/helpers/mock-openai.ts").MockOpenAI;
+
+  beforeEach(async () => {
+    const { MockOpenAI } = await import("../../tests/helpers/mock-openai.ts");
+    const { installMockModels } = await import("../../tests/helpers/test-client.ts");
+    mock = await MockOpenAI.create();
+    installMockModels(mock.baseUrl);
+  });
+
+  afterEach(async () => {
+    const { resetClient } = await import("../client.ts");
+    resetClient();
+    await mock.close();
+  });
+
+  it("/compact 成功：写检查点并回报 token 变化", async () => {
+    mock.always(() => ({ kind: "sse", chunks: [{ content: "手动摘要", finishReason: "stop" }] }));
+    const session = SessionManager.create(cwd);
+    session.appendMessage({ role: "user", content: "问题" });
+    session.appendMessage({ role: "assistant", content: "回答" });
+    session.appendMessage({ role: "user", content: "继续" });
+    const ref = { current: session };
+    const app = makeApp(session, ref);
+
+    await handleSessionCommand(app, ref, "compact", "");
+
+    expect(app.getChatText()).toContain("已压缩");
+    const comp = session.getEntries().find((e) => e.type === "compaction");
+    expect(comp).toBeDefined();
+    expect((comp as { summary: string }).summary).toContain("手动摘要");
+  });
+
+  it("/compact 失败：不写检查点，提示可回退几轮再试", async () => {
+    mock.always(() => ({ kind: "error", status: 500, body: "summarization failed" }));
+    const session = SessionManager.create(cwd);
+    session.appendMessage({ role: "user", content: "问题" });
+    const ref = { current: session };
+    const app = makeApp(session, ref);
+
+    await handleSessionCommand(app, ref, "compact", "");
+
+    const text = app.getChatText();
+    expect(text).toContain("压缩失败");
+    expect(text).toContain("回退");
+    expect(session.getEntries().some((e) => e.type === "compaction")).toBe(false);
+  });
+
+  it("/compact 无会话（--no-session）提示禁用", async () => {
+    const ref: { current: SessionManager | null } = { current: null };
+    const app = makeApp(null, ref);
+    await handleSessionCommand(app, ref, "compact", "");
+    expect(app.getChatText()).toContain("会话已禁用");
+  });
+});
+
 describe("会话命令键盘驱动（S15b）", () => {
   it("/tree 选择节点分支并生成 branch_summary", async () => {
     const session = SessionManager.create(cwd);

@@ -20,7 +20,11 @@ export interface PiSettings {
   retry: PiRetrySettings;
   defaultModel?: string;
   enabledModels?: string[];
-  /** 自动压缩（对齐 pi compaction 键：enabled/reserveTokens/keepRecentTokens） */
+  /**
+   * 自动压缩。reserveTokens 不写则按模型真实窗口派生（compact.ts
+   * COMPACTION_RATIOS）；keepRecentTokens 默认固定 20K；两个键都可用这里
+   * 显式覆盖。
+   */
   compaction?: {
     enabled?: boolean;
     reserveTokens?: number;
@@ -33,19 +37,15 @@ export interface PiSettings {
 /** pi 默认：agent 级重试开启，最多 3 次，指数退避 2s/4s/8s */
 export const DEFAULT_RETRY: PiRetrySettings = { enabled: true, maxRetries: 3, baseDelayMs: 2000 };
 
-/** pi 默认（DEFAULT_COMPACTION_SETTINGS）：window 余量 16K，tail 预算 20K；
- * autoCompactPct 对齐 CC 1.0.40 实证（LA1=0.92：kE ≥ 0.92×窗口触发） */
-export const DEFAULT_COMPACTION: {
-  enabled: boolean;
-  reserveTokens: number;
-  keepRecentTokens: number;
-  autoCompactPct: number;
-} = {
+/** 压缩默认：开关 + 触发系数 + **固定 20K** 的 retainedTail 预算（对齐 pi）。
+ * 注意：这里曾有的 reserveTokens: 16384 从未被任何代码读取（实际预留走
+ * compact.ts 的 maxOutputReserve，旧实现按模型名硬编码 8192/32000），故移除；
+ * 输出预留现按模型窗口派生，需要时用 settings.compaction.reserveTokens 覆盖。 */
+export const DEFAULT_COMPACTION = {
   enabled: true,
-  reserveTokens: 16384,
-  keepRecentTokens: 20000,
   autoCompactPct: 0.92,
-};
+  keepRecentTokens: 20_000,
+} as const;
 
 /** 配置缓存与测试覆盖（/settings 修改后 resetSettingsCache） */
 let _cache: PiSettings | null = null;

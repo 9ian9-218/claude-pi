@@ -16,7 +16,7 @@ import {
   type AssistantMessage,
   type ChatMessage,
 } from "./client.ts";
-import { reactiveCompact } from "./compact.ts";
+import { ESCALATED_MAX_TOKENS, reactiveCompact } from "./compact.ts";
 import { CONTINUATION_PROMPT } from "./prompt.ts";
 import { readPiSettings, setSettingsOverrideForTest } from "./settings.ts";
 import { emitNoticeOrLog, type UiEventSink } from "./ui-events.ts";
@@ -41,7 +41,8 @@ async function getPiRetry(): Promise<{
   };
 }
 
-export const ESCALATED_MAX_TOKENS = 64_000;
+// 单次输出上限与压缩输出预留共用同一事实源（定义在 compact.ts）
+export { ESCALATED_MAX_TOKENS };
 export const MAX_RECOVERY_RETRIES = 3;
 
 export class RecoveryState {

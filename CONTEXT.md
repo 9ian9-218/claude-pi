@@ -105,7 +105,7 @@ _Avoid_: 回调、事件（Hook 是项目机制名）
 _Avoid_: 权限系统
 
 **上下文压缩 (Context Compaction)**:
-四层压缩机制：L3 Budget（超大结果落盘预览）、L1 Snip（裁剪中间消息）、L2 Micro（旧结果占位）、L4 Auto Compact（LLM 摘要，写 compaction entry）。
+L3 出口（超大工具结果落盘 + 预览，树上只留引用）与 L4（LLM 摘要，写 compaction entry）两层。L4 有自动（超阈值，`maybeCompact`）与手动（`/compact`，强制压、不写 entry 即为失败）两个入口，共用同一执行体；压缩后保留固定 20K token 的原文尾巴（retainedTail）。L1 Snip / L2 Micro 已移除（CC 无对应物，且就地改写会破坏缓存前缀）。
 _Avoid_: 摘要
 
 **后台任务 (Background Task)**:
@@ -146,7 +146,7 @@ _Avoid_: 供应商、厂商
 _Avoid_: 非交互模式
 
 **斜杠命令 (Slash Command)**:
-TUI 中以 `/` 开头的命令（/tree、/fork、/clone、/new、/resume、/name、/session、/login、/logout、/model、/settings 等），可扩展注册。
+TUI 中以 `/` 开头的命令（/tree、/fork、/clone、/new、/resume、/name、/session、/export、/import、/compact、/login、/logout、/model、/settings 等），可扩展注册。
 _Avoid_: 指令
 
 **扩展 (Extension)**:

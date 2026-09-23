@@ -6,6 +6,10 @@
  * 统一出口截断（>30K 字符 + 落盘引用）；L4 = window 驱动触发（kE 真实
  * usage + 0.92 系数）+ pi 式 7 节摘要（previousSummary 更新式）。
  * L4 与会话树 compaction entry 的联动归工单 12。
+ *
+ * 阈值不写死 token 绝对值：窗口取模型真实 contextWindow（读不到 → 256K），
+ * 输出预留取模型 maxTokens ∩ 应用单次输出上限，其余预算按窗口比例派生
+ * （见 COMPACTION_RATIOS）。换模型即自动跟随。
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -14,7 +18,7 @@ import { getWorkdir } from "./workdir.ts";
 import { emitNoticeOrLog, type UiEventSink } from "./ui-events.ts";
 import type { SessionManager } from "./session-manager.ts";
 import { completeTextWithUsage, type ChatMessage } from "./client.ts";
-import type { Usage } from "@earendil-works/pi-ai";
+import type { Api, Model, Usage } from "@earendil-works/pi-ai";
 import type { SessionEntry, CompactionEntry } from "./session-manager.ts";
 import { getCurrentModel } from "./ai-runtime.ts";
 import { readPiSettings, DEFAULT_COMPACTION } from "./settings.ts";
@@ -24,42 +28,121 @@ import {
   formatCompactSummary,
 } from "./prompt.ts";
 
-// 窗口参数（对齐 compact.py 1M 参考值对应的 600K 配置）
-export const MODEL_MAX_CONTEXT_TOKENS = 600_000;
+// 工具输出体积策略（与窗口无关，属 L3 出口口径）
 export const PERSIST_THRESHOLD_TOKENS = 6_000;
 export const PREVIEW_TOKENS = 500;
-// 摘要输出预算（对齐 CC 1.0.40 实证 PM2=20000）
-export const MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000;
-/** retainedTail 预算（对齐 pi keepRecentTokens 默认 20000） */
-export const DEFAULT_KEEP_RECENT_TOKENS = DEFAULT_COMPACTION.keepRecentTokens;
-export const AUTO_COMPACT_MAX_INPUT_TOKENS_EST = 240_000;
 export const MAX_REACTIVE_RETRIES = 2;
 
 /**
- * maxOutput 预留（CC 1.0.40 实证 PAA）：有效窗口 = contextWindow − 预留。
- * 模型 id 含 "3-5"/"haiku" → 8192；CLAUDE_CODE_MAX_OUTPUT_TOKENS env 可覆盖；默认 32000。
+ * 单次输出上限（撞输出上限后升级到的天花板）= 压缩的输出预留基准。
+ * 主消费者是 maxOutputReserve；error-recovery 的输出升级路径反向引用本常量。
  */
-export function maxOutputReserve(modelId?: string): number {
-  const id = modelId ?? getCurrentModel()?.id ?? "";
-  if (id.includes("3-5") || id.includes("haiku")) return 8192;
+export const ESCALATED_MAX_TOKENS = 64_000;
+
+/** 读不到模型 contextWindow 时的兜底上下文窗口 */
+export const DEFAULT_CONTEXT_WINDOW = 256_000;
+
+/**
+ * 窗口派生比例 —— 触发线/输出预留/摘要预算都由当前模型窗口算出。
+ * 例外：retainedTail 是**固定 20K**（见 retention 一节）——按比例保留会让
+ * 1M 窗口留 100K 原文尾巴，反而吃掉压缩收益。
+ */
+export const COMPACTION_RATIOS = {
+  /** 触发线：kE ≥ pct × (窗口 − 输出预留)，0.92 对齐 CC 1.0.40 实证（LA1） */
+  autoCompactPct: 0.92,
+  /** 模型未报 maxTokens 时的输出预留比例（0.16：200K 窗口即 32K；本项目自定，
+   * CC/pi 均无对应实证——CC 是按模型名硬编码 8192/32000） */
+  outputReserve: 0.16,
+  /** 摘要输出预算 / 窗口（0.1：200K 窗口即 20K，对齐 CC PM2 实证） */
+  summaryOutput: 0.1,
+} as const;
+
+/** 当前模型窗口（真实值优先；模型缺失/非法 → DEFAULT_CONTEXT_WINDOW） */
+export function resolveContextWindow(model: Model<Api> | null = getCurrentModel()): number {
+  const w = model?.contextWindow;
+  return typeof w === "number" && Number.isFinite(w) && w > 0
+    ? Math.floor(w)
+    : DEFAULT_CONTEXT_WINDOW;
+}
+
+/**
+ * maxOutput 预留：有效窗口 = contextWindow − 预留（本应用一次请求最多要模型
+ * 输出多少 token）。优先级：
+ *   env CLAUDE_CODE_MAX_OUTPUT_TOKENS → settings.compaction.reserveTokens
+ *   → min(模型 maxTokens, 应用单次输出上限) → 窗口 × COMPACTION_RATIOS.outputReserve
+ * 不再按模型名字符串猜（旧实现：含 "3-5"/"haiku" → 8192，否则 32000）。
+ */
+export function maxOutputReserve(
+  model: Model<Api> | null = getCurrentModel(),
+  window = resolveContextWindow(model),
+): number {
   const env = process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS;
-  if (env) {
-    const n = parseInt(env, 10);
-    if (!Number.isNaN(n) && n > 0) return n;
+  const fromEnv = env ? Number.parseInt(env, 10) : Number.NaN;
+  if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
+
+  const configured = readPiSettings().compaction?.reserveTokens;
+  if (typeof configured === "number" && configured > 0) return configured;
+
+  const mt = model?.maxTokens;
+  if (typeof mt === "number" && Number.isFinite(mt) && mt > 0) {
+    // 预留至多占窗口一半：maxTokens ≥ 窗口的病态模型若原样预留，
+    // 触发线会塌成 1（(window − reserve) × 0.92 ≤ 0），变成每轮都压。
+    return Math.max(1, Math.min(mt, ESCALATED_MAX_TOKENS, Math.floor(window / 2)));
   }
-  return 32_000;
+  return Math.max(1, Math.min(Math.round(window * COMPACTION_RATIOS.outputReserve), window));
+}
+
+/**
+ * retainedTail 预算：**固定 20K**（对齐 pi keepRecentTokens 默认），不随窗口缩放。
+ * settings.compaction.keepRecentTokens 可显式覆盖。
+ */
+export function retainedTailBudget(): number {
+  const configured = readPiSettings().compaction?.keepRecentTokens;
+  if (typeof configured === "number" && configured > 0) return configured;
+  return DEFAULT_COMPACTION.keepRecentTokens;
+}
+
+/**
+ * 摘要输出预算 = min(窗口 × 10%, 模型 maxTokens, 应用单次输出上限)。
+ * 不做 maxTokens 收敛会给小输出模型发超出其上限的 max_tokens（400 风险）。
+ */
+export function summaryOutputBudget(
+  model: Model<Api> | null = getCurrentModel(),
+  window = resolveContextWindow(model),
+): number {
+  const byWindow = Math.round(window * COMPACTION_RATIOS.summaryOutput);
+  const mt = model?.maxTokens;
+  const capped =
+    typeof mt === "number" && Number.isFinite(mt) && mt > 0
+      ? Math.min(byWindow, mt)
+      : byWindow;
+  return Math.max(1, Math.min(capped, ESCALATED_MAX_TOKENS));
+}
+
+/** 摘要输入上限 = 窗口 − 摘要输出预算（保证摘要调用自身不溢出窗口） */
+export function summarizeInputCap(
+  model: Model<Api> | null = getCurrentModel(),
+  window = resolveContextWindow(model),
+): number {
+  return Math.max(1, window - summaryOutputBudget(model, window));
 }
 
 /**
  * 自动压缩触发阈值（CC 式：kE ≥ pct × (window − maxOutput 预留)）。
- * window 优先取当前模型 contextWindow；兜底 MODEL_MAX_CONTEXT_TOKENS；
+ * window 缺省取当前模型 contextWindow（读不到 → 256K 兜底）；
  * pct 默认 0.92（CC LA1 实证），settings.compaction.autoCompactPct 可覆盖。
  */
-export function getCompactionThreshold(window?: number, pct?: number): number {
-  const win = window ?? getCurrentModel()?.contextWindow ?? MODEL_MAX_CONTEXT_TOKENS;
+export function getCompactionThreshold(
+  window?: number,
+  pct?: number,
+  model?: Model<Api> | null,
+): number {
+  const resolvedModel = model === undefined ? getCurrentModel() : model;
+  const win = window ?? resolveContextWindow(resolvedModel);
   const settings = readPiSettings().compaction;
   const rate = pct ?? settings?.autoCompactPct ?? DEFAULT_COMPACTION.autoCompactPct;
-  return Math.max(1, Math.round((win - maxOutputReserve(getCurrentModel()?.id)) * rate));
+  const reserve = maxOutputReserve(resolvedModel, win);
+  return Math.max(1, Math.round((win - reserve) * rate));
 }
 
 /** 自动压缩是否启用（settings.compaction.enabled，默认开，对齐 pi） */
@@ -210,12 +293,13 @@ export async function summarizeHistory(
 ): Promise<{ summary: string; usage?: import("@earendil-works/pi-ai").Usage }> {
   let messagesToSummarize = messages;
   const totalEst = estimateMessagesTokens(messages);
-  if (totalEst > AUTO_COMPACT_MAX_INPUT_TOKENS_EST) {
+  const inputCap = summarizeInputCap();
+  if (totalEst > inputCap) {
     const truncated: ChatMessage[] = [];
     let running = 0;
     for (let i = messages.length - 1; i >= 0; i--) {
       const sz = estimateMessageTokens(messages[i]);
-      if (running + sz > AUTO_COMPACT_MAX_INPUT_TOKENS_EST) break;
+      if (running + sz > inputCap) break;
       truncated.unshift(messages[i]);
       running += sz;
     }
@@ -224,7 +308,7 @@ export async function summarizeHistory(
   const conversation = JSON.stringify(messagesToSummarize);
   // pi 式模板：<conversation> 包装 + （有旧摘要时）<previous-summary> 更新式
   const prompt = formatCompactSummary(conversation, options.previousSummary, options.instructions);
-  const r = await completeTextWithUsage(prompt, { maxTokens: MAX_OUTPUT_TOKENS_FOR_SUMMARY });
+  const r = await completeTextWithUsage(prompt, { maxTokens: summaryOutputBudget() });
   return { summary: r.text || "(empty summary)", ...(r.usage ? { usage: r.usage } : {}) };
 }
 
@@ -269,9 +353,64 @@ function usageOf(entry: SessionEntry): Usage | null {
   }
   return null;
 }
+export interface CompactContextOptions {
+  session?: SessionManager | null;
+  /** 摘要额外关注点（`/compact <指令>` → prompt 的 Additional focus） */
+  instructions?: string;
+}
+
+export interface CompactOutcome {
+  /** 压缩前上下文 token（真实 usage 优先，无则字符估算） */
+  tokensBefore: number;
+  /** 压缩后上下文 token（字符估算，供回报/诊断） */
+  tokensAfter: number;
+  /** 会话路径写入的检查点 entry id；非会话路径无 */
+  checkpointId?: string;
+}
+
 /**
- * 自动压缩统一入口（#7 加深）：门控（阈值估算 + usage 门闩）→ 会话 L4 entry /
- * 非会话摘要替换 → 失败内吞（不阻断回合；分类提示）。公共面：一个调用。
+ * 单次压缩执行（**不含阈值门控**）——自动（maybeCompact）与手动（/compact）
+ * 共用同一条路径，避免两套语义漂移：
+ * - 会话：写 compaction entry（含 retainedTail），并把调用方的 messages 就地
+ *   替换为检查点视图（摘要 + 保留尾巴 + 检查点之后的 entry）；
+ * - 非会话：就地替换为摘要消息（compactHistory，含 transcript 落盘）。
+ * 失败上抛、**不写 entry**（调用方决定提示文案）。
+ */
+export async function compactContext(
+  messages: ChatMessage[],
+  opts: CompactContextOptions = {},
+): Promise<CompactOutcome> {
+  const session = opts.session ?? null;
+  const tokensBefore =
+    estimateContextTokensByUsage(messages) ?? estimateMessagesTokens(messages);
+  if (!session) {
+    messages.splice(0, messages.length, ...(await compactHistory(messages)));
+    return { tokensBefore, tokensAfter: estimateMessagesTokens(messages) };
+  }
+  // previousSummary：分支链上最近 compaction 的摘要（树形检查点链 = 更新式输入）
+  const branch = session.getBranch();
+  const prev = [...branch].reverse().find((e) => e.type === "compaction") as
+    | { summary: string }
+    | undefined;
+  const { summary, usage } = await summarizeHistory(messages, {
+    ...(prev ? { previousSummary: prev.summary } : {}),
+    ...(opts.instructions ? { instructions: opts.instructions } : {}),
+  });
+  // retainedTail：固定 20K 预算（settings.compaction.keepRecentTokens 可覆盖）
+  const tail = pickRetainedTail(messages, retainedTailBudget());
+  const checkpointId = session.appendCompaction(
+    summary,
+    tokensBefore,
+    tail.length > 0 ? tail : undefined,
+    usage,
+  );
+  messages.splice(0, messages.length, ...session.buildSessionContext().messages);
+  return { tokensBefore, tokensAfter: estimateMessagesTokens(messages), checkpointId };
+}
+
+/**
+ * 自动压缩统一入口（#7 加深）：门控（阈值估算 + usage 门闩）→ compactContext
+ * → 失败内吞（不阻断回合；分类提示）。公共面：一个调用。
  */
 export async function maybeCompact(
   messages: ChatMessage[],
@@ -287,29 +426,7 @@ export async function maybeCompact(
 
   emitNoticeOrLog(opts.sink, "  \x1b[31m[auto compact]\x1b[0m");
   try {
-    if (opts.session) {
-      const tokensBefore = byUsage ?? estimateMessagesTokens(messages);
-      // previousSummary：分支链上最近 compaction 的摘要（树形检查点链 = 更新式输入）
-      const prevCompaction = [...branch!]
-        .reverse()
-        .find((e) => e.type === "compaction") as
-        | { summary: string }
-        | undefined;
-      const { summary, usage } = await summarizeHistory(messages, {
-        previousSummary: prevCompaction?.summary,
-      });
-      // retainedTail：keepRecentTokens token 预算（对齐 pi）
-      const tail = pickRetainedTail(messages, DEFAULT_KEEP_RECENT_TOKENS);
-      opts.session.appendCompaction(
-        summary,
-        tokensBefore,
-        tail.length > 0 ? tail : undefined,
-        usage,
-      );
-      messages.splice(0, messages.length, ...opts.session.buildSessionContext().messages);
-    } else {
-      messages.splice(0, messages.length, ...(await compactHistory(messages)));
-    }
+    await compactContext(messages, { session: opts.session });
   } catch (e) {
     // CC 语义：压缩失败不写 entry、回合继续（不阻断；分类提示）
     emitNoticeOrLog(

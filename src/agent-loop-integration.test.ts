@@ -287,17 +287,21 @@ describe("agentLoop 集成（12 会话机制）", () => {
     const { SessionManager, setSessionRoot } = await import("./session-manager.ts");
     const { makeCompletionsModel } = await import("../tests/helpers/test-client.ts");
     const { setCurrentModel } = await import("./ai-runtime.ts");
+    const { getCompactionThreshold } = await import("./compact.ts");
     const sessDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-l4ke-"));
     setSessionRoot(sessDir);
     try {
-      // 预置模型：128K 窗口 → 阈值 0.92×(128K−32K)=88,320（无模型时兜底 600K 阈值 522K 不会触发）
       setCurrentModel(makeCompletionsModel("gpt-test", mock.baseUrl));
+      // 阈值口径回归：窗口/预留都取自模型元数据（128K 窗口、maxTokens 8K）
+      // → 0.92×(128K−8K)=110,400；这条断言钉住"不再写死 token 数"
+      expect(getCompactionThreshold()).toBe(Math.round((128_000 - 8_000) * 0.92));
       mock.push(() => ({ kind: "sse", chunks: [{ content: "kE 摘要", finishReason: "stop" }] }));
       mock.push(() => ({ kind: "sse", chunks: [{ content: "ok", finishReason: "stop" }] }));
       const session = SessionManager.create(process.cwd());
-      // 真实 usage 500K prompt tokens（字符量很小，只有 kE 口径能触发）
+      // 真实 usage 刚过阈值（字符量很小，只有 kE 口径能触发）
+      const threshold = getCompactionThreshold();
       const usage = {
-        input: 500_000, output: 100, cacheRead: 0, cacheWrite: 0, totalTokens: 500_100,
+        input: threshold + 1, output: 100, cacheRead: 0, cacheWrite: 0, totalTokens: threshold + 101,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
       };
       session.appendMessage({ role: "user", content: "问题" });
@@ -307,7 +311,7 @@ describe("agentLoop 集成（12 会话机制）", () => {
       const comp = session.getEntries().find((e) => e.type === "compaction");
       expect(comp).toBeDefined();
       expect((comp as { summary: string }).summary).toContain("kE 摘要");
-      expect((comp as { tokensBefore: number }).tokensBefore).toBe(500_000);
+      expect((comp as { tokensBefore: number }).tokensBefore).toBe(threshold + 1);
     } finally {
       fs.rmSync(sessDir, { recursive: true, force: true });
     }
@@ -368,7 +372,9 @@ describe("agentLoop 集成（12 会话机制）", () => {
       expect(contents.some((c) => c.includes("compacted into the following summary"))).toBe(true);
       expect(contents.some((c) => c === huge)).toBe(false);
       expect(contents).toContain("最新问题");
-      void getCompactionThreshold;
+      // 无模型（kE 不适用）时走 256K 兜底窗口：阈值 = 0.92×(256K − 16% 预留)
+      const fallbackReserve = Math.round(256_000 * 0.16);
+      expect(getCompactionThreshold()).toBe(Math.round((256_000 - fallbackReserve) * 0.92));
     } finally {
       fs.rmSync(sessDir, { recursive: true, force: true });
     }

@@ -3,8 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { MockOpenAI } from "../tests/helpers/mock-openai.ts";
-import { installMockModels } from "../tests/helpers/test-client.ts";
+import { installMockModels, makeCompletionsModel } from "../tests/helpers/test-client.ts";
 import { resetClient, type ChatMessage } from "./client.ts";
+import { DEFAULT_RETRY, setSettingsOverrideForTest } from "./settings.ts";
 import {
   estimateTokens,
   estimateMessageTokens,
@@ -19,8 +20,16 @@ import {
   estimateContextTokensByUsage,
   pickRetainedTail,
   summarizeHistory,
+  resolveContextWindow,
+  retainedTailBudget,
+  summaryOutputBudget,
+  summarizeInputCap,
+  DEFAULT_CONTEXT_WINDOW,
+  COMPACTION_RATIOS,
+  compactContext,
 } from "./compact.ts";
 import { runWithWorkdir } from "./workdir.ts";
+import { SessionManager, setSessionRoot } from "./session-manager.ts";
 
 let mock: MockOpenAI;
 let ws: string;
@@ -135,22 +144,87 @@ describe("truncateToolOutput（CC 式单条截断）", () => {
   });
 });
 
-describe("maxOutputReserve / getCompactionThreshold（CC 式触发）", () => {
-  it("默认预留 32000；haiku/3-5 模型 8192；env 可覆盖", () => {
-    expect(maxOutputReserve("claude-sonnet-4-20250514")).toBe(32_000);
-    expect(maxOutputReserve("claude-3-5-sonnet")).toBe(8192);
-    expect(maxOutputReserve("claude-haiku-3-5")).toBe(8192);
-    process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = "64000";
+describe("阈值派生：窗口 → 输出预留 → 触发线（不写死 token 数）", () => {
+  /** 构造指定窗口/maxTokens 的模型（基座 = 测试用 chat-completions 模型） */
+  const model = (over: { contextWindow?: number; maxTokens?: number } = {}) => ({
+    ...makeCompletionsModel("gpt-test", "http://127.0.0.1:1"),
+    ...over,
+  });
+
+  it("窗口取模型真实值；读不到 → 256K 兜底", () => {
+    expect(resolveContextWindow(model({ contextWindow: 200_000 }))).toBe(200_000);
+    expect(resolveContextWindow(model({ contextWindow: 0 }))).toBe(DEFAULT_CONTEXT_WINDOW);
+    expect(resolveContextWindow(null)).toBe(DEFAULT_CONTEXT_WINDOW);
+    expect(DEFAULT_CONTEXT_WINDOW).toBe(256_000);
+  });
+
+  it("输出预留取模型真实 maxTokens，收敛到应用单次输出上限与窗口", () => {
+    expect(maxOutputReserve(model({ maxTokens: 8_000 }))).toBe(8_000);
+    // 模型报得过大（200K）→ 收敛到应用上限 64K
+    expect(maxOutputReserve(model({ maxTokens: 200_000 }))).toBe(64_000);
+    // 病态模型（maxTokens ≥ 窗口）→ 预留不超过半个窗口，否则触发线会塌成 1
+    const bad = model({ contextWindow: 32_000, maxTokens: 64_000 });
+    expect(maxOutputReserve(bad)).toBe(16_000);
+    expect(getCompactionThreshold(undefined, undefined, bad)).toBe(Math.round((32_000 - 16_000) * 0.92));
+  });
+
+  it("模型未报 maxTokens（缺失/非法）→ 按窗口比例预留（16%）", () => {
+    expect(maxOutputReserve(model({ contextWindow: 128_000, maxTokens: 0 }))).toBe(
+      Math.round(128_000 * COMPACTION_RATIOS.outputReserve),
+    );
+    expect(maxOutputReserve(null)).toBe(Math.round(DEFAULT_CONTEXT_WINDOW * COMPACTION_RATIOS.outputReserve));
+  });
+
+  it("env / settings.compaction.reserveTokens 显式覆盖优先", () => {
+    process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = "12345";
     try {
-      expect(maxOutputReserve("any")).toBe(64_000);
+      expect(maxOutputReserve(model({ maxTokens: 8_000 }))).toBe(12_345);
     } finally {
       delete process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS;
     }
+    setSettingsOverrideForTest({ retry: DEFAULT_RETRY, compaction: { reserveTokens: 20_000 } });
+    try {
+      expect(maxOutputReserve(model({ maxTokens: 8_000 }))).toBe(20_000);
+    } finally {
+      setSettingsOverrideForTest(null);
+    }
   });
 
-  it("阈值 = 0.92 × (window − 预留)；pct 可覆盖", () => {
-    expect(getCompactionThreshold(128_000)).toBe(Math.round((128_000 - 32_000) * 0.92));
-    expect(getCompactionThreshold(1_000_000, 0.95)).toBe(Math.round((1_000_000 - 32_000) * 0.95));
+  it("触发线 = 0.92 × (窗口 − 预留)；窗口缺省取模型、读不到用 256K", () => {
+    const m128 = model({ contextWindow: 128_000, maxTokens: 8_000 });
+    expect(getCompactionThreshold(undefined, undefined, m128)).toBe(
+      Math.round((128_000 - 8_000) * 0.92),
+    );
+    const m1m = model({ contextWindow: 1_000_000, maxTokens: 128_000 });
+    expect(getCompactionThreshold(undefined, 0.95, m1m)).toBe(
+      Math.round((1_000_000 - 64_000) * 0.95),
+    );
+    const fallbackReserve = Math.round(DEFAULT_CONTEXT_WINDOW * COMPACTION_RATIOS.outputReserve);
+    expect(getCompactionThreshold(undefined, undefined, null)).toBe(
+      Math.round((DEFAULT_CONTEXT_WINDOW - fallbackReserve) * 0.92),
+    );
+  });
+
+  it("retainedTail 预算固定 20K（不随窗口缩放）；settings 可覆盖", () => {
+    expect(retainedTailBudget()).toBe(20_000);
+    setSettingsOverrideForTest({ retry: DEFAULT_RETRY, compaction: { keepRecentTokens: 5_000 } });
+    try {
+      expect(retainedTailBudget()).toBe(5_000);
+    } finally {
+      setSettingsOverrideForTest(null);
+    }
+  });
+
+  it("摘要预算随窗口缩放，且收敛到模型 maxTokens / 应用输出上限", () => {
+    const m200 = model({ contextWindow: 200_000, maxTokens: 64_000 });
+    expect(summaryOutputBudget(m200)).toBe(20_000);
+    expect(summarizeInputCap(m200)).toBe(180_000);
+    const m256 = model({ contextWindow: 256_000, maxTokens: 64_000 });
+    expect(summarizeInputCap(m256)).toBe(256_000 - 25_600);
+    // 小输出模型：不超它的 maxTokens（否则 max_tokens 超限 → provider 400）
+    expect(summaryOutputBudget(model({ contextWindow: 128_000, maxTokens: 8_000 }))).toBe(8_000);
+    // 大窗口：不超应用单次输出上限
+    expect(summaryOutputBudget(model({ contextWindow: 1_000_000, maxTokens: 128_000 }))).toBe(64_000);
   });
 });
 
@@ -219,5 +293,68 @@ describe("summarizeHistory pi 式更新（previousSummary）", () => {
     await summarizeHistory([userMsg(3)], { instructions: "关注 typescript 改动" });
     const body = JSON.stringify(mock.requests[0].messages);
     expect(body).toContain("Additional focus: 关注 typescript 改动");
+  });
+});
+
+describe("compactContext（手动 /compact 与自动压缩共用的执行体）", () => {
+  const usage = (input: number) => ({
+    input,
+    output: 10,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: input + 10,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  });
+
+  it("会话路径：写 compaction entry，上下文按检查点重建，instructions 进摘要 prompt", async () => {
+    setSessionRoot(ws);
+    mock.always(() => ({ kind: "sse", chunks: [{ content: "手动摘要", finishReason: "stop" }] }));
+    const session = SessionManager.create(ws);
+    session.appendMessage({ role: "user", content: "最初的提问" });
+    session.appendMessage({ role: "assistant", content: "回答", usage: usage(500) });
+    session.appendMessage({ role: "user", content: "最新一句" });
+    const messages = session.buildSessionContext().messages;
+
+    const out = await compactContext(messages, { session, instructions: "只保留 bug 线索" });
+
+    // 口径 = 真实 usage（kE）
+    expect(out.tokensBefore).toBe(500);
+    const comp = session.getEntries().find((e) => e.type === "compaction") as
+      | { summary: string; retainedTail?: ChatMessage[] }
+      | undefined;
+    expect(comp).toBeDefined();
+    expect(comp?.summary).toContain("手动摘要");
+    expect(comp?.retainedTail?.length).toBeGreaterThan(0);
+    // 调用方持有的 messages 被就地替换为检查点视图
+    const contents = messages.map((m) => String(m.content));
+    expect(contents[0]).toContain("compacted into the following summary");
+    expect(contents).toContain("最新一句");
+    // 额外指令透传
+    const last = mock.requests[mock.requests.length - 1];
+    const prompt = last.messages.map((m: { content?: unknown }) => String(m.content)).join("\n");
+    expect(prompt).toContain("Additional focus: 只保留 bug 线索");
+  });
+
+  it("非会话路径：上下文替换为摘要消息（无 compaction entry）", async () => {
+    mock.always(() => ({ kind: "sse", chunks: [{ content: "摘要内容", finishReason: "stop" }] }));
+    const messages: ChatMessage[] = [m("user", "a"), m("user", "b")];
+    const out = await runWithWorkdir(ws, () => compactContext(messages, {}));
+    expect(out.tokensBefore).toBeGreaterThan(0);
+    expect(messages).toHaveLength(1);
+    expect(String(messages[0].content)).toContain("<summary>");
+    expect(String(messages[0].content)).toContain("摘要内容");
+  });
+
+  it("摘要失败：抛错且不写 compaction entry", async () => {
+    setSessionRoot(ws);
+    mock.always(() => ({ kind: "error", status: 500, body: "boom" }));
+    const session = SessionManager.create(ws);
+    session.appendMessage({ role: "user", content: "问题" });
+    const messages = session.buildSessionContext().messages;
+
+    await expect(compactContext(messages, { session })).rejects.toThrow();
+    expect(session.getEntries().some((e) => e.type === "compaction")).toBe(false);
+    // 失败不动调用方上下文
+    expect(messages.map((x) => String(x.content))).toContain("问题");
   });
 });

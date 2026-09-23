@@ -165,6 +165,37 @@ export async function handleSessionCommand(
       );
       return;
     }
+    case "compact": {
+      if (!session) {
+        app.appendMessage("system", "会话已禁用（--no-session）。");
+        return;
+      }
+      if (session.getBranch().length === 0) {
+        app.appendMessage("system", "会话为空，无需压缩。");
+        return;
+      }
+      // 手动 = 强制压（不看阈值）：与自动压缩共用 compactContext
+      const { compactContext } = await import("../compact.ts");
+      const instructions = rest.trim();
+      try {
+        const out = await compactContext(session.buildSessionContext().messages, {
+          session,
+          ...(instructions ? { instructions } : {}),
+        });
+        app.appendSystem(
+          `已压缩：${out.tokensBefore} → ≈${out.tokensAfter} tokens` +
+            `（检查点已写入会话树${out.checkpointId ? ` ${out.checkpointId}` : ""}）`,
+          "success",
+        );
+      } catch (e) {
+        app.appendSystem(
+          `压缩失败：${e instanceof Error ? e.message : String(e)}。` +
+            "可以回退几轮再试（/tree 切到更早节点后重发）。",
+          "error",
+        );
+      }
+      return;
+    }
     case "export": {
       if (!session) {
         app.appendMessage("system", "会话已禁用（--no-session）。");
