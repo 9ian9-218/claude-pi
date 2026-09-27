@@ -16,7 +16,13 @@ import {
 import { createTeam, ensureTeammateForSpawn } from "./team-helpers.ts";
 import { formatTeammateMessages, isStructuredProtocolMessage } from "./message-types.ts";
 import { pollOnce, consumePendingInjections, clearPollerQueues } from "./poller.ts";
-import { spawnTeammate, requestTeammateShutdown, isTeammateActive, clearActiveTeammates } from "./spawn.ts";
+import {
+  spawnTeammate,
+  requestTeammateShutdown,
+  isTeammateActive,
+  listActiveTeammateNames,
+  clearActiveTeammates,
+} from "./spawn.ts";
 import { aggregateAgentUsage, clearAgentRuns, getAgentRun } from "../agent-registry.ts";
 
 let dir: string;
@@ -237,6 +243,39 @@ describe("spawn 端到端（S10）", () => {
       { timeout: 15000, interval: 50 },
     );
     expect(isTeammateActive("eta", "again")).toBe(false);
+  }, 40000);
+  it("同时在跑的 teammate 上限为 5（第 6 个被拒）", async () => {
+    createTeam("cap", TEAM_LEAD_NAME);
+    mock.always(() => ({ kind: "sse", chunks: [{ content: "ok", finishReason: "stop" }] }));
+    for (let i = 0; i < 5; i++) {
+      expect(
+        spawnTeammate({
+          name: `w${i}`,
+          role: "worker",
+          prompt: "干活",
+          teamName: "cap",
+          idleTimeoutMs: 300,
+          idlePollIntervalMs: 50,
+        }),
+      ).toContain("spawned");
+    }
+    const sixth = spawnTeammate({
+      name: "w5",
+      role: "worker",
+      prompt: "干活",
+      teamName: "cap",
+      idleTimeoutMs: 300,
+      idlePollIntervalMs: 50,
+    });
+    expect(sixth).toContain("too many active teammates");
+
+    // 等 5 个空闲结束，别把后台协程留给后续用例
+    await vi.waitFor(
+      () => {
+        expect(listActiveTeammateNames("cap")).toHaveLength(0);
+      },
+      { timeout: 20000, interval: 100 },
+    );
   }, 40000);
   it("重复 spawn 同一名字被拒", () => {
     createTeam("delta", TEAM_LEAD_NAME);

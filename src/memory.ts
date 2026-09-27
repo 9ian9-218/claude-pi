@@ -5,6 +5,7 @@
  * Stop hook 异步提取（fire-and-forget）；loadMemories 按相关性注入上下文。
  */
 import fs from "node:fs";
+import { writeFileAtomic } from "./atomic-write.ts";
 import { parseFrontmatter } from "./frontmatter.ts";
 import path from "node:path";
 import { AGENT_ROOT, resolveAgentDirs } from "./config.ts";
@@ -40,7 +41,7 @@ export function writeMemoryFile(name: string, memType: string, description: stri
   const filename = `${slug}.md`;
   const filepath = path.join(memoryDir, filename);
   fs.mkdirSync(memoryDir, { recursive: true });
-  fs.writeFileSync(filepath, `---\nname: ${name}\ndescription: ${description}\ntype: ${memType}\n---\n\n${body}\n`);
+  writeFileAtomic(filepath, `---\nname: ${name}\ndescription: ${description}\ntype: ${memType}\n---\n\n${body}\n`);
   rebuildIndex();
   return filepath;
 }
@@ -56,7 +57,7 @@ export function rebuildIndex(): void {
     const desc = meta.description ?? body.split("\n")[0].slice(0, 80);
     lines.push(`- [${name}](${f}) — ${desc}`);
   }
-  fs.writeFileSync(memoryIndexPath(), lines.length > 0 ? lines.join("\n") + "\n" : "");
+  writeFileAtomic(memoryIndexPath(), lines.length > 0 ? lines.join("\n") + "\n" : "");
 }
 
 export function readMemoryIndex(): string {

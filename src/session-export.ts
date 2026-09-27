@@ -12,6 +12,7 @@
  *   标记），供 /import 读取。
  */
 import fs from "node:fs";
+import { writeFileAtomic } from "./atomic-write.ts";
 import path from "node:path";
 import { AGENT_ROOT, resolveAgentDirs } from "./config.ts";
 import type { SessionManager, SessionEntry, SessionMessageEntry } from "./session-manager.ts";
@@ -208,7 +209,7 @@ export function exportSessionToAnalysisTrace(session: SessionManager, outputPath
     lines.push(JSON.stringify(eventLine(e, inferred)));
   }
   fs.mkdirSync(path.dirname(path_), { recursive: true });
-  fs.writeFileSync(path_, lines.join("\n") + "\n");
+  writeFileAtomic(path_, lines.join("\n") + "\n");
   return path_;
 }
 
@@ -255,6 +256,6 @@ export function exportSessionToPortable(session: SessionManager, outputPath?: st
     parentId = entry.id;
   }
   fs.mkdirSync(path.dirname(path_), { recursive: true });
-  fs.writeFileSync(path_, lines.join("\n") + "\n");
+  writeFileAtomic(path_, lines.join("\n") + "\n");
   return path_;
 }

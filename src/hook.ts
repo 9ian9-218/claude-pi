@@ -30,7 +30,16 @@ export function registerHook(event: string, callback: HookCallback): () => void 
 export async function triggerHooks(event: string, ...args: unknown[]): Promise<unknown> {
   const callbacks = HOOKS[event] ?? [];
   for (const callback of callbacks) {
-    const result = await callback(...args);
+    let result: unknown;
+    try {
+      result = await callback(...args);
+    } catch (e) {
+      // 扩展 hook 抛错（ADR-0006 无信任门）不该带走整个会话，也不该挡住后续 hook
+      console.log(
+        `  \x1b[31m[hook] ${event} 抛出异常，已跳过：${String((e as Error)?.message ?? e)}\x1b[0m`,
+      );
+      continue;
+    }
     if (result !== null && result !== undefined) {
       return result;
     }

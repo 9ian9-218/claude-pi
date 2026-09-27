@@ -6,6 +6,7 @@
  * 随项目走、不写用户目录（对齐「数据根跟随项目」）。
  */
 import fs from "node:fs";
+import { writeFileAtomic } from "./atomic-write.ts";
 import { resolveAgentDirs } from "./config.ts";
 import path from "node:path";
 import { AGENT_ROOT } from "./config.ts";
@@ -48,7 +49,7 @@ export function writeProjectConfig(patch: ProjectConfig): boolean {
   const merged = { ...readProjectConfig(), ...patch };
   try {
     fs.mkdirSync(path.dirname(getProjectConfigPath()), { recursive: true });
-    fs.writeFileSync(getProjectConfigPath(), JSON.stringify(merged, null, 2) + "\n");
+    writeFileAtomic(getProjectConfigPath(), JSON.stringify(merged, null, 2) + "\n");
     return true;
   } catch {
     return false;

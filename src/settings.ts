@@ -7,6 +7,7 @@
  * 文件缺失/损坏时回落默认值；提供从 ~/.pi/agent 的一次性迁移。
  */
 import fs from "node:fs";
+import { writeFileAtomic } from "./atomic-write.ts";
 import os from "node:os";
 import path from "node:path";
 
@@ -95,8 +96,13 @@ export function readPiSettings(): PiSettings {
   let parsed: Record<string, unknown> = {};
   try {
     parsed = JSON.parse(fs.readFileSync(getSettingsPath(), "utf8"));
-  } catch {
-    // 缺失/损坏 → 默认值
+  } catch (e) {
+    // 文件不存在是正常情况；存在却解析失败要出声，否则用户以为设置生效了
+    if (fs.existsSync(getSettingsPath())) {
+      console.warn(
+        `  \x1b[33m[settings] ${getSettingsPath()} 解析失败，本次使用默认设置：${String((e as Error)?.message ?? e)}\x1b[0m`,
+      );
+    }
   }
   const retryRaw = (parsed["retry"] ?? {}) as Record<string, unknown>;
   const retry: PiRetrySettings = {
@@ -170,7 +176,7 @@ export function writePiSettings(patch: Partial<PiSettings>): boolean {
   }
   try {
     fs.mkdirSync(getAgentDir(), { recursive: true });
-    fs.writeFileSync(getSettingsPath(), JSON.stringify(merged, null, 2) + "\n");
+    writeFileAtomic(getSettingsPath(), JSON.stringify(merged, null, 2) + "\n");
     resetSettingsCache();
     return true;
   } catch {

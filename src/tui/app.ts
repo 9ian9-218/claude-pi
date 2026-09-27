@@ -563,6 +563,9 @@ export class TuiApp {
     this.beginTurn();
     try {
       await this.onQuery(trimmed);
+    } catch (e) {
+      // 单回合异常不该杀掉整个会话：就地显示错误，留在会话里继续（工具/hook 已在更内层兜底）
+      this.appendSystem(`执行出错：${String((e as Error)?.message ?? e)}`, "error");
     } finally {
       this.endTurn();
       this.setWorking(false);

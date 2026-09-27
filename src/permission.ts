@@ -7,8 +7,7 @@
  * 02b：Gate 3（用户确认）未接入——规则命中直接拒绝，返回 None 表示通过。
  * 15a：TUI 权限弹窗接入 Gate 3。
  */
-import path from "node:path";
-import { getWorkdir } from "./workdir.ts";
+import { checkPath } from "./tools/path.ts";
 
 export const DENY_LIST = ["rm -rf /", "sudo", "shutdown", "reboot", "mkfs", "dd if=", "> /dev/sda"];
 
@@ -20,9 +19,8 @@ export interface PermissionRule {
 
 function escapesWorkspace(p: unknown): boolean {
   if (typeof p !== "string") return false;
-  const wd = path.resolve(getWorkdir());
-  const target = path.resolve(wd, p);
-  return target !== wd && !target.startsWith(wd + path.sep);
+  // 与工具侧同一实现（含软链接解析）：两处各写一份会让判定悄悄分叉
+  return checkPath(p) !== null;
 }
 
 export const PERMISSION_RULES: PermissionRule[] = [

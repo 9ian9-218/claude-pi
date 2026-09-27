@@ -2,7 +2,11 @@
 
 类 Claude Code 架构的 TypeScript Agent 运行时（独立项目，见 ADR-0010）——pi 风格树形会话管理（含断线恢复）、pi-tui 终端界面与可扩展接口体系。
 
-> ⚠️ **安全警示**：扩展（`.agent/extensions/`、`~/.claude-pi/extensions/`、`-e`）执行任意代码。仅加载你信任的扩展。
+> ⚠️ **安全警示（请先读这条）**：本工具**不是沙箱**，它按你的本机权限运行。
+> - **扩展**（`.agent/extensions/`、`~/.claude-pi/extensions/`、`-e`）执行任意代码，仅加载你信任的扩展。
+> - **`run_bash` 是全信任通道**：只有极少数关键词（`rm `、`> /etc/`、`chmod 777`）和 7 条黑名单会触发确认，其余命令（含联网下载并执行、读取 `~/.ssh` 等）默认直接执行；黑名单是字符串匹配，属**减速带而非安全边界**。
+> - 文件工具的路径检查会拦截工作区外的读写（含软链接解析），但 bash 不受此限。
+> - 因此：**不要把来路不明的文件内容或 MCP 返回内容直接喂给 agent**（提示注入可驱动上述通道）。
 
 ## 特性
 
@@ -11,7 +15,7 @@
 - **ReAct Agent Loop**——注入 → 压缩 → 发送 → Hook → 执行工具的标准循环，单回合最多 100 轮工具调用
 - **工具体系**——`run_bash` / `read_file` / `write_file` / `edit_file` / `glob` / `todo_write` / `load_skill`，外加任务看板、Subagent、Teammates、MCP 等内置工具
 - **Hook 事件机制**——`UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `Stop` 等事件挂载点，用于拦截与扩展运行时行为
-- **三级权限门控**——黑名单 → 规则 → 用户确认，危险操作在 TUI 中弹窗审批
+- **三级权限门控**——bash 黑名单（7 条字符串）→ 规则匹配（工作区外写入 / 三类危险命令 / 敏感文件）→ 按身份确认（lead 弹窗、subagent 同步冒泡、teammate 邮箱冒泡）。**命中才询问，未命中默认放行**，见顶部安全警示
 - **错误恢复**——429/529 退避重试、fallback 模型、`max_tokens` 升级与续写
 - **上下文压缩**——L3 出口（超大工具结果落盘 + 预览引用）、L4 摘要（自动超阈值 / 手动 `/compact`，写 compaction entry，保留固定 20K 原文尾巴）；L1 Snip / L2 Micro 已移除（CC 无对应物，且就地改写会破坏缓存前缀）
 

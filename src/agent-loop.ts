@@ -11,7 +11,7 @@
 import { randomUUID } from "node:crypto";
 import { triggerHooks } from "./hook.ts";
 import { LoopOptions } from "./loop-options.ts";
-import { executeToolCall, getOpenaiTools } from "./tool.ts";
+import { executeToolCall, getOpenaiTools, type ToolCallLike } from "./tool.ts";
 import { RecoveryState, sendMessagesWithRecovery, ERROR_PREFIX } from "./error-recovery.ts";
 import { snapshotMessages } from "./memory.ts";
 import { primeMemorySnapshot } from "./memory-scope.ts";
@@ -62,6 +62,53 @@ function resolveRoutingSessionId(
   session: SessionManager | null | undefined,
 ): string {
   return opts.routingSessionId ?? session?.sessionId ?? (ephemeralRoutingId ??= randomUUID());
+}
+
+/**
+ * 执行单个工具调用。
+ * 内部任何异常（工具实现本身、扩展的 PreToolUse/PostToolUse hook）一律降级为工具错误结果：
+ * 上抛会撞到顶层 unhandledRejection 兜底 → process.exit(1)，等于一个工具带走整个会话。
+ */
+async function runToolCall(
+  toolCall: ToolCallLike,
+  args: Record<string, unknown>,
+  opts: LoopOptions,
+  session: SessionManager | undefined,
+): Promise<{ result: string; isError: boolean }> {
+  const name = toolCall.function.name;
+  try {
+    const block = { name, input: args, id: toolCall.id };
+    const blocked = await triggerHooks("PreToolUse", block);
+    if (blocked !== null && blocked !== undefined) {
+      return { result: JSON.stringify({ status: "error", message: String(blocked) }), isError: true };
+    }
+    if (opts.enableBackground && shouldRunBackground(name, args)) {
+      const bgId = startBackgroundTask(toolCall, args);
+      const command = String(args["command"] ?? "");
+      return {
+        result:
+          `[Background task ${bgId} started] ` +
+          `Command: ${command}. ` +
+          `Output will arrive as a <task_notification> user message ` +
+          `when the task completes or stalls.`,
+        isError: false,
+      };
+    }
+    const result = await executeToolCall(toolCall, args, {
+      session,
+      ...(opts.uiEvents ? { uiEvents: opts.uiEvents } : {}),
+    });
+    await triggerHooks("PostToolUse", block, result);
+    return { result, isError: false };
+  } catch (err) {
+    return {
+      result: JSON.stringify({
+        status: "error",
+        message: `Tool '${name}' failed: ${String((err as Error)?.message ?? err)}`,
+      }),
+      isError: true,
+    };
+  }
 }
 
 async function agentLoopInner(
@@ -244,30 +291,9 @@ async function agentLoopInner(
           });
           toolError = true;
         } else {
-          const block = {
-            name: toolCall.function.name,
-            input: args as Record<string, unknown>,
-            id: toolCall.id,
-          };
-          const blocked = await triggerHooks("PreToolUse", block);
-          if (blocked !== null && blocked !== undefined) {
-            toolResult = JSON.stringify({ status: "error", message: String(blocked) });
-            toolError = true;
-          } else if (opts.enableBackground && shouldRunBackground(toolCall.function.name, args as Record<string, unknown>)) {
-            const bgId = startBackgroundTask(toolCall, args as Record<string, unknown>);
-            const command = String((args as Record<string, unknown>)["command"] ?? "");
-            toolResult =
-              `[Background task ${bgId} started] ` +
-              `Command: ${command}. ` +
-              `Output will arrive as a <task_notification> user message ` +
-              `when the task completes or stalls.`;
-          } else {
-            toolResult = await executeToolCall(toolCall, args as Record<string, unknown>, {
-              session,
-              ...(opts.uiEvents ? { uiEvents: opts.uiEvents } : {}),
-            });
-            await triggerHooks("PostToolUse", block, toolResult);
-          }
+          const outcome = await runToolCall(toolCall, args as Record<string, unknown>, opts, session);
+          toolResult = outcome.result;
+          toolError = outcome.isError;
         }
         opts.uiEvents?.emit("tool", {
           phase: "result",

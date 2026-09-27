@@ -5,6 +5,7 @@
  * claim → worktree 隔离 + workdir 切换；complete → 清理 + 恢复 + 解除下游阻塞。
  */
 import fs from "node:fs";
+import { writeFileAtomic } from "./atomic-write.ts";
 import path from "node:path";
 import { AGENT_ROOT, resolveAgentDirs } from "./config.ts";
 import { withFileLock } from "./file-lock.ts";
@@ -56,7 +57,7 @@ function readHighwatermark(): number {
 
 function writeHighwatermark(value: number): void {
   fs.mkdirSync(tasksDir, { recursive: true });
-  fs.writeFileSync(highwatermarkFile(), `${value}\n`);
+  writeFileAtomic(highwatermarkFile(), `${value}\n`);
 }
 
 function maxIdFromTaskFiles(): number {
@@ -215,7 +216,7 @@ export function createTask(
 
 export function saveTask(task: Task): void {
   fs.mkdirSync(tasksDir, { recursive: true });
-  fs.writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
+  writeFileAtomic(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 
 export function loadTask(taskId: string): Task {
@@ -307,7 +308,7 @@ async function executeTaskClaim(taskId: string, owner: string): Promise<string> 
     }
     task.owner = owner;
     task.status = "in_progress";
-    fs.writeFileSync(p, JSON.stringify(task, null, 2));
+    writeFileAtomic(p, JSON.stringify(task, null, 2));
     subject = task.subject;
     taskRef = task.id;
   });
@@ -406,7 +407,7 @@ export async function completeTask(
       );
     }
     task.status = "completed";
-    fs.writeFileSync(p, JSON.stringify(task, null, 2));
+    writeFileAtomic(p, JSON.stringify(task, null, 2));
     subject = task.subject;
     taskRef = task.id;
     blockIds = [...task.blocks];

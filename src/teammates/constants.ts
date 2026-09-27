@@ -25,6 +25,8 @@ export const TEAMMATE_IDLE_POLL_INTERVAL = 5.0;
 /** 空闲上限（秒）：空闲超过该时长即视为结束，回收该 teammate（停止其运行循环） */
 export const TEAMMATE_IDLE_TIMEOUT = 1800.0;
 export const TEAMMATE_WORK_MAX_TURNS = 15;
+/** 同时在跑的 teammate 上限：每个都是独立 agent loop + 独立 provider 会话，放任增长会限流/爆成本 */
+export const MAX_ACTIVE_TEAMMATES = 5;
 
 // 文件锁重试（proper-lockfile 语义）
 export const LOCK_RETRIES = 10;

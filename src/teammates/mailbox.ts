@@ -5,6 +5,7 @@
  * （proper-lockfile，格式与 Python 版字节兼容）。
  */
 import fs from "node:fs";
+import { writeFileAtomic } from "../atomic-write.ts";
 import path from "node:path";
 import { getTeamsDir } from "./constants.ts";
 import { withFileLock } from "../file-lock.ts";
@@ -36,13 +37,23 @@ export function ensureInboxDir(teamName: string): string {
   return inboxDir;
 }
 
+/** 已告警过的损坏收件箱（避免每秒轮询刷屏） */
+const warnedCorrupt = new Set<string>();
+
 export function readMailbox(agentName: string, teamName: string): MailboxMessage[] {
   const inboxPath = getInboxPath(agentName, teamName);
   if (!fs.existsSync(inboxPath)) return [];
   try {
     const messages = JSON.parse(fs.readFileSync(inboxPath, "utf8"));
     return Array.isArray(messages) ? messages : [];
-  } catch {
+  } catch (e) {
+    // 损坏时静默当空 = 静默丢消息；轮询每秒读一次，故每个路径只报一次
+    if (!warnedCorrupt.has(inboxPath)) {
+      warnedCorrupt.add(inboxPath);
+      console.warn(
+        `  \x1b[33m[mailbox] ${inboxPath} 解析失败，已按空收件箱处理：${String((e as Error)?.message ?? e)}\x1b[0m`,
+      );
+    }
     return [];
   }
 }
@@ -58,7 +69,7 @@ export async function writeToMailbox(
   const lockPath = `${inboxPath}.lock`;
 
   if (!fs.existsSync(inboxPath)) {
-    fs.writeFileSync(inboxPath, "[]");
+    writeFileAtomic(inboxPath, "[]");
   }
 
   await withFileLock(lockPath, () => {
@@ -69,7 +80,7 @@ export async function writeToMailbox(
       timestamp: message.timestamp ?? new Date().toISOString(),
     };
     messages.push(newMessage);
-    fs.writeFileSync(inboxPath, JSON.stringify(messages, null, 2));
+    writeFileAtomic(inboxPath, JSON.stringify(messages, null, 2));
   });
 }
 
@@ -80,7 +91,7 @@ export async function markMessagesAsRead(agentName: string, teamName: string): P
   await withFileLock(lockPath, () => {
     const messages = readMailbox(agentName, teamName);
     for (const m of messages) m.read = true;
-    fs.writeFileSync(inboxPath, JSON.stringify(messages, null, 2));
+    writeFileAtomic(inboxPath, JSON.stringify(messages, null, 2));
   });
 }
 
@@ -96,14 +107,14 @@ export async function markMessageAsReadByIndex(
     const messages = readMailbox(agentName, teamName);
     if (messageIndex < 0 || messageIndex >= messages.length) return;
     messages[messageIndex].read = true;
-    fs.writeFileSync(inboxPath, JSON.stringify(messages, null, 2));
+    writeFileAtomic(inboxPath, JSON.stringify(messages, null, 2));
   });
 }
 
 export function clearMailbox(agentName: string, teamName: string): void {
   const inboxPath = getInboxPath(agentName, teamName);
   if (fs.existsSync(inboxPath)) {
-    fs.writeFileSync(inboxPath, "[]");
+    writeFileAtomic(inboxPath, "[]");
   }
 }
 

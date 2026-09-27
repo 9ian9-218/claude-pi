@@ -12,6 +12,7 @@
  * （见 COMPACTION_RATIOS）。换模型即自动跟随。
  */
 import fs from "node:fs";
+import { writeFileAtomic } from "./atomic-write.ts";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { getWorkdir } from "./workdir.ts";
@@ -230,7 +231,7 @@ export function persistLargeOutput(toolCallId: string, output: string): string {
   fs.mkdirSync(dir, { recursive: true });
   const p = path.join(dir, `${toolCallId}.txt`);
   if (!fs.existsSync(p)) {
-    fs.writeFileSync(p, output);
+    writeFileAtomic(p, output);
   }
   const preview = truncateToTokens(output, PREVIEW_TOKENS);
   return `<persisted-output>\nFull output: ${p}\nPreview:\n${preview}\n</persisted-output>`;
@@ -282,7 +283,7 @@ export function writeTranscript(messages: ChatMessage[]): string {
   const dir = transcriptDir();
   fs.mkdirSync(dir, { recursive: true });
   const p = path.join(dir, `transcript_${Math.trunc(Date.now() / 1000)}.jsonl`);
-  fs.writeFileSync(p, messages.map((m) => JSON.stringify(m)).join("\n") + "\n");
+  writeFileAtomic(p, messages.map((m) => JSON.stringify(m)).join("\n") + "\n");
   return p;
 }
 

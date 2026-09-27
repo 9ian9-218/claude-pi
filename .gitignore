@@ -4,6 +4,9 @@
 # 会话转写（含工具输出，可能含敏感内容；不提交不发布）
 .transcripts/
 
+# harness 写入工作区的工具产物（大输出落盘），不提交
+.task_outputs/
+
 # Node
 node_modules/
 dist/

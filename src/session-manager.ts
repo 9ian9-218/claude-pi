@@ -8,6 +8,7 @@
  */
 import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
+import { writeFileAtomic } from "./atomic-write.ts";
 import path from "node:path";
 import { AGENT_ROOT, resolveAgentDirs } from "./config.ts";
 import { formatCompactedUserMessage } from "./prompt.ts";
@@ -610,7 +611,7 @@ export class SessionManager {
           JSON.stringify(this.header),
           ...this.entries.map((e) => JSON.stringify(e)),
         ];
-        fs.writeFileSync(this.filePath, lines.join("\n") + "\n");
+        writeFileAtomic(this.filePath, lines.join("\n") + "\n");
       }
     }
   }
@@ -785,7 +786,7 @@ export class SessionManager {
     const raw = fs.readFileSync(this.filePath, "utf8");
     const lines = raw.split("\n");
     lines[0] = JSON.stringify(this.header);
-    fs.writeFileSync(this.filePath, lines.join("\n"));
+    writeFileAtomic(this.filePath, lines.join("\n"));
   }
 
   // ── 元数据 ──────────────────────────────────────────────────────────────

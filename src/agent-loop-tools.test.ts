@@ -30,6 +30,40 @@ afterEach(async () => {
 const quiet = new LoopOptions({ quietOutput: true });
 
 describe("agentLoop 工具链（S4）", () => {
+  it("工具抛异常降级为工具错误结果，不冒泡杀掉会话", async () => {
+    const { buildTool, registerExtensionTool } = await import("./tool.ts");
+    registerExtensionTool(
+      buildTool({
+        name: "boom_tool",
+        description: "总是抛错",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+        execute: () => {
+          throw new Error("kaboom");
+        },
+      }),
+    );
+    mock.push(() => ({
+      kind: "sse",
+      chunks: [
+        {
+          toolCalls: [{ index: 0, id: "call_boom", name: "boom_tool", arguments: "{}" }],
+          finishReason: "tool_calls",
+        },
+      ],
+    }));
+    mock.push(() => ({ kind: "sse", chunks: [{ content: "已降级", finishReason: "stop" }] }));
+
+    await runWithWorkdir(ws, async () => {
+      const messages: ChatMessage[] = [{ role: "user", content: "跑一下" }];
+      await agentLoop(messages, { maxTurn: 3, loopOptions: quiet });
+      const toolMsg = messages.find((m) => m.role === "tool") as
+        | (ChatMessage & { toolError?: boolean })
+        | undefined;
+      expect(String(toolMsg?.content)).toContain("boom_tool");
+      expect(String(toolMsg?.content)).toContain("kaboom");
+      expect(toolMsg?.toolError).toBe(true);
+    });
+  });
   it("read→write 工具链端到端：文件真实生效，工具结果进 messages", async () => {
     mock.push(() => ({
       kind: "sse",

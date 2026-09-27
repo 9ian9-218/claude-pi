@@ -4,7 +4,12 @@
  * WORK → IDLE → SHUTDOWN 循环（async 协程替代线程）；
  * idle 阶段归 11（autonomous），10 中空闲等待 + shutdown 检查。
  */
-import { TEAM_LEAD_NAME, TEAMMATE_IDLE_TIMEOUT, TEAMMATE_WORK_MAX_TURNS } from "./constants.ts";
+import {
+  MAX_ACTIVE_TEAMMATES,
+  TEAM_LEAD_NAME,
+  TEAMMATE_IDLE_TIMEOUT,
+  TEAMMATE_WORK_MAX_TURNS,
+} from "./constants.ts";
 import { runWithAgentContext } from "./context.ts";
 import { dispatchInboxBatch, maybeReinjectIdentity } from "./inbox-dispatch.ts";
 import { idlePoll } from "./autonomous.ts";
@@ -223,6 +228,12 @@ export function spawnTeammate(options: {
   const key = teammateKey(teamName, name);
   if (activeTeammates.has(key)) {
     return `Teammate '${name}' already active on team '${teamName}'`;
+  }
+  if (activeTeammates.size >= MAX_ACTIVE_TEAMMATES) {
+    return (
+      `Error: too many active teammates (${activeTeammates.size}/${MAX_ACTIVE_TEAMMATES}). ` +
+      `Shut one down with shutdown_teammate before spawning another.`
+    );
   }
 
   let color: string;

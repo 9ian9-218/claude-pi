@@ -136,7 +136,12 @@ async function runRepl(initialSession: SessionManager | null): Promise<void> {
       continue;
     }
     if (["q", "exit", ""].includes(query.trim().toLowerCase())) break;
-    await runQuery(query, { session });
+    try {
+      await runQuery(query, { session });
+    } catch (e) {
+      // 单轮异常不该带走进程：报错后继续接受下一条输入
+      console.error(`\n\x1b[31m[error] ${String((e as Error)?.message ?? e)}\x1b[0m`);
+    }
     process.stdout.write(USER_PROMPT);
   }
   rl.close();

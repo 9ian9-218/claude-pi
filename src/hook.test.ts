@@ -29,6 +29,30 @@ describe("hook 注册表（S3）", () => {
   it("未注册事件触发返回 undefined 不抛错", async () => {
     expect(await triggerHooks("no_such_event", 1, 2)).toBeUndefined();
   });
+  it("hook 抛异常时跳过它并继续后续 hook（不带走会话）", async () => {
+    const seen: string[] = [];
+    const offBad = registerHook("throwing_event", () => {
+      throw new Error("extension boom");
+    });
+    const offGood = registerHook("throwing_event", () => {
+      seen.push("second");
+      return "done";
+    });
+    const logs: string[] = [];
+    const orig = console.log;
+    console.log = (...a: unknown[]) => { logs.push(a.join(" ")); };
+    try {
+      // 坏 hook 不得让 triggerHooks 抛出（抛出会被顶层兜底 process.exit(1) 杀掉整个会话）
+      expect(await triggerHooks("throwing_event")).toBe("done");
+      expect(seen).toEqual(["second"]);
+      expect(logs.some((l) => l.includes("抛出异常"))).toBe(true);
+    } finally {
+      console.log = orig;
+      offBad();
+      offGood();
+    }
+  });
+
 
   it("内置 UserPromptSubmit 含工作目录提示 hook", () => {
     const hooks = HOOKS["UserPromptSubmit"];

@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { AGENT_COLORS, TEAM_LEAD_NAME, getTeamsDir } from "./constants.ts";
 import { sanitizePathComponent } from "./mailbox.ts";
+import { writeFileAtomic } from "../atomic-write.ts";
 
 export interface TeamMember {
   agentId: string;
@@ -37,7 +38,11 @@ export function readTeamConfig(teamName: string): TeamConfig | null {
   if (!fs.existsSync(p)) return null;
   try {
     return JSON.parse(fs.readFileSync(p, "utf8")) as TeamConfig;
-  } catch {
+  } catch (e) {
+    // 静默返回 null 会被上层当成「团队不存在」：文件坏了用户永远不知道
+    console.warn(
+      `  \x1b[33m[team] ${p} 解析失败，按「团队不存在」处理：${String((e as Error)?.message ?? e)}\x1b[0m`,
+    );
     return null;
   }
 }
@@ -45,7 +50,7 @@ export function readTeamConfig(teamName: string): TeamConfig | null {
 export function writeTeamConfig(config: TeamConfig): void {
   const teamDir = getTeamDir(config.name);
   fs.mkdirSync(path.join(teamDir, "inboxes"), { recursive: true });
-  fs.writeFileSync(getTeamConfigPath(config.name), JSON.stringify(config, null, 2));
+  writeFileAtomic(getTeamConfigPath(config.name), JSON.stringify(config, null, 2));
 }
 
 export function createTeam(teamName: string, leadName: string = TEAM_LEAD_NAME): TeamConfig {
