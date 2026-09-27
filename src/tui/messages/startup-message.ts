@@ -10,6 +10,7 @@ import { listCommandEntries } from "../../commands.ts";
 
 const KEY_HINTS = [
   "Ctrl+O 折叠/展开工具输出与帮助",
+  "Ctrl+A 展开/折叠子 agent 面板（输入框上方）",
   "Ctrl+T 折叠/展开 thinking",
   "Shift+Tab 切换思考强度",
   "Esc 中断生成",

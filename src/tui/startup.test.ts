@@ -72,6 +72,7 @@ describe("启动屏/欢迎页（10）", () => {
       app.editor.handleInput("/help");
       app.editor.onSubmit?.("/help");
       await new Promise((r) => setTimeout(r, 10));
+      app.chat.setViewportHeight(100);
       expect(app.chat.render(80).join("")).toContain("/quit 退出");
     } finally {
       app.stop();

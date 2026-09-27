@@ -16,10 +16,21 @@ export interface PiRetrySettings {
   baseDelayMs: number;
 }
 
+export type TeamMode = "pipeline" | "free";
+
+export interface TeamSettings {
+  mode: TeamMode;
+}
+
 export interface PiSettings {
   retry: PiRetrySettings;
   defaultModel?: string;
   enabledModels?: string[];
+  team?: TeamSettings;
+  /** 记忆功能（默认开启）：关闭后不注入记忆、不做 Stop hook 提取 */
+  memory?: {
+    enabled?: boolean;
+  };
   /**
    * 自动压缩。reserveTokens 不写则按模型真实窗口派生（compact.ts
    * COMPACTION_RATIOS）；keepRecentTokens 默认固定 20K；两个键都可用这里
@@ -204,4 +215,25 @@ export function migrateFromPi(
   }
   resetSettingsCache();
   return missing.length > 0;
+}
+
+
+/** 记忆功能开关（默认开启） */
+export function isMemoryEnabled(): boolean {
+  return readPiSettings().memory?.enabled !== false;
+}
+
+export function getTeamMode(): TeamMode {
+  const s = readPiSettings();
+  return s.team?.mode ?? "pipeline";
+}
+
+export function setTeamMode(mode: TeamMode): void {
+  const current = readPiSettings();
+  writePiSettings({
+    team: {
+      ...current.team,
+      mode,
+    },
+  });
 }

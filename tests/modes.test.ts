@@ -126,4 +126,32 @@ describe("运行模式（S13）", () => {
     expect(code).toBe(1);
     expect(stderr).toContain("no input");
   });
+
+  it("--mode json 无输入同样报错退出（flag 值不得当作提示词）", { timeout: 30_000 }, async () => {
+    mock = await MockOpenAI.create();
+    const { code, stderr } = await runCli(["--mode", "json"], "");
+    expect(code).toBe(1);
+    expect(stderr).toContain("no input");
+    // 回归：曾把 `--mode` 的值 "json" 当作用户输入发起真实模型调用
+    expect(mock.requests).toHaveLength(0);
+  });
+
+  it("--mode json --no-session 也返回完整 turns 与 final", { timeout: 30_000 }, async () => {
+    mock = await MockOpenAI.create();
+    mock.always(() => ({ kind: "sse", chunks: [{ content: "无会话回复", finishReason: "stop" }] }));
+    const { code, stdout } = await runCli(["--mode", "json", "--no-session"], "临时会话\n");
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.final).toBe("无会话回复");
+    expect(parsed.turns.map((t: { role: string }) => t.role)).toEqual(["system", "user", "assistant"]);
+  });
+
+  it("脚本模式不触发记忆 Stop 钩子（无隐藏的第二路模型调用）", { timeout: 30_000 }, async () => {
+    mock = await MockOpenAI.create();
+    mock.always(() => ({ kind: "sse", chunks: [{ content: "单次回复", finishReason: "stop" }] }));
+    const { code } = await runCli(["--mode", "json"], "只问一次\n");
+    expect(code).toBe(0);
+    // 一轮问答 = 一次真实请求；记忆提取会额外发一次（且不计入 usage、污染 stdout）
+    expect(mock.requests).toHaveLength(1);
+  });
 });

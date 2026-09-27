@@ -9,9 +9,10 @@ import { sanitizeOpenaiTool, type OpenaiTool } from "../schema-strict.ts";
 import { getMCPHub } from "../mcp/hub.ts";
 import { isMcpTool } from "../mcp/names.ts";
 import { checkPath } from "./path.ts";
-import { getAgentContext } from "../teammates/context.ts";
-import { Tool, buildTool, type ExecuteFn } from "./core.ts";
+import { getAgentContext, type AgentRole } from "../teammates/context.ts";
+import { Tool, buildTool, type ExecuteFn, type ToolExecContext } from "./core.ts";
 export { Tool, buildTool, type ExecuteFn } from "./core.ts";
+export type { ToolExecContext } from "./core.ts";
 import { RUN_BASH_TOOL } from "./bash.ts";
 import {
   READ_FILE_TOOL,
@@ -31,6 +32,7 @@ import {
 } from "./tasks-board.ts";
 import {
   SUBAGENT_TASK_TOOL,
+  DELEGATE_TASK_TOOL,
   CREATE_TEAM_TOOL,
   SPAWN_TEAMMATE_TOOL,
   SEND_MESSAGE_TOOL,
@@ -55,6 +57,7 @@ export const BUILTIN_TOOLS: Tool[] = [
   CLAIM_TASK_TOOL,
   COMPLETE_TASK_TOOL,
   SUBAGENT_TASK_TOOL,
+  DELEGATE_TASK_TOOL,
   CREATE_TEAM_TOOL,
   SPAWN_TEAMMATE_TOOL,
   SEND_MESSAGE_TOOL,
@@ -64,16 +67,90 @@ export const BUILTIN_TOOLS: Tool[] = [
 
 export const TOOL_MAP: Map<string, Tool> = new Map(BUILTIN_TOOLS.map((t) => [t.name, t]));
 
+/** 专职 Pipeline 角色工具白名单矩阵（Hard Allowlist） */
+export const ROLE_TOOL_ALLOWLIST: Record<string, Set<string>> = {
+  scout: new Set([
+    "read_file",
+    "grep",
+    "find_files",
+    "list_dir",
+    "run_bash",
+  ]),
+  planner: new Set([
+    "read_file",
+    "grep",
+    "find_files",
+    "list_dir",
+  ]),
+  worker: new Set([
+    "read_file",
+    "edit_file",
+    "write_file",
+    "grep",
+    "find_files",
+    "list_dir",
+    "run_bash",
+    "todo_write",
+  ]),
+  reviewer: new Set([
+    "read_file",
+    "grep",
+    "find_files",
+    "list_dir",
+    "run_bash",
+  ]),
+  verifier: new Set([
+    "read_file",
+    "grep",
+    "find_files",
+    "list_dir",
+    "run_bash",
+  ]),
+};
+
+/**
+ * 角色限制的文本描述（fork 子 agent 的「后缀限制」用）。
+ * 与执行闸 isToolAllowedForRole 同源，避免提示与真实拦截不一致。
+ */
+export function describeRoleRestrictions(role: AgentRole): string {
+  const allow = ROLE_TOOL_ALLOWLIST[role];
+  if (!allow) return "";
+  const names = [...allow].sort().join(", ");
+  const readOnly = role === "scout" || role === "planner" || role === "reviewer" || role === "verifier";
+  return [
+    `- 可用工具（白名单，其余一律不可用）: ${names}`,
+    readOnly
+      ? "- 禁止任何写操作（write_file / edit_file / 破坏性 bash）；越权调用会被运行时直接拒绝"
+      : "- 只做被指派的改动范围，不要顺手重构无关代码",
+    "- 不要再委派任务（delegate / subagent_task 会被运行时拒绝）",
+    "- 只处理这一个任务；产出按上面的契约返回后即结束",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+export function isToolAllowedForRole(role: AgentRole, toolName: string): boolean {
+  if (role === "lead" || role === "teammate") return true;
+  if (role === "subagent") return !SUBAGENT_EXCLUDED.has(toolName);
+  const allowlist = ROLE_TOOL_ALLOWLIST[role];
+  if (!allowlist) return true;
+  return allowlist.has(toolName);
+}
+
 /** 扩展注册工具（16）：动态加入注册表 */
 export function registerExtensionTool(tool: Tool): void {
   TOOL_MAP.set(tool.name, tool);
 }
 
-export function getOpenaiTools(isSubagent = false): OpenaiTool[] {
+export function getOpenaiTools(roleOrSubagent: AgentRole | boolean = false): OpenaiTool[] {
+  const isSubagent = typeof roleOrSubagent === "boolean" ? roleOrSubagent : (roleOrSubagent !== "lead" && roleOrSubagent !== "teammate");
+  const role: AgentRole = typeof roleOrSubagent === "string" ? roleOrSubagent : (isSubagent ? "subagent" : "lead");
+
   const builtin = [...TOOL_MAP.values()]
-    .filter((t) => !(isSubagent && SUBAGENT_EXCLUDED.has(t.name)))
+    .filter((t) => isToolAllowedForRole(role, t.name))
     .map((t) => sanitizeOpenaiTool(t.name, t.toOpenaiSchema()));
-  // MCP 工具（19）：子 agent 排除本地工具以外的外部 server（对齐 Python）
+
+  // MCP 工具（19）：子 agent / 专职角色排除本地工具以外的外部 server（对齐 Python）
   let excluded: Set<string> | undefined;
   if (isSubagent) {
     excluded = new Set(
@@ -106,14 +183,20 @@ export interface ToolCallLike {
 export async function executeToolCall(
   toolCall: ToolCallLike,
   args?: Record<string, unknown>,
+  execCtx?: ToolExecContext,
 ): Promise<string> {
   const name = toolCall.function.name;
 
-  // 角色门禁：subagent 不可直接执行受限工具（展示层 SUBAGENT_EXCLUDED 之外的第二道闸）
-  if (getAgentContext().role === "subagent" && SUBAGENT_EXCLUDED.has(name)) {
+  // 角色门禁：按角色硬白名单校验（展示层过滤之外的第二道执行闸）
+  const ctx = getAgentContext();
+  if (!isToolAllowedForRole(ctx.role, name)) {
+    const reason =
+      ctx.role === "subagent"
+        ? `Tool '${name}' is not available to subagents`
+        : `Role '${ctx.role}' is not allowed to use tool '${name}'`;
     return JSON.stringify({
       status: "error",
-      message: `Tool '${name}' is not available to subagents`,
+      message: reason,
     });
   }
 
@@ -144,7 +227,7 @@ export async function executeToolCall(
     return JSON.stringify({ status: "error", message: `Unknown tool: ${name}` });
   }
 
-  const result = tool.run(args);
+  const result = tool.run(args, execCtx);
   const out =
     typeof result === "string"
       ? result

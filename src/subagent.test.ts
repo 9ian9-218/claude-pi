@@ -3,11 +3,16 @@ import { MockOpenAI } from "../tests/helpers/mock-openai.ts";
 import { installMockModels } from "../tests/helpers/test-client.ts";
 import { resetClient, type ChatMessage } from "./client.ts";
 import { agentLoop } from "./agent-loop.ts";
+import { runQuery } from "./query-pipeline.ts";
 import { LoopOptions } from "./loop-options.ts";
 import { getOpenaiTools, spawnSubagent, executeToolCall } from "./tool.ts";
 import { getAgentContext, isSubagent, runWithAgentContext, resetAgentContext } from "./teammates/context.ts";
 import { AgentProfile, profileToContext } from "./agent-profile.ts";
-import { setAskUserImpl, resetAskUserImpl } from "./permission-sync.ts";
+import { setAskUserImpl, resetAskUserImpl } from "./permission-sync.ts";import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { SessionManager, setSessionRoot } from "./session-manager.ts";
+import { clearAgentRuns, listAgentRuns } from "./agent-registry.ts";
 
 let mock: MockOpenAI;
 
@@ -139,3 +144,227 @@ describe("subagent 角色门禁（executeToolCall 第二道闸）", () => {
   });
 });
 
+
+describe("子 agent 子会话落盘与血缘（可观测性）", () => {
+  let root: string;
+  let parent: SessionManager;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-subagent-"));
+    setSessionRoot(root);
+    clearAgentRuns();
+    parent = SessionManager.create(process.cwd());
+  });
+
+  afterEach(() => {
+    setSessionRoot("");
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("delegate 落盘独立子会话，父会话登记血缘，注册表可查", async () => {
+    mock.always(() => ({
+      kind: "sse",
+      chunks: [{ content: "模块结构调研完成", finishReason: "stop" }],
+    }));
+    const parentFile = parent.getSessionFile();
+    expect(parentFile).toBeTruthy();
+
+    const out = await executeToolCall(
+      {
+        id: "call-delegate-1",
+        function: {
+          name: "delegate",
+          arguments: JSON.stringify({ role: "scout", task: "调研模块结构" }),
+        },
+      },
+      undefined,
+      { session: parent },
+    );
+    expect(out).toContain("模块结构调研完成");
+
+    // 父会话登记血缘：/tree 与 /export 可见
+    const customs = parent.getEntries().filter((e) => e.type === "custom");
+    const start = customs.find(
+      (e) => (e as { customType?: string }).customType === "subagent",
+    ) as unknown as { data: Record<string, unknown> } | undefined;
+    expect(start).toBeTruthy();
+    expect(start!.data["role"]).toBe("scout");
+    const childFile = String(start!.data["sessionFile"]);
+    expect(fs.existsSync(childFile)).toBe(true);
+
+    // 子会话文件 header 指向父会话
+    const child = SessionManager.open(childFile);
+    expect(child.getHeader().parentSession).toBe(parentFile);
+
+    // 运行注册表可查（面板与 /agents 的数据源）
+    const runs = listAgentRuns();
+    expect(runs).toHaveLength(1);
+    expect(runs[0].role).toBe("scout");
+    expect(runs[0].status).toBe("done");
+    expect(runs[0].sessionFile).toBe(childFile);
+    expect(runs[0].result).toContain("模块结构调研完成");
+    // 用量聚合字段：子会话 entry → 注册表（面板/footer 的数据源）
+    expect(runs[0].usage).toBeDefined();
+    expect(typeof runs[0].usage!.cost).toBe("number");
+    // 首轮缓存读写：mock 会返回 usage，故该字段应被记录（真实环境 R>0 即命中父前缀）
+    expect(runs[0].firstTurnCache).toBeDefined();
+    // 子会话里确实落了助手回复（可复盘）
+    expect(child.getEntries().some((e) => e.type === "message")).toBe(true);
+  });
+
+  it("fork 模式：子会话继承父历史，请求沿用父 system 提示（cache 前缀一致）", async () => {
+    mock.always(() => ({
+      kind: "sse",
+      chunks: [{ content: "侦察完成", finishReason: "stop" }],
+    }));
+    parent.appendMessage({ role: "user", content: "父会话历史：实现登录功能" });
+    parent.appendMessage({ role: "assistant", content: "收到，先看代码" });
+
+    await executeToolCall(
+      {
+        id: "call-fork-1",
+        function: {
+          name: "delegate",
+          arguments: JSON.stringify({ role: "scout", task: "定位登录相关代码" }),
+        },
+      },
+      undefined,
+      { session: parent },
+    );
+
+    const req = mock.requests[0];
+    // 1) system 提示沿用父身份（不是 scout 身份）→ 前缀与父一致，可命中 prompt cache
+    const system = String(req.messages[0].content);
+    expect(system).toContain("You are a coding agent at");
+    expect(system).not.toContain("You are a scout");
+
+    // 2) 父历史进入子请求（fork）
+    const all = req.messages.map((m) => String(m.content)).join("\n");
+    expect(all).toContain("父会话历史：实现登录功能");
+
+    // 3) 角色契约与任务放在尾部 user 消息（分叉点）
+    const last = req.messages[req.messages.length - 1];
+    expect(String(last.content)).toContain("[Role Brief — scout]");
+    expect(String(last.content)).toContain("定位登录相关代码");
+
+    // 4) 子会话确实是 fork：文件独立、血缘指向父会话、含父历史
+    const start = parent
+      .getEntries()
+      .find((e) => (e as { customType?: string }).customType === "subagent") as unknown as {
+      data: Record<string, unknown>;
+    };
+    const child = SessionManager.open(String(start.data["sessionFile"]));
+    expect(child.getSessionFile()).not.toBe(parent.getSessionFile());
+    expect(child.getHeader().parentSession).toBe(parent.getSessionFile());
+    expect(JSON.stringify(child.getEntries())).toContain("父会话历史：实现登录功能");
+  });
+
+  it("子 agent 结束时在父会话追加 subagent_end 记录", async () => {
+    mock.always(() => ({
+      kind: "sse",
+      chunks: [{ content: "验证通过", finishReason: "stop" }],
+    }));
+
+    await executeToolCall(
+      {
+        id: "call-delegate-2",
+        function: {
+          name: "delegate",
+          arguments: JSON.stringify({ role: "verifier", task: "跑一遍单测" }),
+        },
+      },
+      undefined,
+      { session: parent },
+    );
+
+    const end = parent
+      .getEntries()
+      .find((e) => (e as { customType?: string }).customType === "subagent_end") as
+      | { data?: { status?: string } }
+      | undefined;
+    expect(end).toBeTruthy();
+    expect(end!.data?.status).toBe("done");
+  });
+});
+describe("fork 前缀一致性（prompt cache 复用）", () => {
+  let root: string;
+  let parent: SessionManager;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-prefix-"));
+    setSessionRoot(root);
+    clearAgentRuns();
+    parent = SessionManager.create(process.cwd());
+  });
+
+  afterEach(() => {
+    setSessionRoot("");
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("子 agent 请求 = 父请求（system + tools + 历史）+ 尾部角色简报", async () => {
+    // ① 父 agent 决定委派（工具调用）
+    mock.push(() => ({
+      kind: "sse",
+      chunks: [
+        {
+          toolCalls: [
+            {
+              index: 0,
+              id: "call-delegate-1",
+              name: "delegate",
+              arguments: JSON.stringify({ role: "scout", task: "定位登录相关代码" }),
+            },
+          ],
+          finishReason: "tool_calls",
+        },
+      ],
+    }));
+    // ② 子 agent 返回结果
+    mock.push(() => ({
+      kind: "sse",
+      chunks: [{ content: "定位完成：src/auth.ts:10-40", finishReason: "stop" }],
+    }));
+    // ③ 父 agent 收尾
+    mock.push(() => ({
+      kind: "sse",
+      chunks: [{ content: "已定位到登录逻辑", finishReason: "stop" }],
+    }));
+
+    await runQuery("帮我看一下登录逻辑", {
+      session: parent,
+      runHooks: false,
+      quietOutput: true,
+    });
+
+    const parentReq = mock.requests[0];
+    const childReq = mock.requests[1];
+    expect(parentReq).toBeTruthy();
+    expect(childReq).toBeTruthy();
+
+    // 1) system 逐字节一致（fork 子 agent 用父身份构造 system）
+    expect(childReq.messages[0]).toEqual(parentReq.messages[0]);
+
+    // 2) 工具面一致：tools 段在最前面，任何差异都会毁掉后面所有缓存
+    expect(JSON.stringify(childReq.tools)).toBe(JSON.stringify(parentReq.tools));
+
+    // 3) 历史前缀一致：子请求的前 N 条 == 父请求的全部 N 条
+    expect(childReq.messages.slice(0, parentReq.messages.length)).toEqual(parentReq.messages);
+
+    // 4) 分叉点之后只多两条：父的 assistant(tool_call) + 尾部角色简报/任务
+    //    （assistant(tool_call) 也会出现在父的下一轮请求里，所以它仍是共享前缀的一部分）
+    const extra = childReq.messages.slice(parentReq.messages.length) as Array<{
+      role: string;
+      content?: unknown;
+    }>;
+    expect(extra).toHaveLength(2);
+    expect(extra[0]?.role).toBe("assistant");
+    const tail = String(extra[1]?.content ?? "");
+    expect(tail).toContain("[Role Brief — scout]");
+    expect(tail).toContain("[Restrictions — 仅本任务有效，由运行时强制执行]");
+    expect(tail).toContain("可用工具（白名单，其余一律不可用）");
+    expect(tail).toContain("read_file");
+    expect(tail).toContain("禁止任何写操作");
+    expect(tail).toContain("定位登录相关代码");
+  });
+});

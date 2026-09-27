@@ -7,10 +7,10 @@
 import type { UiEventSink } from "./ui-events.ts";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { AgentProfile, type AgentProfile as Profile } from "./agent-profile.ts";
-import type { AgentRole } from "./teammates/context.ts";
+import { type AgentRole, isPipelineRole } from "./teammates/context.ts";
 
 export class LoopOptions {
-  /** 身份角色（lead / subagent / teammate） */
+  /** 身份角色（lead / subagent / teammate / scout / planner / worker / reviewer / verifier） */
   readonly role: AgentRole;
   readonly preserveSystem: boolean;
   readonly injectLeadNotifications: boolean;
@@ -20,7 +20,7 @@ export class LoopOptions {
   readonly quietOutput: boolean;
   readonly exitOnFinalContent: boolean;
   readonly skipMemoryStopHook: boolean;
-  /** 子代理工具面与系统提示（仅 subagent） */
+  /** 子代理工具面与系统提示（仅 subagent 或专职 pipeline 角色） */
   readonly useSubagentToolFace: boolean;
   readonly useSubagentPrompt: boolean;
   /** UI 事件通道（ADR-0008）：Turn 级 */
@@ -29,15 +29,17 @@ export class LoopOptions {
   readonly thinkingLevel?: ModelThinkingLevel;
   /** 用户中断信号：Turn 级 */
   readonly signal?: AbortSignal;
+  /**
+   * fork 子 agent 专用：请求前缀身份（system prompt + 工具面）按父身份构造，
+   * 保证与父请求逐字节同前缀 → provider 端 prompt cache 命中。
+   */
+  readonly cachePrefix?: { role: AgentRole; isSubagent: boolean };
+  /** fork 子 agent 专用：provider 缓存路由用父会话 id（命中同一缓存副本） */
+  readonly routingSessionId?: string;
 
   constructor(init: Partial<LoopOptions> & { role?: AgentRole } = {}) {
     const role = init.role ?? "lead";
-    const profile =
-      role === "subagent"
-        ? AgentProfile.subagent()
-        : role === "teammate"
-          ? AgentProfile.teammate()
-          : AgentProfile.lead();
+    const profile = AgentProfile.fromRole(role);
     this.role = role;
     this.preserveSystem = init.preserveSystem ?? profile.preserveSystem;
     this.injectLeadNotifications =
@@ -50,17 +52,24 @@ export class LoopOptions {
     this.exitOnFinalContent = init.exitOnFinalContent ?? profile.exitOnFinalContent;
     this.skipMemoryStopHook = init.skipMemoryStopHook ?? profile.skipMemoryStopHook;
     // role 是唯一身份源：工具面/提示面由 role 派生，禁止覆盖
-    this.useSubagentToolFace = role === "subagent";
-    this.useSubagentPrompt = role === "subagent";
+    this.useSubagentToolFace = profile.useSubagentToolFace;
+    this.useSubagentPrompt = profile.useSubagentPrompt;
     this.uiEvents = init.uiEvents;
     this.thinkingLevel = init.thinkingLevel;
     this.signal = init.signal;
+    this.cachePrefix = init.cachePrefix;
+    this.routingSessionId = init.routingSessionId;
   }
 
   /** 从 AgentProfile + Turn 级覆盖构造 */
   static fromProfile(
     profile: Profile,
-    turn: Partial<Pick<LoopOptions, "uiEvents" | "thinkingLevel" | "signal" | "quietOutput">> = {},
+    turn: Partial<
+      Pick<
+        LoopOptions,
+        "uiEvents" | "thinkingLevel" | "signal" | "quietOutput" | "cachePrefix" | "routingSessionId"
+      >
+    > = {},
   ): LoopOptions {
     return new LoopOptions({
       role: profile.role,
@@ -77,25 +86,97 @@ export class LoopOptions {
       uiEvents: turn.uiEvents,
       thinkingLevel: turn.thinkingLevel,
       signal: turn.signal,
+      cachePrefix: turn.cachePrefix,
+      routingSessionId: turn.routingSessionId,
     });
   }
 
   static lead(
-    turn: Partial<Pick<LoopOptions, "uiEvents" | "thinkingLevel" | "signal" | "quietOutput">> = {},
+    turn: Partial<
+      Pick<
+        LoopOptions,
+        "uiEvents" | "thinkingLevel" | "signal" | "quietOutput" | "cachePrefix" | "routingSessionId"
+      >
+    > = {},
   ): LoopOptions {
     return LoopOptions.fromProfile(AgentProfile.lead(), turn);
   }
 
   static subagent(
-    turn: Partial<Pick<LoopOptions, "uiEvents" | "thinkingLevel" | "signal" | "quietOutput">> = {},
+    turn: Partial<
+      Pick<
+        LoopOptions,
+        "uiEvents" | "thinkingLevel" | "signal" | "quietOutput" | "cachePrefix" | "routingSessionId"
+      >
+    > = {},
   ): LoopOptions {
     return LoopOptions.fromProfile(AgentProfile.subagent(), turn);
   }
 
   static teammate(
-    turn: Partial<Pick<LoopOptions, "uiEvents" | "thinkingLevel" | "signal" | "quietOutput">> = {},
+    turn: Partial<
+      Pick<
+        LoopOptions,
+        "uiEvents" | "thinkingLevel" | "signal" | "quietOutput" | "cachePrefix" | "routingSessionId"
+      >
+    > = {},
   ): LoopOptions {
     return LoopOptions.fromProfile(AgentProfile.teammate(), turn);
+  }
+
+  static scout(
+    turn: Partial<
+      Pick<
+        LoopOptions,
+        "uiEvents" | "thinkingLevel" | "signal" | "quietOutput" | "cachePrefix" | "routingSessionId"
+      >
+    > = {},
+  ): LoopOptions {
+    return LoopOptions.fromProfile(AgentProfile.scout(), turn);
+  }
+
+  static planner(
+    turn: Partial<
+      Pick<
+        LoopOptions,
+        "uiEvents" | "thinkingLevel" | "signal" | "quietOutput" | "cachePrefix" | "routingSessionId"
+      >
+    > = {},
+  ): LoopOptions {
+    return LoopOptions.fromProfile(AgentProfile.planner(), turn);
+  }
+
+  static worker(
+    turn: Partial<
+      Pick<
+        LoopOptions,
+        "uiEvents" | "thinkingLevel" | "signal" | "quietOutput" | "cachePrefix" | "routingSessionId"
+      >
+    > = {},
+  ): LoopOptions {
+    return LoopOptions.fromProfile(AgentProfile.worker(), turn);
+  }
+
+  static reviewer(
+    turn: Partial<
+      Pick<
+        LoopOptions,
+        "uiEvents" | "thinkingLevel" | "signal" | "quietOutput" | "cachePrefix" | "routingSessionId"
+      >
+    > = {},
+  ): LoopOptions {
+    return LoopOptions.fromProfile(AgentProfile.reviewer(), turn);
+  }
+
+  static verifier(
+    turn: Partial<
+      Pick<
+        LoopOptions,
+        "uiEvents" | "thinkingLevel" | "signal" | "quietOutput" | "cachePrefix" | "routingSessionId"
+      >
+    > = {},
+  ): LoopOptions {
+    return LoopOptions.fromProfile(AgentProfile.verifier(), turn);
   }
 
   /** @deprecated 使用 LoopOptions.subagent() / lead()；保留兼容旧 isSubagent 布尔通道 */
@@ -113,5 +194,9 @@ export class LoopOptions {
 
   get isLeadRole(): boolean {
     return this.role === "lead";
+  }
+
+  get isPipelineRole(): boolean {
+    return isPipelineRole(this.role);
   }
 }

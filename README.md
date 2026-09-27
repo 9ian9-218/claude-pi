@@ -22,15 +22,32 @@
 - **断线恢复**——进程崩溃后重新打开会话文件并 resume，从上下文压缩检查点重建
 - **多运行模式**——TTY 自动进入 TUI；`-p` 打印模式；`--mode json` 结构化输出（脚本/自动化接口）
 
-### 多 Agent 协作
+### 多 Agent 协作（双模共存）
 
-- **Subagent**——进程内一次性子 Agent，委派单个任务并返回结果
-- **Teammates**——由 Lead 孵化的工作 Agent，独立异步 loop，邮箱通信，危险操作向 Lead 权限冒泡审批
+系统支持两种协同模式，可通过 `cpi --team-mode <free|pipeline>` 或 `/team-mode` 随时切换：
+
+- **自由组队模式 (Free Swarm)**：保留开放式多代理能力。通过 `create_team` / `spawn_teammate` 自由命名角色，独立异步 loop，文件邮箱通信与任务看板认领，危险操作向 Lead 冒泡审批。
+- **固定研发流水线预设 (Coding Pipeline Preset)**：专为代码编写任务打造的高确定性协同预设。由主 Agent（Lead）统一调度 5 个专职角色，各司其职，遵循标准 Markdown 交付契约与工具面白名单硬隔离：
+  - **scout（侦察员）**：快速定位代码、梳理调用依赖，提取最小上下文包（纯只读，严禁写文件）。
+  - **planner（规划师）**：制定原子化施工步骤与验收标准（纯只读，严禁写文件）。
+  - **worker（实现员）**：按计划落地代码改动并生成变更报告（全工具面，允许修改）。
+  - **reviewer（静态审查员）**：白盒静态审查代码规范、潜在 Bug 与安全漏洞（纯只读，输出 CR 意见与 PASS/BLOCK 裁决）。
+  - **verifier（动态验证员）**：动态执行测试套件、构建与类型检查（受控 Bash 测试，严禁修改业务代码，输出客观测试报告）。
+**子 agent 可观测性（两种模式共用）**：
+
+- **折叠面板**：每 spawn 一个子 agent，输入框上方出现一行状态（`⣾/✓/✗` + 角色 + 轮数 / 工具数 / 最近工具）；默认折叠，`Ctrl+A` 展开查看任务目标、最近输出、结果摘要与子会话文件名。
+- **会话落盘**：每个子 agent 拥有独立子会话文件（血缘 `parentSession` 指向父会话），父会话同时写入 `subagent` / `subagent_end` 记录，`/tree` 会列出「子 agent 会话」清单，`/resume` 或 `cpi --session <id>` 可复查完整轨迹。
+- **`/agents` 命令**：`/agents` 列出全部子 agent 运行状态；`/agents <id 前缀>` 查看详情（轮数、最近工具、子会话文件、结果或错误）。
+- **前缀复用（Codex 式 fork）**：fork 子 agent 与父 agent 共用 **system 提示 + 工具面 + 完整历史前缀**，差异只发生在尾部一条 user 消息（`[Role Brief]` + `[Restrictions]` + `[Assigned Task]`）。因此 provider 端的 prompt cache 三段断点（tools / system / messages）都能命中父会话已缓存的前缀；角色限制写在尾部并由运行时执行闸强制，而不是靠改工具面（改工具面会让缓存全部失效）。面板与 `/agents` 会显示**首轮缓存 R/W**：`R>0` 即证明复用了父前缀。
+- **一次性 fork 子 agent**：每次 `subagent_task` / `delegate` 都会 fork 当前会话（复制 system 提示、工具面与历史前缀），因此子 agent 与主 agent **共享 prompt cache 前缀**（成本显著低于全新会话）；子 agent 只做被指派的这一件事，返回结果后即结束，不驻留、不等待后续指派。常驻的多 agent 协同（邮箱 / 任务看板 / 空闲认领）只属于自由组队模式的 teammate。
+- **用量聚合**：每个子 agent 的 token / 成本从它的子会话 entry 现算（每回合与收尾各聚合一次），展开面板与 `/agents <id>` 显示 `↑↓R W $`；`/agents` 末尾给出合计；**footer 的 `↑↓R W $` 已把子 agent 用量并入**（是整队的真实成本），`CH%` 与 `ctx%` 仍只反映主会话，footer 末尾的 `A<n> ▶<k>` 表示有 n 个子 agent、其中 k 个在跑。
 - **后台任务**——`background: true` 的 bash 任务，结果以通知注入，带 stall 看门狗
 
 ### 记忆、任务与隔离
 
-- **长期记忆**——Markdown 记忆文件，Stop Hook 异步提取，按相关性注入上下文
+- **长期记忆**——Markdown 记忆文件，Stop Hook 异步提取。注入遵循**会话级冻结**：进入会话时把（MEMORY.md 索引 + 相关性检索出的正文）冻结成快照并放进 **system 段**，会话内恒定不变 —— 因此 system/消息前缀逐字节稳定，prompt cache 可复用；本会话内新抽取/更新的记忆照常落盘，但**只在下一个新会话生效**（新会话 = 新 sessionId = 新快照）。记忆相关性检索也随之从"每轮一次 LLM 调用"降为"每会话一次"。
+- **`/memory-refresh`**——显式刷新当前会话的记忆快照：立即用最新记忆库重算并生效，**代价是开启新的 prompt 前缀**（此前缓存的 system/消息前缀从下一次请求起不再复用，首轮重新 cache write，之后按新前缀继续累积）。命令会明确提示这一点。
+- **记忆开关**——`~/.claude-pi/settings.json` 的 `memory.enabled`（默认 `true`）；设为 `false` 后完全不注入记忆、也不做 Stop hook 提取（TUI 里可用 `/settings` 切换）。开关变更对新会话生效。
 - **任务看板**——JSON 持久化任务列表，含依赖图与 claim/complete 生命周期
 - **Git worktree 隔离**——认领任务时创建独立 worktree，操作局限其中，完成时自动清理
 - **Skill**——`.agent/skills/` 下的 SKILL.md 按需加载注入系统提示
@@ -71,8 +88,21 @@ cpi                   # 交互模式（TTY 自动进入 TUI；管道/非 TTY 走
 | `cpi --session <id>` | 恢复指定会话 |
 | `cpi --fork <id>` | fork 会话到新文件 |
 | `cpi --no-session` | 临时会话（不落盘） |
+| cpi --refresh-models | 刷新远端模型目录（新模型/新价格；--force 跳过节流） |
+| cpi --team-mode <mode> | 指定多代理协同模式（pipeline 研发预设 / ree 自由组队） |
 
-TUI 内可用斜杠命令：`/tree`（会话树）、`/fork`、`/clone`、`/resume`、`/new`、`/name`、`/session`、`/export`（导出轨迹）、`/import`（导入会话）、`/compact`（手动压缩上下文）、`/settings`（设置）、`/login`、`/logout`、`/model`、`/reload`（扩展热重载）等，可扩展注册。
+TUI 内可用斜杠命令：`/tree`（会话树）、`/fork`、`/clone`、`/resume`、`/new`、`/name`、`/session`、`/export`（导出轨迹）、`/import`（导入会话）、`/compact`（手动压缩上下文）、`/settings`（设置）、`/team-mode`（切换协同模式）、`/agents`（子 agent 状态与子会话）、`/refresh-models`（刷新模型目录）、`/login`、`/logout`、`/model`、`/reload`（扩展热重载）等，可扩展注册。
+
+## 模型目录自动更新
+
+模型表来自 pi-coding-agent 的远端目录（`https://pi.dev/api/models/providers/<provider>`），按 `id` 合并到内置目录之上：**新模型追加、同名模型替换元数据**（价格/上下文窗口/thinking 映射等），结果持久化到 `~/.claude-pi/models-store.json`。
+
+- **自动**：TUI 与交互式 REPL 启动后会后台刷新一次（不阻塞启动、失败静默）；provider 侧 4 小时节流，窗口内不发请求。
+- **手动**：`/refresh-models`（TUI）或 `cpi --refresh-models`（脚本；`--force` 跳过节流）。命令输出走 stderr，不污染 `-p` / `--mode json` 的 stdout。
+- **离线**：`PI_OFFLINE=1` 关闭一切模型目录网络操作，只应用本地已缓存的 overlay。
+- 刷新一次后，即使离线启动也能解析到这些模型（启动只读本地缓存）。
+
+在 `models.json` 里手工声明模型会**整体替换**该模型的元数据（未写字段退回默认值，如 128k 上下文窗口、零成本）。因此建议只声明目录里没有的模型，并在声明时写全 `contextWindow` / `cost` / `compat` 等字段。
 
 ## 模型配置
 

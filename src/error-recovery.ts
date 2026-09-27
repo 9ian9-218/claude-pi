@@ -18,6 +18,7 @@ import {
 } from "./client.ts";
 import { ESCALATED_MAX_TOKENS, reactiveCompact } from "./compact.ts";
 import { CONTINUATION_PROMPT } from "./prompt.ts";
+import type { AgentRole } from "./teammates/context.ts";
 import { readPiSettings, setSettingsOverrideForTest } from "./settings.ts";
 import { emitNoticeOrLog, type UiEventSink } from "./ui-events.ts";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -93,6 +94,12 @@ export interface RecoveryOptions {
   thinkingLevel?: ModelThinkingLevel;
   /** 用户中断信号（ADR-0008）：中断时跳过 appendErrorMessage，不落脏数据 */
   signal?: AbortSignal;
+  /** 会话标识：透传给 client 作 provider 侧缓存路由（同会话内稳定） */
+  sessionId?: string;
+  /** fork 子 agent：请求前缀身份覆盖（与父请求同前缀） */
+  promptIdentity?: { role: AgentRole; isSubagent: boolean };
+  /** fork 子 agent：缓存路由会话 id（用父会话 id 命中同一缓存副本） */
+  routingSessionId?: string;
 }
 
 export async function sendMessagesWithRecovery(
@@ -113,6 +120,9 @@ export async function sendMessagesWithRecovery(
     uiEvents,
     thinkingLevel,
     signal,
+    sessionId,
+    promptIdentity,
+    routingSessionId,
   } = options;
 
   const produce = () =>
@@ -126,6 +136,8 @@ export async function sendMessagesWithRecovery(
       uiEvents,
       thinkingLevel,
       signal,
+      sessionId: routingSessionId ?? sessionId,
+      promptIdentity,
     });
 
   // 类型桥接：claude-pi 的 AssistantMessage 携带 stopReason/errorMessage，

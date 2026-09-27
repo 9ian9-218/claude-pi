@@ -19,8 +19,86 @@ export async function getModelRuntime(): Promise<ModelRuntime> {
     // 动态导入：pi-coding-agent 模块图很大，仅在首次 LLM 调用时加载
     const { ModelRuntime: Runtime } = await import("@earendil-works/pi-coding-agent");
     _runtime = await Runtime.create();
+    warnRuntimeConfigError(_runtime);
   }
   return _runtime;
+}
+
+/**
+ * 暴露 models.json 的校验/组合错误。
+ *
+ * pi-coding-agent 只把错误存在 ModelRuntime.getError() 里，不主动输出；若不读，
+ * 配置写错时用户只会看到下游的 "Provider is not configured"，无从定位（例如
+ * `models` 写成字符串数组会整份配置静默失效）。此处显式转出，只提示不中断。
+ */
+function warnRuntimeConfigError(runtime: ModelRuntime): void {
+  const err = runtime.getError();
+  if (!err) return;
+  console.error(
+    `\x1b[33m[config] 模型配置有问题（models.json / 目录刷新），已忽略对应条目：\n${err}\x1b[0m`,
+  );
+}
+
+/** 单次目录刷新的超时上限（网络挂起时不让调用方一直等） */
+const CATALOG_REFRESH_TIMEOUT_MS = 15_000;
+
+export interface CatalogRefreshResult {
+  /** 是否允许联网检查远端目录（PI_OFFLINE 存在时为 false） */
+  network: boolean;
+  /** 刷新前后的可用模型数（getAvailable 快照） */
+  before: number;
+  after: number;
+  /** provider 级错误（网络失败、目录不可用等）；空表示全部成功 */
+  errors: string[];
+  /** 是否因超时被中断（已应用到的结果仍然有效） */
+  timedOut: boolean;
+}
+
+/** 是否允许联网（与 pi-coding-agent 的 PI_OFFLINE 语义保持一致） */
+export function modelNetworkEnabled(): boolean {
+  return process.env.PI_OFFLINE === undefined;
+}
+
+/**
+ * 刷新模型目录：从 pi.dev 拉取各 provider 的最新模型表（新模型追加、同 id 替换
+ * 元数据），由 pi-coding-agent 写回 models-store.json —— 因此刷新一次之后，
+ * 即使离线启动也能解析到这些模型（启动时只读本地 overlay，不发网络请求）。
+ *
+ * 节流由 provider 内部按 checkedAt 判定（4 小时窗口）：窗口内不发请求，
+ * 直接应用本地 overlay。force=true 可跳过节流立即拉取。
+ *
+ * 永不抛：网络失败只记入 errors，调用方可安全地在后台 fire-and-forget。
+ */
+export async function refreshModelCatalog(
+  options: { timeoutMs?: number; force?: boolean } = {},
+): Promise<CatalogRefreshResult> {
+  const runtime = await getModelRuntime();
+  const before = runtime.getAvailableSnapshot().length;
+  // refresh() 的 allowNetwork 默认取 modelNetworkEnabled，但显式传参会覆盖它，
+  // 故此处自行判定一次，保证 PI_OFFLINE 依然能关掉网络。
+  const network = modelNetworkEnabled();
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, options.timeoutMs ?? CATALOG_REFRESH_TIMEOUT_MS);
+  let errors: string[] = [];
+  try {
+    const result = await runtime.refresh({
+      allowNetwork: network,
+      signal: controller.signal,
+      ...(options.force ? { force: true } : {}),
+    });
+    errors = [...(result?.errors?.entries() ?? [])].map(([provider, err]) => `${provider}: ${err.message}`);
+    if (result?.aborted && !timedOut) errors.push("刷新被中断");
+  } catch (e) {
+    errors.push((e as Error).message ?? String(e));
+  } finally {
+    clearTimeout(timer);
+  }
+  warnRuntimeConfigError(runtime);
+  return { network, before, after: runtime.getAvailableSnapshot().length, errors, timedOut };
 }
 
 /** 测试隔离：注入/清除 ModelRuntime 覆盖 */

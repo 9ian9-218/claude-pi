@@ -9,7 +9,8 @@
 // ── 静态片段 ──────────────────────────────────────────────────────────────
 
 import { AGENT_ROOT, resolveAgentDirs } from "./config.ts";
-import { readMemoryIndex } from "./memory.ts";
+import { type AgentRole } from "./teammates/context.ts";
+import { peekMemorySnapshot } from "./memory-scope.ts";
 import { getSkillCatalog } from "./skill-load.ts";
 import { getMCPHub } from "./mcp/hub.ts";
 
@@ -20,6 +21,8 @@ export const AGENT_IDENTITY =
   "You are a coding agent at {workspace}. " +
   "Use subagent_task for deep research, large subtasks, or multiple " +
   "independent work items that can run concurrently. " +
+  "Subagents are one-shot forks of this session: they take a single delegated task, " +
+  "return a result, and end — use them for bounded work, not for ongoing collaboration. " +
   "For the current turn's short checklist, use todo_write.";
 
 export const TASK_PLANNING_SECTION =
@@ -69,6 +72,9 @@ export const TEAMS_SECTION =
   "**When to use:** large project generation, multi-aspect implementation " +
   "(frontend + backend + infra), or when you have more tasks than a single " +
   "thread can handle efficiently.\n\n" +
+  "**Subagents vs teammates:** subagents are one-shot (delegate a task, get the " +
+  "result, session ends) and reuse this session's prompt cache; teammates are persistent " +
+  "long-lived workers. Use teammates only when you truly need ongoing parallel collaboration.\n\n" +
   "**Priority: subagent first.** If a subtask is self-contained and a " +
   "subagent can handle it efficiently, use subagent_task. Only escalate to " +
   "spawn_teammate when the scope is large enough that a dedicated long-running " +
@@ -99,6 +105,106 @@ export const SUBAGENT_IDENTITY =
   "You are a coding agent at {workspace}. " +
   "Complete the task you were given, then return a concise summary. " +
   "Do not delegate further.";
+
+export const SCOUT_IDENTITY =
+  "You are a scout agent specialized in codebase recon at {workspace}.\n" +
+  "Your goal is to locate relevant code, trace dependencies, and produce a compact context package for downstream agents.\n" +
+  "RULES:\n" +
+  "- You must NOT make any changes to files. Only search, read, and inspect.\n" +
+  "- Do not delegate further.\n\n" +
+  "OUTPUT FORMAT (Must follow strictly):\n" +
+  "## Context Overview\n" +
+  "Brief 1-2 sentence summary of where relevant logic lives.\n\n" +
+  "## Files Located\n" +
+  "- `path/to/file.ts:lineStart-lineEnd` - Description of relevance\n\n" +
+  "## Key Code & Interfaces\n" +
+  "Critical functions, types, and signatures extracted.\n\n" +
+  "## Dependencies & Traps\n" +
+  "Notable constraints, related test files, or potential pitfalls.";
+
+export const PLANNER_IDENTITY =
+  "You are a planning specialist at {workspace}.\n" +
+  "Your goal is to produce a step-by-step implementation plan from the user requirements and scouted context.\n" +
+  "RULES:\n" +
+  "- You must NOT make any changes to files. Only read, analyze, and plan.\n" +
+  "- Do not delegate further.\n\n" +
+  "OUTPUT FORMAT (Must follow strictly):\n" +
+  "## Goal & Scope\n" +
+  "Clear statement of objectives and boundaries.\n\n" +
+  "## Step-by-Step Plan\n" +
+  "1. `path/to/file.ts`: Concrete action and target function\n" +
+  "2. ...\n\n" +
+  "## Risks & Edge Cases\n" +
+  "Potential pitfalls and how to mitigate them.\n\n" +
+  "## Acceptance Criteria\n" +
+  "- [ ] Test case or verification check";
+
+export const WORKER_IDENTITY =
+  "You are a worker implementation agent at {workspace}.\n" +
+  "Your goal is to implement the requested changes strictly according to the plan.\n" +
+  "RULES:\n" +
+  "- Focus on clean, minimal, working changes that directly fulfill the plan.\n" +
+  "- Test your changes when appropriate.\n" +
+  "- Do not delegate further.\n\n" +
+  "OUTPUT FORMAT (Must follow strictly):\n" +
+  "## Completed Work\n" +
+  "Summary of what was implemented.\n\n" +
+  "## Files Changed\n" +
+  "- `path/to/file.ts` - Description of changes made\n\n" +
+  "## Implementation Notes\n" +
+  "Self-test observations, remaining edge cases, or details for the reviewer.";
+
+export const REVIEWER_IDENTITY =
+  "You are a senior static code reviewer at {workspace}.\n" +
+  "Your goal is to analyze changes for bugs, style, security, and conformance to specifications.\n" +
+  "RULES:\n" +
+  "- You must NOT modify any files. Bash is restricted to read-only commands (git diff, git log, git status).\n" +
+  "- Do not delegate further.\n\n" +
+  "OUTPUT FORMAT (Must follow strictly):\n" +
+  "## Review Summary\n" +
+  "Overall assessment in 2-3 sentences.\n\n" +
+  "## Findings\n" +
+  "- **[CRITICAL]** `file.ts:line` - Must-fix bug, security flaw, or spec deviation\n" +
+  "- **[WARNING]** `file.ts:line` - Code smell, edge case, or maintainability concern\n" +
+  "- **[SUGGESTION]** `file.ts:line` - Optional improvement idea\n" +
+  "(or 'None' under respective category)\n\n" +
+  "## Verdict\n" +
+  "[PASS] or [BLOCK] (Any CRITICAL item requires BLOCK)";
+
+export const VERIFIER_IDENTITY =
+  "You are a dynamic verification specialist at {workspace}.\n" +
+  "Your goal is to run builds, tests, linters, and typecheckers to objectively verify correctness and detect regressions.\n" +
+  "RULES:\n" +
+  "- You must NOT modify source files. You may execute test, build, and check commands.\n" +
+  "- Do not delegate further.\n\n" +
+  "OUTPUT FORMAT (Must follow strictly):\n" +
+  "## Verification Summary\n" +
+  "Overview of tests and checks executed.\n\n" +
+  "## Commands Executed\n" +
+  "- `<command>`: Result summary (exit code, passed/failed counts)\n\n" +
+  "## Failure Details\n" +
+  "Error output, assertion failures, or stack traces (or 'None').\n\n" +
+  "## Verdict\n" +
+  "[PASS] or [BLOCK]";
+
+export function getRoleIdentity(role: AgentRole, workspace: string): string {
+  switch (role) {
+    case "scout":
+      return SCOUT_IDENTITY.replace("{workspace}", workspace);
+    case "planner":
+      return PLANNER_IDENTITY.replace("{workspace}", workspace);
+    case "worker":
+      return WORKER_IDENTITY.replace("{workspace}", workspace);
+    case "reviewer":
+      return REVIEWER_IDENTITY.replace("{workspace}", workspace);
+    case "verifier":
+      return VERIFIER_IDENTITY.replace("{workspace}", workspace);
+    case "subagent":
+      return SUBAGENT_IDENTITY.replace("{workspace}", workspace);
+    default:
+      return AGENT_IDENTITY.replace("{workspace}", workspace);
+  }
+}
 
 // ── Memory 段（05 接入数据源，模板先行） ──────────────────────────────────
 
@@ -313,13 +419,15 @@ export interface PromptContext {
 
 export function assembleSystemPrompt(
   context: PromptContext,
-  { isSubagent }: { isSubagent: boolean },
+  options: { isSubagent: boolean; role?: AgentRole },
 ): string {
   const workspace = context.workspace ?? process.cwd();
-  const identityTemplate = isSubagent ? SUBAGENT_IDENTITY : AGENT_IDENTITY;
-  const identity = identityTemplate.replace("{workspace}", workspace);
+  const isSpecialist = options.isSubagent || (options.role !== undefined && options.role !== "lead" && options.role !== "teammate");
+  const identity = options.role && options.role !== "lead" && options.role !== "teammate"
+    ? getRoleIdentity(options.role, workspace)
+    : (options.isSubagent ? SUBAGENT_IDENTITY.replace("{workspace}", workspace) : AGENT_IDENTITY.replace("{workspace}", workspace));
   const parts = [identity];
-  if (!isSubagent) {
+  if (!isSpecialist) {
     parts.push(TASK_PLANNING_SECTION, BACKGROUND_TASKS_SECTION, TEAMS_SECTION, MCP_SECTION);
     const servers = context.mcp_servers ?? [];
     if (servers.length > 0) {
@@ -331,7 +439,7 @@ export function assembleSystemPrompt(
   if (skillCatalog) {
     parts.push(skillCatalog);
   }
-  if (!isSubagent) {
+  if (!isSpecialist) {
     parts.push(buildMemorySection(context.memories ?? ""));
   }
   if (parts.length === 1) return parts[0];
@@ -340,34 +448,36 @@ export function assembleSystemPrompt(
 
 let _lastContextKey: string | null = null;
 let _lastPrompt: string | null = null;
-let _lastSubagentContextKey: string | null = null;
-let _lastSubagentPrompt: string | null = null;
+const _rolePromptCache = new Map<string, string>();
 
-function contextCacheKey(context: PromptContext, isSubagent: boolean): string {
-  return JSON.stringify({ ...context, _isSubagent: isSubagent }, Object.keys(context).sort());
+function contextCacheKey(context: PromptContext, isSubagent: boolean, role?: AgentRole): string {
+  return JSON.stringify({ ...context, _isSubagent: isSubagent, _role: role }, Object.keys(context).sort());
 }
 
 export function getSystemPrompt(
   context: PromptContext,
-  { isSubagent }: { isSubagent: boolean },
+  options: { isSubagent: boolean; role?: AgentRole },
 ): string {
-  const key = contextCacheKey(context, isSubagent);
-  if (isSubagent) {
-    if (key === _lastSubagentContextKey && _lastSubagentPrompt !== null) {
-      console.log("  \x1b[90m[cache hit] subagent system prompt unchanged\x1b[0m");
-      return _lastSubagentPrompt;
+  const isSubagent = options.isSubagent;
+  const role = options.role;
+  const key = contextCacheKey(context, isSubagent, role);
+  if (isSubagent || (role && role !== "lead" && role !== "teammate")) {
+    const cached = _rolePromptCache.get(key);
+    if (cached) {
+      console.log(`  \x1b[90m[cache hit] ${role ?? "subagent"} system prompt unchanged\x1b[0m`);
+      return cached;
     }
-    _lastSubagentContextKey = key;
-    _lastSubagentPrompt = assembleSystemPrompt(context, { isSubagent: true });
-    console.log("  \x1b[32m[assembled] subagent sections: subagent_identity, skills\x1b[0m");
-    return _lastSubagentPrompt;
+    const assembled = assembleSystemPrompt(context, options);
+    _rolePromptCache.set(key, assembled);
+    console.log(`  \x1b[32m[assembled] ${role ?? "subagent"} sections: identity, skills\x1b[0m`);
+    return assembled;
   }
   if (key === _lastContextKey && _lastPrompt !== null) {
     console.log("  \x1b[90m[cache hit] system prompt unchanged\x1b[0m");
     return _lastPrompt;
   }
   _lastContextKey = key;
-  _lastPrompt = assembleSystemPrompt(context, { isSubagent: false });
+  _lastPrompt = assembleSystemPrompt(context, options);
   const loaded = ["identity", "task_planning", "skills"];
   loaded.push(context.memories ? "memory" : "memory_empty");
   console.log(`  \x1b[32m[assembled] sections: ${loaded.join(", ")}\x1b[0m`);
@@ -378,6 +488,15 @@ export function getSystemPrompt(
  * 收集当前环境状态供 getSystemPrompt 使用。
  * 02a：workspace + 空占位；skill（07）、memory（05）、mcp（19）逐步接入。
  */
+/**
+ * system 段里的记忆文本 = 冻结快照（MEMORY.md 索引 + 相关性检索正文）。
+ * 会话内恒定 ⇒ system 提示逐字节稳定 ⇒ prompt cache 前缀可复用。
+ */
+function buildFrozenMemoryText(): string {
+  const snapshot = peekMemorySnapshot();
+  return [snapshot.index, snapshot.injected].filter((part) => part.trim()).join("\n\n");
+}
+
 export function updateContext(_context: PromptContext, _messages: unknown[]): PromptContext {
   let mcpServers: string[] = [];
   let mcpToolCount = 0;
@@ -391,7 +510,7 @@ export function updateContext(_context: PromptContext, _messages: unknown[]): Pr
   return {
     skill_catalog: getSkillCatalog(),
     workspace: process.cwd(),
-    memories: readMemoryIndex(),
+    memories: buildFrozenMemoryText(),
     enabled_tools: [],
     mcp_servers: mcpServers,
     mcp_tool_count: mcpToolCount,

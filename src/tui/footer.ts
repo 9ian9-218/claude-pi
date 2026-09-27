@@ -101,6 +101,11 @@ export class Footer extends Container {
       parts.push(dim(`CH${s.latestCacheHitRate.toFixed(1)}%`));
     }
     if (t.cost) parts.push(dim(`$${t.cost.toFixed(3)}`));
+    // 子 agent 编队：用量已并入上面的 ↑↓R W $，这里只标出数量与在跑数
+    if (s.agents && s.agents.count > 0) {
+      const running = s.agents.running > 0 ? ` ▶${s.agents.running}` : "";
+      parts.push(dim(`A${s.agents.count}${running}`));
+    }
     return parts;
   }
 

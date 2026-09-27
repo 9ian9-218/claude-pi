@@ -2,7 +2,16 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { TEAM_LEAD_NAME } from "./constants.ts";
 
-export type AgentRole = "lead" | "teammate" | "subagent";
+export const PIPELINE_ROLES = [
+  "scout",
+  "planner",
+  "worker",
+  "reviewer",
+  "verifier",
+] as const;
+export type PipelineRole = (typeof PIPELINE_ROLES)[number];
+
+export type AgentRole = "lead" | "teammate" | "subagent" | PipelineRole;
 
 export interface AgentContext {
   teamName: string | null;
@@ -36,8 +45,16 @@ export function isSubagent(ctx: AgentContext): boolean {
   return ctx.role === "subagent";
 }
 
+export function isPipelineRole(role: string): role is PipelineRole {
+  return (PIPELINE_ROLES as readonly string[]).includes(role);
+}
+
+export function isReadOnlyRole(role: AgentRole): boolean {
+  return role === "scout" || role === "planner" || role === "reviewer" || role === "verifier";
+}
+
 export function isWorker(ctx: AgentContext): boolean {
-  return ctx.role === "teammate" || ctx.role === "subagent";
+  return ctx.role === "teammate" || ctx.role === "subagent" || isPipelineRole(ctx.role);
 }
 
 const ctxStore = new AsyncLocalStorage<AgentContext>();

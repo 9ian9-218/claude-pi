@@ -50,10 +50,25 @@ export const PERMISSION_RULES: PermissionRule[] = [
   },
 ];
 
+/**
+ * 黑名单匹配：子串命中 + 边界校验。
+ *
+ * 直接 includes 会把 `rm -rf /` 匹配到 `rm -rf /tmp/build`（绝对路径的删除全被
+ * 误杀，且提示信息指向 `rm -rf /`，用户无法理解）。以 `/` 结尾的 pattern 要求
+ * 其后不再跟路径字符，只有真正删除根目录才命中。
+ */
 export function checkDenyList(command: string): string | null {
   for (const pattern of DENY_LIST) {
-    if (command.includes(pattern)) {
-      return `Blocked: '${pattern}' is on the deny list`;
+    let from = 0;
+    for (;;) {
+      const at = command.indexOf(pattern, from);
+      if (at < 0) break;
+      const next = command[at + pattern.length];
+      const endsPath = pattern.endsWith("/") && next !== undefined && /[A-Za-z0-9._~-]/.test(next);
+      if (!endsPath) {
+        return `Blocked: '${pattern}' is on the deny list`;
+      }
+      from = at + pattern.length;
     }
   }
   return null;

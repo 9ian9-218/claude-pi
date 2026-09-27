@@ -41,4 +41,26 @@ describe("warmup（架构 A）", () => {
     expect(after).toBeDefined();
     await after;
   });
+
+  it("预热顺带触发模型目录自动刷新（联网检查一次）", async () => {
+    resetAiRuntime();
+    const calls: Array<{ allowNetwork?: boolean }> = [];
+    setModelRuntimeOverride({
+      getAvailableSnapshot: () => [],
+      getError: () => undefined,
+      refresh: async (opts: { allowNetwork?: boolean } = {}) => {
+        calls.push(opts);
+        return { aborted: false, errors: new Map() };
+      },
+    } as never);
+    delete process.env.PI_OFFLINE;
+
+    await warmUp();
+    // 刷新是 fire-and-forget 发起的，等它落到 stub 上
+    for (let i = 0; i < 50 && calls.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.allowNetwork).toBe(true);
+  });
 });

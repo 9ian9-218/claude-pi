@@ -85,27 +85,47 @@ describe("agentLoop 集成（03/04）", () => {
 });
 
 describe("agentLoop 集成（05 记忆）", () => {
-  it("记忆注入：请求体 user 消息含 <relevant_memories>", async () => {
+  it("记忆注入：进入 system 段且会话内冻结，user 消息保持原样", async () => {
     // select 调用（非流式 json）→ 主调用（sse）
     mock.push(() => ({ kind: "sse", chunks: [{ content: "[0]", finishReason: "stop" }] }));
     mock.push(() => ({ kind: "sse", chunks: [{ content: "ok", finishReason: "stop" }] }));
-    // Stop hook 的异步提取静默失败即可（无队列响应）
     const memDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-memint-"));
     const { setMemoryDir, writeMemoryFile } = await import("./memory.ts");
+    const { resetMemorySnapshots } = await import("./memory-scope.ts");
     setMemoryDir(memDir);
+    resetMemorySnapshots();
     try {
       writeMemoryFile("arch-note", "project", "architecture note", "the memory body");
       const messages: ChatMessage[] = [{ role: "user", content: "about architecture" }];
       await agentLoop(messages, { loopOptions: quiet });
+
       const mainReq = mock.requests.find((r) => r.messages.some((m) => m.role === "system"));
+      const systemMsg = mainReq?.messages.find((m) => m.role === "system");
       const userMsg = mainReq?.messages.find((m) => m.role === "user");
-      expect(String(userMsg?.content)).toContain("<relevant_memories>");
-      expect(String(userMsg?.content)).toContain("the memory body");
+      // 记忆进 system 段（前缀稳定），user 消息不再被改写
+      expect(String(systemMsg?.content)).toContain("<relevant_memories>");
+      expect(String(systemMsg?.content)).toContain("the memory body");
+      expect(String(userMsg?.content)).toBe("about architecture");
+
+      // 冻结：本会话内新增的记忆不影响当前会话的 system 前缀
+      const frozen = String(systemMsg?.content);
+      writeMemoryFile("new-note", "project", "new note", "NEW MEMORY BODY");
+      mock.push(() => ({ kind: "sse", chunks: [{ content: "ok2", finishReason: "stop" }] }));
+      await agentLoop(
+        [...messages, { role: "assistant", content: "ok" }, { role: "user", content: "continue" }],
+        { loopOptions: quiet },
+      );
+      const later = mock.requests
+        .filter((r) => r.messages.some((m) => m.role === "system"))
+        .pop();
+      const laterSystem = String(later?.messages.find((m) => m.role === "system")?.content ?? "");
+      expect(laterSystem).toBe(frozen);
+      expect(laterSystem).not.toContain("NEW MEMORY BODY");
     } finally {
+      resetMemorySnapshots();
       fs.rmSync(memDir, { recursive: true, force: true });
     }
-  });
-});
+  });});
 
 describe("agentLoop 集成（06 后台任务）", () => {
   it("后台任务完成通知在下一轮对话注入为 user 消息", async () => {
@@ -438,6 +458,58 @@ describe("agentLoop 会话落盘与中断回滚（恢复）", () => {
       expect(last.role).toBe("assistant");
       expect(String(last.content)).toContain("[Error]");
     } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// 路由键：provider（opencode zen 网关）要求每个请求带稳定会话标识才肯路由/复用缓存前缀。
+// 会话模式取 sessionId；无会话模式（--no-session / 脚本接口）必须退化为稳定的进程级临时 id，
+// 否则线上会直接 400 MissingSessionID（见真实环境回归）。
+describe("缓存路由键（无会话模式）", () => {
+  it("无 session 时仍透传非空 sessionId（否则 provider 400）", async () => {
+    const models = installMockModels(mock.baseUrl);
+    const spy = vi.spyOn(models, "stream");
+    mock.always(() => ({ kind: "sse", chunks: [{ content: "ok", finishReason: "stop" }] }));
+    try {
+      await agentLoop([{ role: "user", content: "hi" }], { loopOptions: quiet });
+      const opts = spy.mock.calls[0]?.[2] as { sessionId?: string } | undefined;
+      expect(typeof opts?.sessionId).toBe("string");
+      expect((opts?.sessionId ?? "").length).toBeGreaterThan(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("同一进程内多次调用复用同一路由键（前缀缓存可命中）", async () => {
+    const models = installMockModels(mock.baseUrl);
+    const spy = vi.spyOn(models, "stream");
+    mock.always(() => ({ kind: "sse", chunks: [{ content: "ok", finishReason: "stop" }] }));
+    try {
+      await agentLoop([{ role: "user", content: "a" }], { loopOptions: quiet });
+      await agentLoop([{ role: "user", content: "b" }], { loopOptions: quiet });
+      const first = (spy.mock.calls[0]?.[2] as { sessionId?: string }).sessionId;
+      const second = (spy.mock.calls[1]?.[2] as { sessionId?: string }).sessionId;
+      expect(first).toBeTruthy();
+      expect(first).toBe(second);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("有 session 时路由键严格等于会话 id", async () => {
+    const models = installMockModels(mock.baseUrl);
+    const spy = vi.spyOn(models, "stream");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-route-"));
+    mock.always(() => ({ kind: "sse", chunks: [{ content: "ok", finishReason: "stop" }] }));
+    try {
+      const session = SessionManager.create(process.cwd(), dir);
+      session.appendMessage({ role: "user", content: "go" });
+      await agentLoop(session.buildSessionContext().messages, { session, loopOptions: quiet });
+      const opts = spy.mock.calls[0]?.[2] as { sessionId?: string } | undefined;
+      expect(opts?.sessionId).toBe(session.sessionId);
+    } finally {
+      spy.mockRestore();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });

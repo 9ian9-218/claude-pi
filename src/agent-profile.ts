@@ -1,17 +1,21 @@
 /**
- * agent-profile.ts — Agent 身份档案（Lead / Subagent / Teammate）
+ * agent-profile.ts — Agent 身份档案（Lead / Subagent / Teammate / Pipeline 专职角色）
  *
- * 对齐 Claude Code 语义：
+ * 对齐 Claude Code 语义并支持固定协同流水线：
  * - Lead：用户交互面，完整工具面，邮箱注入 + Memory + 后台任务
- * - Subagent：进程内一次性委派，受限工具面，无 Memory/无队友孵化，摘要交回父 loop；
- *   权限同步冒泡给当前 Lead 上下文
+ * - Subagent：进程内一次性委派，受限工具面，无 Memory/无队友孵化，摘要交回父 loop
  * - Teammate：团队内异步 worker，独立 loop + 邮箱，权限经邮箱冒泡 Lead
- *
- * Profile = 身份 + 派生 loop 策略。Turn 级选项（uiEvents/signal/thinkingLevel）不进 Profile。
+ * - 专职 Pipeline 角色：
+ *   - scout: 快速定位代码位置与依赖，提取最小上下文包（只读）
+ *   - planner: 架构推演、细化步骤与验收断言（只读）
+ *   - worker: 专注落实代码改动并产出变更报告（可写）
+ *   - reviewer: 静态白盒审查代码质量、规范与安全（只读）
+ *   - verifier: 动态黑盒/白盒执行构建与测试套件（受控测试，严禁改业务代码）
  */
 import {
   type AgentContext,
   type AgentRole,
+  isPipelineRole,
   createAgentContext,
 } from "./teammates/context.ts";
 import { TEAM_LEAD_NAME } from "./teammates/constants.ts";
@@ -38,19 +42,19 @@ export interface AgentProfile {
 }
 
 function defaultsFor(role: AgentRole): AgentProfile {
-  if (role === "subagent") {
+  if (role === "subagent" || isPipelineRole(role)) {
     return {
-      role: "subagent",
+      role,
       teamName: null,
-      agentName: "subagent",
+      agentName: role,
       agentId: null,
       color: null,
-      agentType: "general-purpose",
+      agentType: role,
       preserveSystem: false,
       injectLeadNotifications: false,
       injectBackgroundNotifications: false,
       enableMemory: false,
-      enableBackground: false,
+      enableBackground: role === "worker",
       quietOutput: true,
       exitOnFinalContent: true,
       skipMemoryStopHook: true,
@@ -116,9 +120,9 @@ function base(role: AgentRole, init: Partial<AgentProfile> = {}): AgentProfile {
     quietOutput: init.quietOutput ?? d.quietOutput,
     exitOnFinalContent: init.exitOnFinalContent ?? d.exitOnFinalContent,
     skipMemoryStopHook: init.skipMemoryStopHook ?? d.skipMemoryStopHook,
-    // role 是唯一身份源：工具面/提示面不可被 init 覆盖（防提示注入绕过）
-    useSubagentToolFace: role === "subagent",
-    useSubagentPrompt: role === "subagent",
+    // role 是唯一身份源：工具面/提示面由 role 派生
+    useSubagentToolFace: role !== "lead" && role !== "teammate",
+    useSubagentPrompt: role !== "lead" && role !== "teammate",
   };
 }
 
@@ -132,26 +136,26 @@ export const AgentProfile = {
   teammate(init: Partial<AgentProfile> = {}): AgentProfile {
     return base("teammate", init);
   },
+  scout(init: Partial<AgentProfile> = {}): AgentProfile {
+    return base("scout", init);
+  },
+  planner(init: Partial<AgentProfile> = {}): AgentProfile {
+    return base("planner", init);
+  },
+  worker(init: Partial<AgentProfile> = {}): AgentProfile {
+    return base("worker", init);
+  },
+  reviewer(init: Partial<AgentProfile> = {}): AgentProfile {
+    return base("reviewer", init);
+  },
+  verifier(init: Partial<AgentProfile> = {}): AgentProfile {
+    return base("verifier", init);
+  },
+  fromRole(role: AgentRole, init: Partial<AgentProfile> = {}): AgentProfile {
+    return base(role, init);
+  },
   fromContext(ctx: AgentContext): AgentProfile {
-    if (ctx.role === "subagent") {
-      return AgentProfile.subagent({
-        teamName: ctx.teamName,
-        agentName: ctx.agentName,
-        agentId: ctx.agentId,
-        color: ctx.color,
-        agentType: ctx.agentType,
-      });
-    }
-    if (ctx.role === "teammate") {
-      return AgentProfile.teammate({
-        teamName: ctx.teamName,
-        agentName: ctx.agentName,
-        agentId: ctx.agentId,
-        color: ctx.color,
-        agentType: ctx.agentType,
-      });
-    }
-    return AgentProfile.lead({
+    return base(ctx.role, {
       teamName: ctx.teamName,
       agentName: ctx.agentName,
       agentId: ctx.agentId,

@@ -23,6 +23,14 @@ import {
 import type { ChatMessage, ToolCallData } from "../client.ts";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { MessageList } from "./messages/message-list.ts";
+import { AgentPanelComponent } from "./messages/agent-panel.ts";
+import {
+  listAgentRuns,
+  getAgentRun,
+  findAgentRunByPrefix,
+  aggregateAgentUsage,
+} from "../agent-registry.ts";
+import { formatTokens } from "./footer.ts";
 import { UserMessageComponent } from "./messages/user-message.ts";
 import { AssistantMessageComponent } from "./messages/assistant-message.ts";
 import { SystemMessageComponent } from "./messages/system-message.ts";
@@ -155,6 +163,8 @@ export class TuiApp {
   private readonly statusTextFn?: () => string;
   private readonly footerStatsFn?: () => import("../usage-stats.ts").FooterStats | null;
   private readonly footer: Footer;
+  /** 输入框上方的子 agent 折叠面板（Ctrl+A 展开/折叠） */
+  private readonly agentPanel: AgentPanelComponent;
   private readonly root = new Container();
   /** 架构 B：职责拆分 */
   private readonly turns = new TurnController();
@@ -197,9 +207,11 @@ export class TuiApp {
       },
       { paddingX: 1 },
     );
+    this.agentPanel = new AgentPanelComponent(() => this.tui.requestRender());
     this.registerCommands();
     this.refreshAutocomplete();
     this.root.addChild(this.chat);
+    this.root.addChild(this.agentPanel);
     this.root.addChild(this.editor);
     this.root.addChild(this.footer);
     this.updateFooter();
@@ -233,6 +245,11 @@ export class TuiApp {
     this.keymap.bind("\x0f", () => {
       // 04：Ctrl+O 折叠/展开全部工具输出（对齐 pi app.tools.expand）
       this.toggleToolExpansion();
+    });
+
+    this.keymap.bind("\x01", () => {
+      // 子 agent 面板：Ctrl+A 展开/折叠（默认折叠，显示在输入框上方）
+      this.toggleAgentPanel();
     });
     this.keymap.bind("\x1b[Z", () => {
       // 对齐 pi app.thinking.cycle：Shift+Tab 循环思考强度
@@ -305,6 +322,7 @@ export class TuiApp {
   }
 
   stop(): void {
+    this.agentPanel.dispose();
     this.tui.stop();
   }
 
@@ -315,6 +333,17 @@ export class TuiApp {
   /** 聊天区全部文本（测试断言用） */
   getChatText(): string {
     return this.chat.getText();
+  }
+
+  /** 子 agent 面板：Ctrl+A 与 /agents 共用 */
+  toggleAgentPanel(): void {
+    this.agentPanel.toggle();
+    this.tui.requestRender();
+  }
+
+  /** 子 agent 面板文本（测试/诊断用） */
+  getAgentPanelText(): string {
+    return this.agentPanel.getText();
   }
 
   /** 工具事件（04）：委托 ToolBlockRegistry */
@@ -722,7 +751,100 @@ export class TuiApp {
         this.appendSystem("扩展已重载。", "success");
       },
     });
+    registerCommand<TuiApp>({
+      name: "refresh-models",
+      aliases: ["sync-models"],
+      description: "刷新远端模型目录（发现新模型 / 更新元数据）",
+      kind: "builtin",
+      handler: async (rest) => {
+        const { refreshModelCatalog } = await import("../ai-runtime.ts");
+        this.appendSystem("正在刷新模型目录…");
+        const r = await refreshModelCatalog({ force: rest.trim() === "--force" });
+        const parts = [
+          r.network ? "已联网检查远端模型目录" : "离线模式（PI_OFFLINE）：仅应用本地缓存",
+          `可用模型 ${r.before} → ${r.after}`,
+        ];
+        if (r.timedOut) parts.push("超时中断");
+        if (r.errors.length) parts.push(`错误：${r.errors.join("; ")}`);
+        this.appendSystem(parts.join("；"), r.errors.length ? "error" : "success");
+        this.refreshAutocomplete();
+      },
+    });
     // 会话命令（树形会话）：委托 onSessionCommand
+    registerCommand<TuiApp>({
+      name: "agents",
+      description: "查看子 agent 运行状态、轮数与子会话文件",
+      kind: "builtin",
+      handler: (rest) => {
+        const query = rest.trim();
+        const runs = listAgentRuns();
+        if (runs.length === 0) {
+          this.appendSystem("当前没有子 agent 运行记录。");
+          return;
+        }
+        if (!query) {
+          const lines = runs.map((run) => {
+            const icon = run.status === "running" ? "⣾" : run.status === "done" ? "✓" : "✗";
+            const file = run.sessionFile ? ` · ${run.sessionFile.split("/").pop()}` : "";
+            const cost = run.usage && run.usage.cost > 0 ? ` · $${run.usage.cost.toFixed(4)}` : "";
+            return `${icon} ${run.id} · ${run.turns} 轮 / ${run.toolCalls} 工具${cost}${file}`;
+          });
+          const fleet = aggregateAgentUsage();
+          lines.push("");
+          lines.push(
+            `合计（含子 agent）: ↑${formatTokens(fleet.usage.input)} ↓${formatTokens(fleet.usage.output)} R${formatTokens(fleet.usage.cacheRead)} W${formatTokens(fleet.usage.cacheWrite)} $${fleet.usage.cost.toFixed(4)}`,
+          );
+          lines.push("用法: /agents <id 前缀> 查看详情（Ctrl+A 展开面板）");
+          this.appendSystem(lines.join("\n"));
+          return;
+        }
+        const run = getAgentRun(query) ?? findAgentRunByPrefix(query);
+        if (!run) {
+          this.appendSystem(`未找到子 agent: ${query}`);
+          return;
+        }
+        const detail = [
+          `${run.id} (${run.role}) · ${run.status}`,
+          `任务: ${run.label}`,
+          `轮数: ${run.turns} · 工具: ${run.toolCalls}${run.lastTool ? ` (最近 ${run.lastTool})` : ""}`,
+          run.usage
+            ? `用量: ↑${formatTokens(run.usage.input)} ↓${formatTokens(run.usage.output)} R${formatTokens(run.usage.cacheRead)} W${formatTokens(run.usage.cacheWrite)} ${run.usage.cost.toFixed(4)}`
+            : "",
+          run.firstTurnCache
+            ? `首轮缓存: R${formatTokens(run.firstTurnCache.cacheRead)} W${formatTokens(run.firstTurnCache.cacheWrite)}${run.firstTurnCache.cacheRead > 0 ? "（已复用父前缀）" : "（未命中父前缀）"}`
+            : "",
+          run.sessionFile ? `子会话: ${run.sessionFile}` : "子会话: (未落盘)",
+          run.sessionId ? `会话 ID: ${run.sessionId}` : "",
+          run.result ? `\n结果:\n${run.result}` : "",
+          run.error ? `\n错误:\n${run.error}` : "",
+        ].filter(Boolean);
+        this.appendSystem(detail.join("\n"));
+      },
+    });
+
+    registerCommand<TuiApp>({
+      name: "team-mode",
+      description: "切换多代理协同模式（pipeline 研发预设 / free 自由组队）",
+      kind: "builtin",
+      getArgumentCompletions: () => [
+        { value: "pipeline", label: "pipeline", description: "固定 5 角色研发协同流水线预设（推荐）" },
+        { value: "free", label: "free", description: "开放式自由组队模式（create_team / 邮箱）" },
+      ],
+      handler: async (rest) => {
+        const { getTeamMode, setTeamMode } = await import("../settings.ts");
+        const arg = rest.trim().toLowerCase();
+        if (arg === "pipeline" || arg === "free") {
+          setTeamMode(arg);
+          this.appendSystem(`多代理协同模式已切换为: ${arg === "pipeline" ? "固定研发预设 (pipeline)" : "自由组队 (free)"}`);
+        } else if (!arg) {
+          const cur = getTeamMode();
+          this.appendSystem(`当前多代理协同模式: ${cur === "pipeline" ? "固定研发预设 (pipeline)" : "自由组队 (free)"}\n用法: /team-mode <pipeline|free>`);
+        } else {
+          this.appendSystem(`未知模式: '${arg}'。可用模式: pipeline (固定研发预设), free (自由组队)`);
+        }
+      },
+    });
+
     const sessionCommands: Array<[string, string]> = [
       ["tree", "会话树导航"],
       ["fork", "Fork 当前会话"],
@@ -733,6 +855,7 @@ export class TuiApp {
       ["export", "导出会话轨迹（--analysis 整树分析 / --portable 会话移植）"],
       ["import", "导入会话文件（替换当前会话）"],
       ["compact", "手动压缩上下文（可带额外指令）"],
+      ["memory-refresh", "刷新记忆快照（立即生效，会放弃当前 prompt 缓存前缀）"],
     ];
     for (const [cmdName, desc] of sessionCommands) {
       registerCommand<TuiApp>({

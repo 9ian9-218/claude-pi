@@ -47,6 +47,41 @@ export async function handleSessionCommand(
         return;
       }
       const branch = session.getBranch();
+
+      // 子 agent 会话：从父会话的 custom entry 还原血缘清单（/resume 可复查完整轨迹）
+      const appendChildAgents = () => {
+        const childAgents = new Map<
+          string,
+          { role: string; status: string; file: string | null }
+        >();
+        for (const entry of session.getEntries()) {
+          if (entry.type !== "custom") continue;
+          const custom = entry as { customType?: string; data?: Record<string, unknown> };
+          const data = custom.data ?? {};
+          if (custom.customType === "subagent") {
+            const agentId = String(data["agentId"] ?? "");
+            if (!agentId) continue;
+            childAgents.set(agentId, {
+              role: String(data["role"] ?? "subagent"),
+              status: "running",
+              file: data["sessionFile"] ? String(data["sessionFile"]) : null,
+            });
+          } else if (custom.customType === "subagent_end") {
+            const agentId = String(data["agentId"] ?? "");
+            const existing = childAgents.get(agentId);
+            if (existing) existing.status = String(data["status"] ?? "done");
+          }
+        }
+        if (childAgents.size === 0) return;
+        const lines = ["子 agent 会话（/resume 可复查完整轨迹）："];
+        for (const [agentId, info] of childAgents) {
+          const file = info.file ? info.file.split("/").pop() : "(未落盘)";
+          const icon = info.status === "done" ? "✓" : info.status === "failed" ? "✗" : "⣾";
+          lines.push(`  ${icon} ${agentId} · ${info.role} · ${file}`);
+        }
+        app.appendMessage("system", lines.join("\n"));
+      };
+      appendChildAgents();
       if (branch.length === 0) {
         app.appendMessage("system", "会话为空。");
         return;
@@ -74,6 +109,7 @@ export async function handleSessionCommand(
           .join("\n"),
       );
       app.appendMessage("system", `已切换到 ${picked.value}（branch_summary 已记录）`);
+      appendChildAgents();
       return;
     }
     case "fork":
@@ -165,6 +201,30 @@ export async function handleSessionCommand(
       );
       return;
     }
+    case "memory-refresh": {
+      const { isMemoryEnabled } = await import("../settings.ts");
+      if (!isMemoryEnabled()) {
+        app.appendMessage("system", "记忆功能已关闭（/settings → 记忆功能）。开启后再刷新快照。");
+        return;
+      }
+      const { refreshMemorySnapshot } = await import("../memory-scope.ts");
+      const messages = session ? session.buildSessionContext().messages : [];
+      const snapshot = await refreshMemorySnapshot(messages, session?.sessionId ?? null);
+      const indexLines = snapshot.index ? snapshot.index.split("\n").length : 0;
+      const injectedNote = snapshot.injected
+        ? `相关性记忆已注入（${snapshot.injected.length} 字符）`
+        : "本次没有命中相关性记忆";
+      app.appendMessage(
+        "system",
+        [
+          "记忆快照已刷新（本会话立即生效）。",
+          "⚠ 这会开启新的 prompt 前缀：本会话此前缓存的 system/消息前缀从下一次请求起不再复用，下一次请求会重新 cache write；之后按新前缀继续累积缓存。",
+          `MEMORY.md 索引: ${indexLines} 行 · ${injectedNote}`,
+        ].join("\n"),
+      );
+      return;
+    }
+
     case "compact": {
       if (!session) {
         app.appendMessage("system", "会话已禁用（--no-session）。");

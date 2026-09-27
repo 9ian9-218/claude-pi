@@ -26,6 +26,14 @@ export interface UsageTotals {
   cost: number;
 }
 
+/** 子 agent 编队汇总（用量已并入 totals，这里只带数量用于展示） */
+export interface AgentFleetStats {
+  count: number;
+  running: number;
+  /** 子 agent 自身的用量小计（展示用；已计入 totals） */
+  usage?: UsageTotals;
+}
+
 /** footer 统计数据源：渲染时现算（由 cli 层注入，null = 无会话） */
 export interface FooterStats {
   totals: UsageTotals;
@@ -33,6 +41,8 @@ export interface FooterStats {
   latestCacheHitRate?: number;
   context?: ContextUsage;
   branch: string | null;
+  /** 子 agent 编队（有 agent 时才带） */
+  agents?: AgentFleetStats;
 }
 
 export function emptyTotals(): UsageTotals {

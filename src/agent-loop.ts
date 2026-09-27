@@ -8,12 +8,14 @@
  * tool_calls，按未知工具产生错误结果（对齐 Python validate_hook 语义）。
  * compact（04）、memory（05）、background（06）、错误恢复（03）后续接入。
  */
+import { randomUUID } from "node:crypto";
 import { sendMessages } from "./client.ts";
 import { triggerHooks } from "./hook.ts";
 import { LoopOptions } from "./loop-options.ts";
 import { executeToolCall, getOpenaiTools } from "./tool.ts";
 import { RecoveryState, sendMessagesWithRecovery, ERROR_PREFIX } from "./error-recovery.ts";
-import { loadMemories, findMemoryInjectionIndex, snapshotMessages } from "./memory.ts";
+import { snapshotMessages } from "./memory.ts";
+import { primeMemorySnapshot } from "./memory-scope.ts";
 import { RELEVANT_MEMORIES_OPEN, SUBAGENT_STOPPED_MESSAGE } from "./prompt.ts";
 import { consumePendingNotifications } from "./message-queue.ts";
 import { shouldRunBackground, startBackgroundTask } from "./background-task.ts";
@@ -50,6 +52,19 @@ export async function agentLoop(
   return runWithWorkdir(getWorkdir(), () => agentLoopInner(messages, options));
 }
 
+/**
+ * 无会话模式（--no-session / 脚本接口）的缓存路由键。
+ * provider（如 opencode zen 网关）要求请求带稳定会话标识才肯路由并复用缓存前缀；
+ * 无持久会话时退化为进程级临时 id —— 不落盘、不参与会话恢复，仅保证同进程内前缀稳定。
+ */
+let ephemeralRoutingId: string | null = null;
+function resolveRoutingSessionId(
+  opts: LoopOptions,
+  session: SessionManager | null | undefined,
+): string {
+  return opts.routingSessionId ?? session?.sessionId ?? (ephemeralRoutingId ??= randomUUID());
+}
+
 async function agentLoopInner(
   messages: ChatMessage[],
   options: AgentLoopOptions = {},
@@ -59,7 +74,8 @@ async function agentLoopInner(
   const recoveryState = new RecoveryState();
   let effectiveMaxTokens = maxTokens;
   const preCompress = snapshotMessages(messages);
-  const memoriesContent = opts.enableMemory ? await loadMemories(messages) : "";
+  // 记忆：会话级冻结快照（本会话内新写入的记忆只在下一个新会话生效）
+  await primeMemorySnapshot(messages, resolveRoutingSessionId(opts, session));
   // 06：lead 消费全局通知；teammate 定向（10 接入 agent context）
   const bgRecipient = undefined;
 
@@ -94,7 +110,8 @@ async function agentLoopInner(
     }
     // L4：自动压缩（#7 加深：门控/会话 entry/失败语义内吞，公共面一个调用）
     await maybeCompact(messages, { session, sink: opts.uiEvents });
-    const requestMessages = buildRequestMessages(messages, memoriesContent);
+    // 不再改写 messages：记忆已在 system 段（冻结），消息前缀保持逐字节稳定
+    const requestMessages = messages;
 
     // 本次 LLM 调用前的最新落盘点：中断回滚目标（ADR-0008：不落脏数据）
     const llmStartLeaf = session?.getLeafId() ?? null;
@@ -107,10 +124,13 @@ async function agentLoopInner(
       isSubagent: opts.isSubagentRole,
       preserveSystem: opts.preserveSystem,
       quietOutput: opts.quietOutput,
-      tools: getOpenaiTools(opts.isSubagentRole),
+      // fork 子 agent：工具面按父身份取，保持与父请求同前缀（cache 命中）
+      tools: getOpenaiTools(opts.cachePrefix?.role ?? opts.role),
       uiEvents: opts.uiEvents,
       thinkingLevel: opts.thinkingLevel,
       signal: opts.signal,
+      sessionId: resolveRoutingSessionId(opts, session),
+      ...(opts.cachePrefix ? { promptIdentity: opts.cachePrefix } : {}),
     });
     if (llmResult.action === "retry") {
       if (llmResult.maxTokens !== undefined) {
@@ -230,7 +250,10 @@ async function agentLoopInner(
               `Output will arrive as a <task_notification> user message ` +
               `when the task completes or stalls.`;
           } else {
-            toolResult = await executeToolCall(toolCall, args as Record<string, unknown>);
+            toolResult = await executeToolCall(toolCall, args as Record<string, unknown>, {
+              session,
+              ...(opts.uiEvents ? { uiEvents: opts.uiEvents } : {}),
+            });
             await triggerHooks("PostToolUse", block, toolResult);
           }
         }
@@ -287,18 +310,3 @@ async function agentLoopInner(
 }
 
 /** 记忆注入：在最新可注入 user 消息前插入记忆（对齐 _build_request_messages） */
-function buildRequestMessages(messages: ChatMessage[], memoriesContent: string): ChatMessage[] {
-  if (!memoriesContent) return messages;
-  const memoryTurn = findMemoryInjectionIndex(messages);
-  if (memoryTurn === null) return messages;
-  const original = messages[memoryTurn].content;
-  if (typeof original === "string" && original.startsWith(RELEVANT_MEMORIES_OPEN)) {
-    return messages;
-  }
-  const requestMessages = [...messages];
-  requestMessages[memoryTurn] = {
-    ...messages[memoryTurn],
-    content: memoriesContent + "\n\n" + original,
-  };
-  return requestMessages;
-}

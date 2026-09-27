@@ -44,6 +44,11 @@ export async function handleSettingsCommand(app: TuiApp): Promise<void> {
       description: `当前：${s.compaction?.enabled !== false ? "开启" : "关闭"}`,
     },
     {
+      value: "memory",
+      label: "记忆功能（长期记忆注入与提取）",
+      description: `当前：${s.memory?.enabled !== false ? "开启" : "关闭"}（关闭后不注入记忆、不做 Stop hook 提取）`,
+    },
+    {
       value: "config-info",
       label: "配置目录",
       description: getAgentDir(),
@@ -97,6 +102,25 @@ export async function handleSettingsCommand(app: TuiApp): Promise<void> {
       }
       writePiSettings({ compaction: { ...s.compaction, enabled: chosen.value === "on" } });
       app.appendMessage("system", `自动压缩已${chosen.value === "on" ? "开启" : "关闭"}（~/.claude-pi/settings.json）`);
+      return;
+    }
+    case "memory": {
+      const chosen = await app.showSelector(
+        [
+          { value: "on", label: "开启", description: "会话开始时冻结记忆快照注入 system；结束时提取新记忆" },
+          { value: "off", label: "关闭", description: "完全不注入、不提取记忆" },
+        ],
+        "记忆功能",
+      );
+      if (!chosen) {
+        app.appendMessage("system", "已取消。");
+        return;
+      }
+      writePiSettings({ memory: { enabled: chosen.value === "on" } });
+      app.appendMessage(
+        "system",
+        `记忆功能已${chosen.value === "on" ? "开启" : "关闭"}（~/.claude-pi/settings.json；新会话生效）`,
+      );
       return;
     }
     case "config-info":

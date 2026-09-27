@@ -34,6 +34,43 @@ class FakeTerminal implements Terminal {
 }
 
 describe("Footer 状态栏（07）", () => {
+  it("子 agent 编队段：数量与在跑数显示为 A<n> ▶<k>", () => {
+    const term = new FakeTerminal();
+    const app = new TuiApp({
+      terminal: term,
+      onQuery: () => {},
+      statusText: () => "openai/gpt-4o | /home/test/proj",
+      footerStats: () => ({
+        totals: { input: 1000, output: 200, cacheRead: 0, cacheWrite: 0, cost: 0.02 },
+        branch: "main",
+        agents: {
+          count: 3,
+          running: 1,
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+        },
+      }),
+    });
+    const line = app["footer"].render(80).join("");
+    expect(line).toContain("A3");
+    expect(line).toContain("▶1");
+  });
+
+  it("没有子 agent 时不显示编队段", () => {
+    const term = new FakeTerminal();
+    const app = new TuiApp({
+      terminal: term,
+      onQuery: () => {},
+      statusText: () => "openai/gpt-4o | /home/test/proj",
+      footerStats: () => ({
+        totals: { input: 1000, output: 200, cacheRead: 0, cacheWrite: 0, cost: 0.02 },
+        branch: "main",
+      }),
+    });
+    const line = app["footer"].render(80).join("");
+    expect(line).not.toContain("A1");
+    expect(line).not.toContain("▶");
+  });
+
   it("两行布局：第 1 行 cwd（含 git 分支），第 2 行统计 + 模型名右对齐", () => {
     const term = new FakeTerminal();
     const app = new TuiApp({

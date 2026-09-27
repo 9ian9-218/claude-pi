@@ -30,6 +30,11 @@ export interface QueryTurnOptions {
   loopOptions?: LoopOptions;
   /** 是否触发 UserPromptSubmit hook；对拍路径（print/json）传 false */
   runHooks?: boolean;
+  /**
+   * 调用方持有的消息数组（无会话的脚本模式）：agentLoop 原地追加，
+   * 调用方据此取回 turns/final。session 存在时忽略。
+   */
+  outMessages?: ChatMessage[];
 }
 
 /**
@@ -49,6 +54,9 @@ export async function runQuery(
   if (opts.session) {
     opts.session.appendMessage({ role: "user", content: query });
     messages = opts.session.buildSessionContext().messages;
+  } else if (opts.outMessages) {
+    opts.outMessages.push({ role: "user", content: query });
+    messages = opts.outMessages;
   } else {
     messages = [{ role: "user", content: query }];
   }
@@ -60,6 +68,9 @@ export async function runQuery(
       uiEvents: opts.uiEvents,
       signal: opts.signal,
       thinkingLevel: opts.thinkingLevel,
+      // 脚本模式（runHooks=false）不跑记忆 Stop 钩子：它是 fire-and-forget 的
+      // 额外 LLM 调用，既不计入 usage，输出又会晚于 console 重定向还原漏进 stdout。
+      ...(opts.runHooks === false ? { skipMemoryStopHook: true } : {}),
     });
 
   return agentLoop(messages, {

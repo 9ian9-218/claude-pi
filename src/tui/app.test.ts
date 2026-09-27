@@ -5,6 +5,7 @@ import { MessageList } from "./messages/message-list.ts";
 import { UserMessageComponent } from "./messages/user-message.ts";
 import { SystemMessageComponent } from "./messages/system-message.ts";
 import { theme } from "./theme/theme.ts";
+import { clearAgentRuns, startAgentRun } from "../agent-registry.ts";
 import type { Terminal } from "@earendil-works/pi-tui";
 
 class FakeTerminal implements Terminal {
@@ -380,6 +381,46 @@ describe("渲染行数不超过终端高度（回归：超屏导致每帧全量�
       expect(lines.length).toBeLessThanOrEqual(term.rows);
     } finally {
       app.stop();
+    }
+  });
+});
+
+describe("子 agent 折叠面板（Ctrl+A / /agents）", () => {
+  it("面板随注册表出现，Ctrl+A 展开，/agents 可查详情", async () => {
+    clearAgentRuns();
+    startAgentRun({
+      id: "scout-abcd1234",
+      role: "scout",
+      label: "scout · 调研模块",
+      sessionFile: "/tmp/claude-pi/scout-abcd1234.jsonl",
+    });
+
+    const term = new FakeTerminal();
+    const app = new TuiApp({ terminal: term, onQuery: () => {} });
+    app.tui.start();
+    try {
+      // 折叠态：一行汇总 + 一条 agent 行
+      expect(app.getAgentPanelText()).toContain("scout-abcd1234");
+      expect(app.getAgentPanelText()).toContain("Ctrl+A 展开");
+
+      // Ctrl+A 展开：任务、子会话文件可见
+      term.onInput?.("\x01");
+      expect(app.getAgentPanelText()).toContain("Ctrl+A 折叠");
+      expect(app.getAgentPanelText()).toContain("任务: scout · 调研模块");
+      expect(app.getAgentPanelText()).toContain("scout-abcd1234.jsonl");
+
+      // /agents 列表与详情
+      expect(getCommandEntry("agents")).toBeTruthy();
+      app.editor.onSubmit?.("/agents");
+      await nextTick();
+      expect(app.getChatText()).toContain("scout-abcd1234");
+
+      app.editor.onSubmit?.("/agents scout-abcd");
+      await nextTick();
+      expect(app.getChatText()).toContain("子会话: /tmp/claude-pi/scout-abcd1234.jsonl");
+    } finally {
+      app.stop();
+      clearAgentRuns();
     }
   });
 });

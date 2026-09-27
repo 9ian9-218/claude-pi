@@ -18,10 +18,12 @@ import {
   type Model,
   type ModelThinkingLevel,
   type Models,
+  type OpenAICompletionsCompat,
   type Tool as PiTool,
   type Usage,
 } from "@earendil-works/pi-ai";
 import { getSystemPrompt, updateContext } from "./prompt.ts";
+import { getAgentContext, type AgentRole } from "./teammates/context.ts";
 import { parseModelSpec, resolveCurrentModel, resetAiRuntime } from "./ai-runtime.ts";
 import { resetSettingsCache } from "./settings.ts";
 import type { UiEventSink } from "./ui-events.ts";
@@ -64,6 +66,7 @@ export interface AssistantMessage {
 export interface SendOptions {
   maxTokens?: number;
   isSubagent?: boolean;
+  role?: AgentRole;
   /** "provider/id"；缺省用当前模型（resolveCurrentModel） */
   model?: string;
   preserveSystem?: boolean;
@@ -75,6 +78,17 @@ export interface SendOptions {
   signal?: AbortSignal;
   /** 思考强度（P4 接入；off 不发 thinking 参数） */
   thinkingLevel?: ModelThinkingLevel;
+  /**
+   * 会话标识：透传给 pi-ai 作为 sessionId，供 provider 侧缓存路由
+   * （prompt_cache_key / session-affinity 头）。同一会话内必须稳定，
+   * 否则 provider 无法把后续请求路由到同一缓存副本（见 cache-stats.ts）。
+   */
+  sessionId?: string;
+  /**
+   * 系统提示身份覆盖：fork 子 agent 用它复用父会话的 system prompt
+   * （与父请求同前缀才能命中 prompt cache）；不影响 quietOutput/重试语义。
+   */
+  promptIdentity?: { role: AgentRole; isSubagent: boolean };
 }
 
 export const DEFAULT_MAX_TOKENS = 8_000;
@@ -99,6 +113,27 @@ export function setClientModels(models: Models | null): void {
 async function getModels(): Promise<Models> {
   if (_modelsOverride !== null) return _modelsOverride;
   return getModelRuntimeInstance();
+}
+
+/**
+ * 会话亲和：opencode zen 网关按会话把请求路由到固定后端副本，缺会话头时
+ * 直接拒绝（400 MissingSessionID），且无法复用该副本的缓存前缀。
+ * 其可接受的头是 `x-session-id`，对应 pi-ai 的 sessionAffinityFormat="openrouter"；
+ * 内置模型目录未为这些模型开启该开关，故在此按 baseUrl 补齐。
+ */
+function withSessionRouting(model: Model<Api>, sessionId: string | undefined): Model<Api> {
+  if (!sessionId || model.api !== "openai-completions") return model;
+  if (!model.baseUrl?.includes("opencode.ai")) return model;
+  const compat = { ...(model.compat ?? {}) } as OpenAICompletionsCompat;
+  if (compat.sendSessionAffinityHeaders === true) return model;
+  return {
+    ...model,
+    compat: {
+      ...compat,
+      sendSessionAffinityHeaders: true,
+      sessionAffinityFormat: "openrouter",
+    },
+  };
 }
 
 // 延迟导入避免循环：ai-runtime 不依赖 client
@@ -292,12 +327,18 @@ export async function sendMessages(
     uiEvents,
     signal,
     thinkingLevel,
+    sessionId,
   } = options;
   const quiet = quietOutput ?? isSubagent;
 
   if (!preserveSystem) {
     const context = updateContext({}, messages);
-    const systemPrompt = getSystemPrompt(context, { isSubagent });
+    const promptRole = options.promptIdentity?.role ?? options.role ?? getAgentContext().role;
+    const promptIsSubagent = options.promptIdentity?.isSubagent ?? isSubagent;
+    const systemPrompt = getSystemPrompt(context, {
+      isSubagent: promptIsSubagent,
+      role: promptRole,
+    });
     ensureSystem(messages, systemPrompt);
   }
 
@@ -306,11 +347,12 @@ export async function sendMessages(
   const piTools = tools ? toPiTools(tools) : undefined;
   const context = toPiContext(messages, piTools);
 
-  const stream = models.stream(model, context, {
+  const stream = models.stream(withSessionRouting(model, sessionId), context, {
     maxTokens,
     ...(piTools ? { toolChoice: "auto" as const } : {}),
     ...(thinkingLevel && thinkingLevel !== "off" ? { reasoningEffort: thinkingLevel } : {}),
     ...(signal ? { signal } : {}),
+    ...(sessionId ? { sessionId } : {}),
   });
 
   if (!quiet) {

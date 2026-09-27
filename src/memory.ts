@@ -8,6 +8,7 @@ import fs from "node:fs";
 import { parseFrontmatter } from "./frontmatter.ts";
 import path from "node:path";
 import { AGENT_ROOT, resolveAgentDirs } from "./config.ts";
+import { isMemoryEnabled } from "./settings.ts";
 import { completeText, type ChatMessage } from "./client.ts";
 import {
   formatSelectMemories,
@@ -219,7 +220,9 @@ export async function extractMemories(messages: ChatMessage[]): Promise<void> {
       }
     }
     if (count > 0) {
-      console.log(`\n\x1b[33m[Memory: extracted ${count} new memories]\x1b[0m`);
+      // stderr：本函数由 fire-and-forget 的 Stop 钩子调用，输出时机晚于
+      // print/json 模式的 console.log 重定向还原，走 stdout 会污染脚本接口
+      console.error(`\n\x1b[33m[Memory: extracted ${count} new memories]\x1b[0m`);
     }
   } catch {
     // 静默失败（对齐 Python）
@@ -253,7 +256,7 @@ export async function consolidateMemories(): Promise<void> {
       const body = typeof mem.body === "string" ? mem.body : "";
       if (desc && body) writeMemoryFile(name, memType, desc, body);
     }
-    console.log(`\n\x1b[33m[Memory: consolidated ${files.length} → ${items.length} memories]\x1b[0m`);
+    console.error(`\n\x1b[33m[Memory: consolidated ${files.length} → ${items.length} memories]\x1b[0m`);
   } catch {
     // 静默失败
   }
@@ -269,6 +272,7 @@ export function memoryStopHook(
   isSubagent: boolean,
 ): void {
   if (isSubagent || !preCompress) return;
+  if (!isMemoryEnabled()) return;
   void (async () => {
     try {
       await extractMemories(preCompress);

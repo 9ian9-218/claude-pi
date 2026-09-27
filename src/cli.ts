@@ -33,6 +33,7 @@ import {
 } from "./ai-runtime.ts";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { computeUsageTotals, latestCacheHitRate, computeContextUsage } from "./usage-stats.ts";
+import { aggregateAgentUsage } from "./agent-registry.ts";
 import { getGitBranch } from "./git-branch.ts";
 import { migrateFromPi, migrateNeeded, defaultAgentDir, legacyPiAgentDir, getAgentDir } from "./settings.ts";
 
@@ -126,6 +127,15 @@ async function runRepl(initialSession: SessionManager | null): Promise<void> {
   });
   process.on("SIGINT", () => rl.close());
 
+  // 与 TUI 一致：后台预热重模块，并顺带触发模型目录自动更新（best-effort）。
+  // 仅交互式会话需要：管道输入的一次性 REPL 里，预热的重模块加载反而会拖长
+  // 进程退出（事件循环要等 import 完成）；unref 让定时器本身不吊住退出。
+  if (process.stdin.isTTY) {
+    const t = setTimeout(() => {
+      void warmUp();
+    }, 300);
+    t.unref?.();
+  }
   process.stdout.write(USER_PROMPT);
   for await (const line of rl) {
     let query = line;
@@ -184,11 +194,28 @@ function finalContent(messages: ChatMessage[]): string | null {
   return null;
 }
 
+/** 带值的 flag：其后的值不是提示词（否则 `--mode json` 会把 "json" 当成用户输入） */
+const VALUE_FLAGS = new Set(["--mode", "--session", "--fork", "-e", "--extension"]);
+
+/** 提取位置参数作为提示词（跳过 flag 及其值） */
+function positionals(args: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (VALUE_FLAGS.has(a)) {
+      i += 1; // 跳过该 flag 的值
+      continue;
+    }
+    if (a.startsWith("-")) continue;
+    out.push(a);
+  }
+  return out;
+}
+
 /** 单次对话模式（-p 打印 / --mode json）：管道 stdin 合并进首轮提示（对齐 pi print 模式） */
 async function runSingleTurn(args: string[], mode: "print" | "json"): Promise<void> {
   const stdin = await readAllStdin();
-  const positionals = args.filter((a) => !a.startsWith("-"));
-  const query = stdin.trim() || positionals.join(" ") || "";
+  const query = stdin.trim() || positionals(args).join(" ") || "";
   if (!query) {
     console.error("Error: no input. Pipe stdin or pass a prompt argument.");
     process.exit(1);
@@ -198,21 +225,22 @@ async function runSingleTurn(args: string[], mode: "print" | "json"): Promise<vo
   if (session) {
     await runQuery(query, { session, quietOutput: true, runHooks: false });
     const messages = session.buildSessionContext().messages;
-    const final = finalContent(messages);
-    if (mode === "print") {
-      process.stdout.write((final ?? "(no output)") + "\n");
-    } else {
-      process.stdout.write(JSON.stringify({ turns: messages, final }, null, 2) + "\n");
-    }
+    emitSingleTurn(messages, mode);
+    return;
+  }
+
+  // 无会话（--no-session）：调用方持有消息数组，agentLoop 原地追加后取回
+  const messages: ChatMessage[] = [];
+  await runQuery(query, { quietOutput: true, runHooks: false, outMessages: messages });
+  emitSingleTurn(messages, mode);
+}
+
+function emitSingleTurn(messages: ChatMessage[], mode: "print" | "json"): void {
+  const final = finalContent(messages);
+  if (mode === "print") {
+    process.stdout.write((final ?? "(no output)") + "\n");
   } else {
-    const messages: ChatMessage[] = [{ role: "user", content: query }];
-    await runQuery(query, { quietOutput: true, runHooks: false });
-    const final = finalContent(messages);
-    if (mode === "print") {
-      process.stdout.write((final ?? "(no output)") + "\n");
-    } else {
-      process.stdout.write(JSON.stringify({ turns: messages, final }, null, 2) + "\n");
-    }
+    process.stdout.write(JSON.stringify({ turns: messages, final }, null, 2) + "\n");
   }
 }
 
@@ -287,10 +315,21 @@ async function runTui(
       const model = getCurrentModel();
       const entries = session.getBranch();
       const messages = session.buildSessionContext().messages;
+      // 聚合：把子 agent 子会话的用量并入 totals（footer 才是整个编队的真实成本）
+      const fleet = aggregateAgentUsage();
+      const totals = computeUsageTotals(entries);
+      totals.input += fleet.usage.input;
+      totals.output += fleet.usage.output;
+      totals.cacheRead += fleet.usage.cacheRead;
+      totals.cacheWrite += fleet.usage.cacheWrite;
+      totals.cost += fleet.usage.cost;
       return {
-        totals: computeUsageTotals(entries),
+        totals,
         latestCacheHitRate: latestCacheHitRate(entries),
         ...(model ? { context: computeContextUsage(entries, messages, model.contextWindow) } : {}),
+        ...(fleet.count > 0
+          ? { agents: { count: fleet.count, running: fleet.running, usage: fleet.usage } }
+          : {}),
         branch: getGitBranch(process.cwd()),
       };
     },
@@ -403,7 +442,33 @@ async function main(): Promise<void> {
   }
 
   initRuntime();
+
+  if (args.includes("--team-mode")) {
+    const idx = args.indexOf("--team-mode");
+    const mode = args[idx + 1]?.toLowerCase();
+    if (mode === "pipeline" || mode === "free") {
+      const { setTeamMode } = await import("./settings.ts");
+      setTeamMode(mode);
+    }
+  }
   maybeWarnMigrate();
+
+  // 模型目录刷新（脚本/CI 用；TUI 与 REPL 会在启动后自动后台刷新）
+  if (args.includes("--refresh-models")) {
+    const { refreshModelCatalog } = await import("./ai-runtime.ts");
+    const r = await refreshModelCatalog({ force: args.includes("--force") });
+    process.stderr.write(
+      [
+        r.network ? "已联网检查远端模型目录" : "离线模式（PI_OFFLINE）：仅应用本地缓存",
+        `可用模型 ${r.before} → ${r.after}`,
+        r.timedOut ? "（超时中断）" : "",
+        r.errors.length ? `错误：${r.errors.join("; ")}` : "",
+      ]
+        .filter(Boolean)
+        .join("；") + "\n",
+    );
+    process.exit(r.errors.length ? 1 : 0);
+  }
 
   // 模式分派（ADR-0003：显式模式，无自动回退）；print/json 不初始化团队/轮询器
   if (args.includes("-p") || args.includes("--print")) {

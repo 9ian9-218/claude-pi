@@ -3,7 +3,23 @@
  * 纯数据 + run；行为在领域 pack 与 ToolRuntime。
  */
 import type { OpenaiTool } from "../schema-strict.ts";
-export type ExecuteFn = (args: Record<string, unknown>) => unknown | Promise<unknown>;
+import type { SessionManager } from "../session-manager.ts";
+import type { UiEventSink } from "../ui-events.ts";
+
+/**
+ * 工具执行上下文：由 ToolRuntime 从 agent-loop 注入。
+ * - session：当前 loop 的会话（子 agent 委托据此登记血缘与子会话）
+ * - uiEvents：当前 loop 的 UI 事件通道（工具可把诊断经 notice 通道送到 TUI）
+ */
+export interface ToolExecContext {
+  session?: SessionManager | null;
+  uiEvents?: UiEventSink;
+}
+
+export type ExecuteFn = (
+  args: Record<string, unknown>,
+  ctx?: ToolExecContext,
+) => unknown | Promise<unknown>;
 
 /** Tool 核心抽象（对齐 Python frozen dataclass） */
 export class Tool {
@@ -38,8 +54,8 @@ export class Tool {
     };
   }
 
-  run(args: Record<string, unknown>): unknown {
-    return this.execute(args);
+  run(args: Record<string, unknown>, ctx?: ToolExecContext): unknown {
+    return this.execute(args, ctx);
   }
 }
 

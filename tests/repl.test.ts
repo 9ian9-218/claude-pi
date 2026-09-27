@@ -47,6 +47,8 @@ function runRepl(input: string, timeoutMs = 20000): Promise<{ code: number; stdo
           ...process.env,
           // 临时 pi 配置目录（models.json 指向 mock server）
           PI_CODING_AGENT_DIR: createTestAgentDir(mock!.baseUrl),
+          // 启动后的模型目录自动刷新不得在测试里触网（只走 mock server）
+          PI_OFFLINE: "1",
         },
       },
       (error, stdout, stderr) => {

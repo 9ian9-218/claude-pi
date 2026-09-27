@@ -23,6 +23,8 @@ export {
   getToolParameters,
   executeToolCall,
   validateArgs,
+  isToolAllowedForRole,
+  ROLE_TOOL_ALLOWLIST,
 } from "./tools/runtime.ts";
 export { checkPath, safePath } from "./tools/path.ts";
 export { RUN_BASH_TOOL } from "./tools/bash.ts";
@@ -44,6 +46,7 @@ export {
 } from "./tools/tasks-board.ts";
 export {
   SUBAGENT_TASK_TOOL,
+  DELEGATE_TASK_TOOL,
   SPAWN_TEAMMATE_TOOL,
   CREATE_TEAM_TOOL,
   SEND_MESSAGE_TOOL,

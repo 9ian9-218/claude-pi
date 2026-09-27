@@ -38,9 +38,15 @@ export function warmUp(): Promise<void> {
         // pi-ai 模块树（含 typebox / zod 等重依赖）
         await import("@earendil-works/pi-ai");
         // 模型运行时（pi-coding-agent，最大模块树；create 会解析凭据/模型）
-        const { getModelRuntime } = await import("./ai-runtime.ts");
+        const { getModelRuntime, refreshModelCatalog } = await import("./ai-runtime.ts");
         await getModelRuntime();
         warmed = true;
+        // 模型目录自动更新：后台联网拉 pi.dev overlay，让新模型/新价格无需手工
+        // 声明即可用。不 await（不拖慢启动），provider 侧 4 小时节流保证多数启动
+        // 不发请求；结果持久化到 models-store.json，离线启动也生效。
+        void refreshModelCatalog().catch(() => {
+          // 网络不可用等——静默，下次启动或 /refresh-models 再试
+        });
       } catch {
         // 无模型配置 / 凭据缺失等——静默；查询路径的懒加载会再抛给调用方
       }

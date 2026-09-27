@@ -334,3 +334,70 @@ describe("Resume 列表元数据（回归：只有编号无内容/时间）", ()
     }
   });
 });
+
+describe("/memory-refresh", () => {
+  it("刷新记忆快照并明确提示放弃当前缓存前缀", async () => {
+    const memDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-mem-refresh-"));
+    const { setMemoryDir } = await import("../memory.ts");
+    const { resetMemorySnapshots } = await import("../memory-scope.ts");
+    setMemoryDir(memDir);
+    resetMemorySnapshots();
+    try {
+      const session = SessionManager.create(cwd);
+      session.appendMessage({ role: "user", content: "记住：这个项目用 vitest" });
+      const ref = { current: session };
+      const term = new FakeTerminal();
+      const app = new TuiApp({
+        terminal: term,
+        onQuery: () => {},
+        onSessionCommand: (n, r, a) => handleSessionCommand(a, ref, n, r),
+      });
+      app.tui.start();
+      app.editor.onSubmit?.("/memory-refresh");
+      await new Promise((r) => setTimeout(r, 60));
+
+      const chat = app.getChatText();
+      expect(chat).toContain("记忆快照已刷新");
+      expect(chat).toContain("不再复用");
+      expect(chat).toContain("MEMORY.md 索引");
+      app.stop();
+    } finally {
+      resetMemorySnapshots();
+      fs.rmSync(memDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("/tree 子 agent 会话清单", () => {
+  it("父会话登记的 subagent entry 会列在会话树里", async () => {
+    const session = SessionManager.create(cwd);
+    session.appendMessage({ role: "user", content: "父任务" });
+    session.appendCustom("subagent", {
+      agentId: "scout-abcd1234",
+      role: "scout",
+      sessionId: "sess-child",
+      sessionFile: "/tmp/child/1790_scout.jsonl",
+    });
+    session.appendCustom("subagent_end", { agentId: "scout-abcd1234", status: "done" });
+
+    const ref = { current: session };
+    const term = new FakeTerminal();
+    const app = new TuiApp({
+      terminal: term,
+      onQuery: () => {},
+      onSessionCommand: (n, r, a) => handleSessionCommand(a, ref, n, r),
+    });
+    app.tui.start();
+    app.editor.onSubmit?.("/tree");
+    await nextTick();
+    // 关闭选择器（默认选中第一条）
+    term.onInput?.("\r");
+    await new Promise((r) => setTimeout(r, 100));
+
+    const chat = app.getChatText();
+    expect(chat).toContain("子 agent 会话");
+    expect(chat).toContain("scout-abcd1234");
+    expect(chat).toContain("1790_scout.jsonl");
+    app.stop();
+  });
+});

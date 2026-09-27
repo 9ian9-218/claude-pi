@@ -32,6 +32,14 @@ describe("checkDenyList（S2）", () => {
   it("普通命令通过", () => {
     expect(checkDenyList("ls -la")).toBeNull();
   });
+
+  it("删除绝对路径子目录不误判为 `rm -rf /`", () => {
+    // 回归：子串匹配曾把任何绝对路径删除都报成 "'rm -rf /' is on the deny list"
+    expect(checkDenyList("rm -rf /tmp/build-cache")).toBeNull();
+    expect(checkDenyList("rm -rf /home/user/out")).toBeNull();
+    expect(checkDenyList("rm -rf /")).toContain("deny list");
+    expect(checkDenyList("rm -rf / ; echo done")).toContain("deny list");
+  });
 });
 
 describe("checkRules（S2）", () => {

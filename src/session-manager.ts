@@ -311,6 +311,15 @@ export class SessionManager {
     return this.concurrent;
   }
 
+  /**
+   * 会话 id（header.id；内存会话同样有）。
+   * 供 provider 侧缓存路由作稳定标识：同一会话跨进程续接时 id 不变，
+   * 缓存前缀才能持续命中（见 client.withSessionRouting）。
+   */
+  get sessionId(): string {
+    return this.header.id;
+  }
+
   // ── 静态构造 ────────────────────────────────────────────────────────────
 
   static create(cwd: string, sessionDir?: string): SessionManager {
@@ -736,6 +745,47 @@ export class SessionManager {
       mgr.appendRawEntry(entry);
     }
     return mgr;
+  }
+
+  /**
+   * 子会话：新建独立会话文件 + 血缘父会话 + 可选会话名。
+   * 子 agent（subagent / 5 个专职角色）用它落盘完整轨迹，父会话据此接入会话树。
+   */
+  static createChild(cwd: string, parentFile: string | null, name?: string): SessionManager {
+    const mgr = SessionManager.create(cwd);
+    if (parentFile) mgr.setParentSession(parentFile);
+    if (name) mgr.appendSessionInfo(name);
+    return mgr;
+  }
+
+  /**
+   * fork 子会话：把父会话当前分支整段复制到新文件（血缘指向父会话）。
+   * 用途：一次性 subagent 复用父会话前缀（system + 工具面 + 历史），
+   * 从而命中 provider 的 prompt cache；自身新增的轮次追加在副本之上。
+   */
+  static forkChild(parent: SessionManager, name?: string): SessionManager {
+    const mgr = parent.createBranchedSession(parent.getLeafId() ?? undefined);
+    mgr.setParentSession(parent.getSessionFile());
+    if (name) mgr.appendSessionInfo(name);
+    return mgr;
+  }
+
+  /**
+   * 设置/更新血缘父会话并落盘。
+   * header 不在 append 路径上（create 时已写入首行），故需单独重写首行。
+   */
+  setParentSession(parentFile: string | null): void {
+    if (parentFile) this.header.parentSession = parentFile;
+    else delete this.header.parentSession;
+    this.rewriteHeader();
+  }
+
+  private rewriteHeader(): void {
+    if (!this.filePath) return;
+    const raw = fs.readFileSync(this.filePath, "utf8");
+    const lines = raw.split("\n");
+    lines[0] = JSON.stringify(this.header);
+    fs.writeFileSync(this.filePath, lines.join("\n"));
   }
 
   // ── 元数据 ──────────────────────────────────────────────────────────────
