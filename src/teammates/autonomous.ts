@@ -78,9 +78,13 @@ export async function idlePoll(options: IdlePollOptions): Promise<IdleResult> {
       lockedPrint(`  \x1b[33m[idle] ${agentName} claim failed: ${result}\x1b[0m`);
     }
 
-    await new Promise((r) => setTimeout(r, pollIntervalMs));
+    // 空闲等待不钉住事件循环：headless（-p / --mode json）派生 teammate 后，
+    // 主流程结束就该正常退出，不被 30 分钟空闲定时器挂住（TUI 由 stdin 保持事件循环）。
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, pollIntervalMs).unref();
+    });
   }
 
-  lockedPrint(`  \x1b[31m[idle] ${agentName} timeout (${TEAMMATE_IDLE_TIMEOUT}s)\x1b[0m`);
+  lockedPrint(`  \x1b[31m[idle] ${agentName} timeout (${Math.round(idleTimeoutMs / 1000)}s)\x1b[0m`);
   return "timeout";
 }

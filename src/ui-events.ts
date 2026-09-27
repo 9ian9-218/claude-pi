@@ -39,6 +39,8 @@ export interface NoticeUiEvent {
 export interface TurnEndEvent {
   stopReason?: string;
   errorMessage?: string;
+  /** 本回合 token/成本：无 session 的 agent（如 teammate）据此自行累计用量 */
+  usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
   /** 缓存诊断：本回合相对上轮应命中却重计费（对齐 pi cache-stats） */
   cacheMiss?: {
     missedTokens: number;

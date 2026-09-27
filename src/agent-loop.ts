@@ -177,9 +177,22 @@ async function agentLoopInner(
         };
       }
     }
+    const turnUsage = message.usage;
     opts.uiEvents?.emit("turnEnd", {
       stopReason: message.stopReason,
       errorMessage: message.errorMessage,
+      // 无 session 的 agent（teammate）靠这个字段累计用量
+      ...(turnUsage
+        ? {
+            usage: {
+              input: turnUsage.input,
+              output: turnUsage.output,
+              cacheRead: turnUsage.cacheRead,
+              cacheWrite: turnUsage.cacheWrite,
+              cost: turnUsage.cost?.total ?? 0,
+            },
+          }
+        : {}),
       ...(cacheMiss ? { cacheMiss } : {}),
     });
     // REPL/console 模式（无 UI 事件通道）：直接提示

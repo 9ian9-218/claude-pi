@@ -20,6 +20,7 @@ import { createTeam, ensureTeammateForSpawn } from "./team-helpers.ts";
 import { formatTeammateMessages, isStructuredProtocolMessage } from "./message-types.ts";
 import { pollOnce, consumePendingInjections, clearPollerQueues } from "./poller.ts";
 import { spawnTeammate, requestTeammateShutdown, isTeammateActive, clearActiveTeammates } from "./spawn.ts";
+import { aggregateAgentUsage, clearAgentRuns, getAgentRun } from "../agent-registry.ts";
 
 let dir: string;
 let mock: MockOpenAI;
@@ -32,6 +33,7 @@ beforeEach(async () => {
   setTeamsDir(dir);
   clearPollerQueues();
   clearActiveTeammates();
+  clearAgentRuns();
   installBuiltinHooks();
 });
 
@@ -151,6 +153,92 @@ describe("spawn 端到端（S10）", () => {
     );
   }, 40000);
 
+  it("spawn 后登记到运行注册表，工作回合用量计入编队聚合", async () => {
+    createTeam("epsilon", TEAM_LEAD_NAME);
+    mock.always(() => ({ kind: "sse", chunks: [{ content: "完成", finishReason: "stop" }] }));
+
+    spawnTeammate({ name: "counter", role: "worker", prompt: "统计一下", teamName: "epsilon" });
+    const runKey = "counter@epsilon";
+
+    await vi.waitFor(
+      () => {
+        const run = getAgentRun(runKey);
+        expect(run?.role).toBe("teammate");
+        expect(run?.turns ?? 0).toBeGreaterThanOrEqual(1);
+        expect(run?.usage?.input ?? 0).toBeGreaterThan(0);
+      },
+      { timeout: 15000, interval: 50 },
+    );
+
+    // 注册表用量进 footer / /agents 的编队口径
+    const agg = aggregateAgentUsage();
+    expect(agg.count).toBeGreaterThanOrEqual(1);
+    expect(agg.running).toBeGreaterThanOrEqual(1);
+    expect(agg.usage.input).toBeGreaterThan(0);
+    expect(getAgentRun(runKey)?.status).toBe("running");
+  }, 30000);
+
+  it("空闲超过上限 → 记为结束、释放 teammate 并记录原因", async () => {
+    createTeam("zeta", TEAM_LEAD_NAME);
+    mock.always(() => ({ kind: "sse", chunks: [{ content: "ok", finishReason: "stop" }] }));
+
+    spawnTeammate({
+      name: "sleeper",
+      role: "worker",
+      prompt: "干一件小事",
+      teamName: "zeta",
+      idleTimeoutMs: 300,
+      idlePollIntervalMs: 50,
+    });
+    const runKey = "sleeper@zeta";
+
+    // 工作回合结束后进入 idle
+    await vi.waitFor(
+      () => {
+        expect(getAgentRun(runKey)?.phase).toBe("idle");
+      },
+      { timeout: 15000, interval: 50 },
+    );
+
+    // 空闲超时 → 运行结束（不再 running），active 表释放
+    await vi.waitFor(
+      () => {
+        expect(getAgentRun(runKey)?.status).toBe("done");
+      },
+      { timeout: 15000, interval: 50 },
+    );
+    expect(isTeammateActive("zeta", "sleeper")).toBe(false);
+    expect(getAgentRun(runKey)?.endReason ?? "").toContain("空闲超过");
+    expect(getAgentRun(runKey)?.endedAt).toBeDefined();
+    expect(getAgentRun(runKey)?.phase).toBeUndefined();
+  }, 40000);
+
+  it("同名重新 spawn 保留上一次记录（运行 id 加后缀）", async () => {
+    createTeam("eta", TEAM_LEAD_NAME);
+    mock.always(() => ({ kind: "sse", chunks: [{ content: "ok", finishReason: "stop" }] }));
+
+    spawnTeammate({ name: "again", role: "worker", prompt: "第一轮", teamName: "eta", idleTimeoutMs: 200, idlePollIntervalMs: 50 });
+    await vi.waitFor(
+      () => {
+        expect(getAgentRun("again@eta")?.status).toBe("done");
+      },
+      { timeout: 15000, interval: 50 },
+    );
+
+    spawnTeammate({ name: "again", role: "worker", prompt: "第二轮", teamName: "eta", idleTimeoutMs: 200, idlePollIntervalMs: 50 });
+    // 旧记录仍在，新纪录用带后缀的 id
+    expect(getAgentRun("again@eta")?.label ?? "").toContain("第一轮");
+    expect(getAgentRun("again@eta·2")).not.toBeNull();
+
+    // 等第二个也空闲结束，避免测试收尾时仍有后台协程在跑
+    await vi.waitFor(
+      () => {
+        expect(getAgentRun("again@eta·2")?.status).toBe("done");
+      },
+      { timeout: 15000, interval: 50 },
+    );
+    expect(isTeammateActive("eta", "again")).toBe(false);
+  }, 40000);
   it("重复 spawn 同一名字被拒", () => {
     createTeam("delta", TEAM_LEAD_NAME);
     const r1 = spawnTeammate({ name: "dup", role: "r", prompt: "p", teamName: "delta" });

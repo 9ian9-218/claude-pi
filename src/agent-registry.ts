@@ -47,12 +47,19 @@ export interface AgentRun {
   /** 该 agent 子会话累计用量（token/成本） */
   usage?: AgentUsage;
   /**
+   * 持久 agent（teammate）的运行阶段：working=正在执行任务，idle=空闲待命。
+   * 一次性 subagent 不设置（其生命周期只有 running → done）。
+   */
+  phase?: "working" | "idle";
+  /**
    * 首轮（第一次 LLM 调用）的缓存读写：cacheRead > 0 即说明复用了父会话前缀。
    * 这是「fork 是否真的命中 prompt cache」的现场证据。
    */
   firstTurnCache?: { cacheRead: number; cacheWrite: number };
   /** 最终交付物（截断） */
   result?: string;
+  /** 结束原因（如「空闲超过 30 分钟，已结束」）；一次性 subagent 可不填 */
+  endReason?: string;
   error?: string;
 }
 
@@ -147,14 +154,21 @@ export function appendAgentText(id: string, delta: string): void {
 
 export function finishAgentRun(
   id: string,
-  outcome: { status: Exclude<AgentRunStatus, "running">; result?: string; error?: string },
+  outcome: {
+    status: Exclude<AgentRunStatus, "running">;
+    result?: string;
+    error?: string;
+    reason?: string;
+  },
 ): AgentRun | null {
   const run = runs.get(id);
   if (!run) return null;
   run.status = outcome.status;
   run.endedAt = Date.now();
+  delete run.phase;
   if (outcome.result !== undefined) run.result = clip(outcome.result, AGENT_RESULT_PREVIEW);
   if (outcome.error !== undefined) run.error = clip(outcome.error, AGENT_RESULT_PREVIEW);
+  if (outcome.reason !== undefined) run.endReason = outcome.reason;
   notify();
   return run;
 }

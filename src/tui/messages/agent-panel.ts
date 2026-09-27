@@ -95,7 +95,7 @@ export class AgentPanelComponent extends Container {
     const failed = runs.filter((r) => r.status === "failed").length;
     const parts = [`运行 ${running}`, `完成 ${done}`];
     if (failed > 0) parts.push(`失败 ${failed}`);
-    const head = `${runs.length} 个子 agent（${parts.join(" / ")}）`;
+    const head = `${runs.length} 个 agent（${parts.join(" / ")}）`;
     const hint = this.expanded ? "Ctrl+A 折叠" : "Ctrl+A 展开";
     const marker = this.expanded ? "▾" : "▸";
     const lines = [theme.bold(`${marker} ${head} · ${hint}`)];
@@ -114,8 +114,10 @@ export class AgentPanelComponent extends Container {
     const icon = STATUS_ICON[run.status] ?? "•";
     const meta = `${run.turns} 轮 / ${run.toolCalls} 工具`;
     const tool = run.lastTool ? ` · ${run.lastTool}` : "";
+    // 持久 agent（teammate）才有阶段：working / idle；一次性 subagent 为空
+    const phase = run.phase === "idle" ? " · 空闲" : run.phase === "working" ? " · 执行中" : "";
     const cost = run.usage && run.usage.cost > 0 ? ` · $${run.usage.cost.toFixed(4)}` : "";
-    const title = `${icon} ${run.id} · ${meta}${tool}${cost}`;
+    const title = `${icon} ${run.id} · ${meta}${tool}${cost}${phase}`;
 
     const styled =
       run.status === "failed"
@@ -153,6 +155,9 @@ export class AgentPanelComponent extends Container {
     }
     if (run.lastText) {
       lines.push(theme.fg("dim", `    最近: ${shorten(run.lastText, PREVIEW_CHARS)}`));
+    }
+    if (run.endReason) {
+      lines.push(theme.fg("dim", `    结束: ${shorten(run.endReason, PREVIEW_CHARS)}`));
     }
     if (run.result) {
       lines.push(theme.fg("dim", `    结果: ${shorten(run.result, RESULT_CHARS)}`));

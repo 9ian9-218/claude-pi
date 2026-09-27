@@ -28,7 +28,7 @@ describe("子 agent 折叠面板（Ctrl+A）", () => {
     startAgentRun({ id: "scout-1a2b", role: "scout", label: "scout · 调研模块" });
     updateAgentRun("scout-1a2b", { turns: 2, toolCalls: 3, lastTool: "grep" });
     const text = panel.getText();
-    expect(text).toContain("1 个子 agent");
+    expect(text).toContain("1 个 agent");
     expect(text).toContain("运行 1");
     expect(text).toContain("Ctrl+A 展开");
     expect(text).toContain("scout-1a2b");
@@ -117,6 +117,24 @@ describe("子 agent 面板：用量聚合展示", () => {
     panel.dispose();
   });
 
+  it("teammate（持久 agent）显示运行阶段与结束原因", () => {
+    const panel = makePanel();
+    startAgentRun({ id: "alice@default", role: "teammate", label: "teammate · alice · 梳理接口" });
+    updateAgentRun("alice@default", { phase: "working", turns: 2, toolCalls: 4 });
+    expect(panel.getText()).toContain("执行中");
+
+    updateAgentRun("alice@default", { phase: "idle" });
+    expect(panel.getText()).toContain("空闲");
+
+    panel.toggle();
+    finishAgentRun("alice@default", { status: "done", reason: "空闲超过 30 分钟，已结束" });
+    const expanded = panel.getText();
+    expect(expanded).toContain("结束: 空闲超过 30 分钟，已结束");
+    // 结束后阶段无意义，不再展示
+    const row = expanded.split("\n").find((l) => l.includes("alice@default")) ?? "";
+    expect(row).not.toContain("空闲");
+    panel.dispose();
+  });
   it("没有用量时不显示成本", () => {
     const panel = makePanel();
     startAgentRun({ id: "scout-1", role: "scout", label: "scout" });

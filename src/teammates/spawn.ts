@@ -4,7 +4,12 @@
  * WORK → IDLE → SHUTDOWN 循环（async 协程替代线程）；
  * idle 阶段归 11（autonomous），10 中空闲等待 + shutdown 检查。
  */
-import { TEAM_LEAD_NAME, TEAMMATE_WORK_MAX_TURNS, getTeamsDir } from "./constants.ts";
+import {
+  TEAM_LEAD_NAME,
+  TEAMMATE_IDLE_TIMEOUT,
+  TEAMMATE_WORK_MAX_TURNS,
+  getTeamsDir,
+} from "./constants.ts";
 import { runWithAgentContext } from "./context.ts";
 import { dispatchInboxBatch, maybeReinjectIdentity } from "./inbox-dispatch.ts";
 import { idlePoll } from "./autonomous.ts";
@@ -16,6 +21,15 @@ import { SUBAGENT_IDENTITY } from "../prompt.ts";
 import { LoopOptions } from "../loop-options.ts";
 import { AgentProfile, profileToContext } from "../agent-profile.ts";
 import { lockedPrint } from "../output-queue.ts";
+import { UiEventSink } from "../ui-events.ts";
+import {
+  appendAgentText,
+  emptyAgentUsage,
+  finishAgentRun,
+  getAgentRun,
+  startAgentRun,
+  updateAgentRun,
+} from "../agent-registry.ts";
 
 interface ActiveTeammate {
   runId: number;
@@ -53,8 +67,13 @@ async function runTeammateLoop(options: {
   color: string;
   initialPrompt: string;
   runId: number;
+  /** 注册表运行 id：面板与用量聚合的键（teammate 是持久 agent，非一次性 subagent） */
+  runKey: string;
+  /** 测试注入：空闲上限与轮询间隔；缺省取常量（30 分钟 / 5 秒） */
+  idleTimeoutMs?: number;
+  idlePollIntervalMs?: number;
 }): Promise<void> {
-  const { name, role, teamName, color, initialPrompt, runId } = options;
+  const { name, role, teamName, color, initialPrompt, runId, runKey } = options;
   const profile = AgentProfile.teammate({
     teamName,
     agentName: name,
@@ -66,8 +85,38 @@ async function runTeammateLoop(options: {
 
   const { agentLoop } = await import("../agent-loop.ts");
 
+  // 可观测性：teammate 的事件只喂注册表（TUI 折叠面板 / /agents），不占 lead 聊天区。
+  // 它是持久 agent（WORK → IDLE → … 直到 shutdown / 空闲超时），故用量按回合累计。
+  const agentSink = new UiEventSink();
+  const usage = emptyAgentUsage();
+  let turns = 0;
+  let toolCalls = 0;
+  agentSink.on("stream", (delta) => {
+    if (delta.kind === "text") appendAgentText(runKey, delta.delta);
+  });
+  agentSink.on("tool", (event) => {
+    if (event.phase === "start") {
+      toolCalls += 1;
+      updateAgentRun(runKey, { lastTool: event.name, toolCalls });
+    }
+  });
+  agentSink.on("turnEnd", (event) => {
+    turns += 1;
+    if (event.usage) {
+      usage.input += event.usage.input;
+      usage.output += event.usage.output;
+      usage.cacheRead += event.usage.cacheRead;
+      usage.cacheWrite += event.usage.cacheWrite;
+      usage.cost += event.usage.cost;
+    }
+    updateAgentRun(runKey, { turns, usage: { ...usage } });
+  });
+
+  const idleTimeoutMs = options.idleTimeoutMs ?? TEAMMATE_IDLE_TIMEOUT * 1000;
+  const idleMinutes = Math.max(1, Math.round(idleTimeoutMs / 60000));
+
   try {
-    await runWithAgentContext(ctx, async () => {
+    const endReason = await runWithAgentContext(ctx, async (): Promise<string> => {
       const system =
         teammateIdentity(name, role, teamName) +
         "\n\n" +
@@ -81,14 +130,15 @@ async function runTeammateLoop(options: {
 
       while (!isShutdownRequested(teamName, name, runId)) {
         const dispatch = await dispatchInboxBatch({ agentName: name, teamName, messages });
-        if (dispatch.shouldShutdown) break;
+        if (dispatch.shouldShutdown) return "收到 shutdown 请求，已结束";
 
         maybeReinjectIdentity(messages, { name, role, teamName });
 
+        updateAgentRun(runKey, { phase: "working" });
         const result = await agentLoop(messages, {
           maxTurn: TEAMMATE_WORK_MAX_TURNS,
           maxTokens: 6000,
-          loopOptions: LoopOptions.fromProfile(profile),
+          loopOptions: LoopOptions.fromProfile(profile, { uiEvents: agentSink }),
         });
         if (result) {
           await sendPlainMessage({
@@ -98,30 +148,58 @@ async function runTeammateLoop(options: {
             teamName,
             color,
           });
+          updateAgentRun(runKey, { result });
           lockedPrint(`  \x1b[36m[${name}]\x1b[0m work round done — report sent to lead inbox`);
         }
 
         await sendIdleNotification({ agentName: name, teamName });
 
         // idle 阶段：收件箱 + 看板 auto-claim（autonomous）
+        updateAgentRun(runKey, { phase: "idle" });
         const idleResult = await idlePoll({
           agentName: name,
           teamName,
           messages,
           role,
           isShutdownRequested: () => isShutdownRequested(teamName, name, runId),
-          pollIntervalMs: 200, // 测试友好（默认 5s 由常量控制）
+          ...(options.idlePollIntervalMs !== undefined
+            ? { pollIntervalMs: options.idlePollIntervalMs }
+            : {}),
+          idleTimeoutMs,
         });
-        if (idleResult === "shutdown" || idleResult === "timeout") break;
+        if (idleResult === "shutdown") return "收到 shutdown 请求，已结束";
+        if (idleResult === "timeout") {
+          // 空闲超限即视为该 teammate 结束：停止运行循环、从运行表移除
+          const reason = `空闲超过 ${idleMinutes} 分钟，已结束`;
+          lockedPrint(`  \x1b[33m[teammate] ${name} ${reason}\x1b[0m`);
+          return reason;
+        }
       }
+      return "已结束";
     });
+
+    const run = getAgentRun(runKey);
+    finishAgentRun(runKey, {
+      status: "done",
+      reason: endReason,
+      // 已有交付物时保留交付物，否则用结束原因占位
+      ...(run?.result === undefined ? { result: endReason } : {}),
+    });
+  } catch (err) {
+    finishAgentRun(runKey, { status: "failed", error: String((err as Error)?.message ?? err) });
   } finally {
-    await notifyTeammateTerminated({ agentName: name, teamName });
+    // 收尾本身失败（例如团队目录已被移除）不得升级为未处理拒绝
+    try {
+      await notifyTeammateTerminated({ agentName: name, teamName });
+    } catch (err) {
+      lockedPrint(
+        `  \x1b[33m[teammate] ${name} 终止广播失败：${String((err as Error)?.message ?? err)}\x1b[0m`,
+      );
+    }
     activeTeammates.delete(teammateKey(teamName, name));
     lockedPrint(`  \x1b[32m[teammate] ${name} stopped\x1b[0m`);
   }
 }
-
 function isShutdownRequested(teamName: string, name: string, runId: number): boolean {
   const entry = activeTeammates.get(teammateKey(teamName, name));
   return !entry || entry.runId !== runId;
@@ -133,6 +211,9 @@ export function spawnTeammate(options: {
   prompt: string;
   teamName: string;
   agentType?: string;
+  /** 测试注入：覆盖空闲上限与轮询间隔 */
+  idleTimeoutMs?: number;
+  idlePollIntervalMs?: number;
 }): string {
   const { name, role, prompt, teamName, agentType = "general-purpose" } = options;
   if (readTeamConfig(teamName) === null) {
@@ -159,7 +240,34 @@ export function spawnTeammate(options: {
   };
   activeTeammates.set(key, entry);
 
-  void runTeammateLoop({ name, role, teamName, color, initialPrompt: prompt, runId });
+  // 可观测性：teammate 是持久 agent，登记进运行注册表（面板 / /agents / 用量聚合）。
+  // 同团队同名重新 spawn 时加后缀，保留上一次运行的记录与用量，避免 totals 倒退。
+  const baseRunKey = `${name}@${teamName}`;
+  let runKey = baseRunKey;
+  for (let n = 2; getAgentRun(runKey); n++) runKey = `${baseRunKey}·${n}`;
+  startAgentRun({
+    id: runKey,
+    role: "teammate",
+    label: `teammate · ${name} · ${prompt.slice(0, 40)}`,
+  });
+
+  void runTeammateLoop({
+    name,
+    role,
+    teamName,
+    color,
+    initialPrompt: prompt,
+    runId,
+    runKey,
+    ...(options.idleTimeoutMs !== undefined ? { idleTimeoutMs: options.idleTimeoutMs } : {}),
+    ...(options.idlePollIntervalMs !== undefined
+      ? { idlePollIntervalMs: options.idlePollIntervalMs }
+      : {}),
+  }).catch((err) => {
+    lockedPrint(
+      `  \x1b[31m[teammate] ${name} 运行异常：${String((err as Error)?.message ?? err)}\x1b[0m`,
+    );
+  });
 
   lockedPrint(`  \x1b[36m[teammate] ${name} spawned (${color}) on team '${teamName}'\x1b[0m`);
   return (
