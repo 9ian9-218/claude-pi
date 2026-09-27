@@ -145,6 +145,23 @@ export function readPiSettings(): PiSettings {
           },
         }
       : {}),
+    // team / memory 此前漏解析：getTeamMode() 与 isMemoryEnabled() 永远拿默认值，
+    // 用户在 /settings 里按下的开关读不回来（写下去的值也读不到）
+    ...(parsed["team"] !== undefined
+      ? {
+          team: {
+            mode:
+              (parsed["team"] as Record<string, unknown>)["mode"] === "free" ? "free" : "pipeline",
+          },
+        }
+      : {}),
+    ...(parsed["memory"] !== undefined
+      ? {
+          memory: {
+            enabled: (parsed["memory"] as Record<string, unknown>)["enabled"] !== false,
+          },
+        }
+      : {}),
   };
   _cache = settings;
   return settings;
@@ -165,12 +182,15 @@ export function resetSettingsCache(): void {
 
 /** 把设置合并写入全局 settings.json（保留既有键），成功后清缓存 */
 export function writePiSettings(patch: Partial<PiSettings>): boolean {
-  const current = readPiSettings();
-  const merged: Record<string, unknown> = {};
-  // patch 键级合并（retry/compaction 按完整对象替换，避免深层 merge 复杂度）
-  for (const key of Object.keys(current) as Array<keyof PiSettings>) {
-    merged[key] = current[key];
+  // 以磁盘上的原始 JSON 为底稿：readPiSettings 是手写白名单解析，用它当底稿会把
+  // 解析器不认识的键（含未来新增设置）从文件里抹掉
+  let merged: Record<string, unknown> = {};
+  try {
+    merged = JSON.parse(fs.readFileSync(getSettingsPath(), "utf8")) as Record<string, unknown>;
+  } catch {
+    merged = {};
   }
+  // patch 键级合并（retry/compaction 按完整对象替换，避免深层 merge 复杂度）
   for (const [k, v] of Object.entries(patch)) {
     if (v !== undefined) merged[k] = v;
   }
