@@ -344,6 +344,16 @@ async function agentLoopInner(
     }
     return null;
   }
+  // 轮数上限耗尽：此前是静默 return null，用户分不清「干完了」还是「撞上限」
+  if (!opts.exitOnFinalContent) {
+    const notice =
+      `[已用完单回合 ${maxTurn} 轮工具调用上限，本轮停止。` +
+      `回复「继续」我会接着做；若任务已完成可忽略这条。]`;
+    const msg: ChatMessage = { role: "assistant", content: notice };
+    messages.push(msg);
+    session?.appendMessage(msg);
+    emitNoticeOrLog(opts.uiEvents, `  \x1b[33m[turn] ${notice}\x1b[0m`);
+  }
   return null;
 }
 

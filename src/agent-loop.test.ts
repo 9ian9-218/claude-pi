@@ -58,10 +58,15 @@ describe("agentLoop（S2）", () => {
     }));
     const messages: ChatMessage[] = [{ role: "user", content: "go" }];
     await agentLoop(messages, { maxTurn: 3, loopOptions: new LoopOptions({ quietOutput: true }) });
-    // 1 system + 1 user + 3 × (1 assistant + 1 tool error)
-    expect(messages).toHaveLength(8);
+    // 1 system + 1 user + 3 × (1 assistant + 1 tool error) + 1 条「可继续」提示
+    expect(messages).toHaveLength(9);
     expect(messages[3].role).toBe("tool");
     expect(String(messages[3].content)).toContain("Unknown tool: ghost_tool");
+    // 撞上限不再静默：末尾给出可继续的提示（用户回「继续」即可接着做）
+    const last = messages[messages.length - 1];
+    expect(last.role).toBe("assistant");
+    expect(String(last.content)).toContain("轮工具调用上限");
+    expect(String(last.content)).toContain("继续");
   });
 
   it("Stop hook 返回 force 时追加 user 消息并继续循环", async () => {

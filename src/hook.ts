@@ -27,12 +27,41 @@ export function registerHook(event: string, callback: HookCallback): () => void 
   };
 }
 
+/** hook 调用超时：扩展 hook 卡住不该让整个回合永远不动（CLAUDE_PI_HOOK_TIMEOUT_MS 可覆盖） */
+export function hookTimeoutMs(): number {
+  const raw = Number.parseInt(process.env["CLAUDE_PI_HOOK_TIMEOUT_MS"] ?? "", 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 30_000;
+}
+
+/** 调用单个 hook，超时即拒绝（同步抛错也会被转成 rejected promise） */
+async function callHook(
+  callback: HookCallback,
+  args: unknown[],
+  timeoutMs: number,
+): Promise<unknown> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => callback(...args)),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`超过 ${timeoutMs}ms 未返回`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 export async function triggerHooks(event: string, ...args: unknown[]): Promise<unknown> {
   const callbacks = HOOKS[event] ?? [];
+  const timeoutMs = hookTimeoutMs();
   for (const callback of callbacks) {
     let result: unknown;
     try {
-      result = await callback(...args);
+      result = await callHook(callback, args, timeoutMs);
     } catch (e) {
       // 扩展 hook 抛错（ADR-0006 无信任门）不该带走整个会话，也不该挡住后续 hook
       console.log(

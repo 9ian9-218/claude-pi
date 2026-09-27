@@ -30,6 +30,26 @@ afterEach(async () => {
 const quiet = new LoopOptions({ quietOutput: true });
 
 describe("agentLoop 工具链（S4）", () => {
+  it("轮数上限耗尽时写入可继续的提示（不再静默停下）", async () => {
+    // 模型每轮都调工具：maxTurn=1 必然耗尽
+    mock.always(() => ({
+      kind: "sse",
+      chunks: [
+        {
+          toolCalls: [{ index: 0, id: "call_loop", name: "todo_write", arguments: '{"todos":[]}' }],
+          finishReason: "tool_calls",
+        },
+      ],
+    }));
+    await runWithWorkdir(ws, async () => {
+      const messages: ChatMessage[] = [{ role: "user", content: "一直干" }];
+      await agentLoop(messages, { maxTurn: 1, loopOptions: quiet });
+      const last = messages[messages.length - 1];
+      expect(last.role).toBe("assistant");
+      expect(String(last.content)).toContain("轮工具调用上限");
+      expect(String(last.content)).toContain("继续");
+    });
+  });
   it("工具抛异常降级为工具错误结果，不冒泡杀掉会话", async () => {
     const { buildTool, registerExtensionTool } = await import("./tool.ts");
     registerExtensionTool(

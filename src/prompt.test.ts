@@ -21,6 +21,22 @@ afterEach(() => {
 });
 
 describe("assembleSystemPrompt", () => {
+
+  it("team_mode=pipeline 走角色流水线指令，free 走自由组队指令", () => {
+    const pipeline = assembleSystemPrompt(
+      { workspace: "/w", team_mode: "pipeline" },
+      { isSubagent: false, role: "lead" },
+    );
+    const free = assembleSystemPrompt(
+      { workspace: "/w", team_mode: "free" },
+      { isSubagent: false, role: "lead" },
+    );
+    expect(pipeline).toContain("Coding pipeline");
+    expect(pipeline).toContain("delegate(role, task");
+    expect(pipeline).not.toContain("Agent teams (Lead + Teammates)");
+    expect(free).toContain("Agent teams (Lead + Teammates)");
+    expect(free).not.toContain("Coding pipeline");
+  });
   it("主 agent：identity 含 workspace，含 task_planning/background/teams/mcp 与 memory 空段", () => {
     const context = {
       skill_catalog: "",

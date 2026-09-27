@@ -2,6 +2,31 @@ import { describe, it, expect } from "vitest";
 import { registerHook, triggerHooks, HOOKS } from "./hook.ts";
 
 describe("hook 注册表（S3）", () => {
+  it("hook 超时被跳过并告警（卡死的扩展不会让回合永远不动）", async () => {
+    const prev = process.env["CLAUDE_PI_HOOK_TIMEOUT_MS"];
+    process.env["CLAUDE_PI_HOOK_TIMEOUT_MS"] = "50";
+    const seen: string[] = [];
+    const offHang = registerHook("hanging_event", () => new Promise(() => {}));
+    const offGood = registerHook("hanging_event", () => {
+      seen.push("after-hang");
+      return "ok";
+    });
+    const logs: string[] = [];
+    const orig = console.log;
+    console.log = (...a: unknown[]) => { logs.push(a.join(" ")); };
+    try {
+      expect(await triggerHooks("hanging_event")).toBe("ok");
+      expect(seen).toEqual(["after-hang"]);
+      expect(logs.some((l) => l.includes("未返回"))).toBe(true);
+    } finally {
+      console.log = orig;
+      if (prev === undefined) delete process.env["CLAUDE_PI_HOOK_TIMEOUT_MS"];
+      else process.env["CLAUDE_PI_HOOK_TIMEOUT_MS"] = prev;
+      offHang();
+      offGood();
+    }
+  });
+
   it("registerHook 追加回调，triggerHooks 依次执行", async () => {
     const calls: string[] = [];
     registerHook("test_event", (x: string) => {

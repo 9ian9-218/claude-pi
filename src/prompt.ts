@@ -13,6 +13,7 @@ import { type AgentRole } from "./teammates/context.ts";
 import { peekMemorySnapshot } from "./memory-scope.ts";
 import { getSkillCatalog } from "./skill-load.ts";
 import { getMCPHub } from "./mcp/hub.ts";
+import { getTeamMode } from "./settings.ts";
 
 const TASKS_DIR = resolveAgentDirs(AGENT_ROOT).tasksDir;
 const MEMORY_DIR = resolveAgentDirs(AGENT_ROOT).memoryDir;
@@ -91,6 +92,21 @@ export const TEAMS_SECTION =
   "- Use send_message for follow-up; shutdown_teammate for graceful shutdown.\n" +
   "- Plan approval: teammate sends message_type=plan_approval; you review_plan.\n" +
   "- Use list_teammates to check running/offline status.\n";
+
+export const PIPELINE_SECTION =
+  "\n\n## Coding pipeline (role-delegation preset)\n" +
+  "This session runs the coding-pipeline preset: route work through specialist one-shot " +
+  "subagents with `delegate(role, task, context?)` instead of doing everything yourself. " +
+  "Each delegation forks this session (shared prompt-cache prefix) and returns a deliverable.\n\n" +
+  "- `scout`: locate code, trace call paths, extract the minimal context package (read-only).\n" +
+  "- `planner`: turn requirements + scouted context into ordered steps and acceptance criteria (read-only).\n" +
+  "- `worker`: implement the change and run self-tests (the only role allowed to write files).\n" +
+  "- `reviewer`: adversarial static review of the diff for bugs, style and security (read-only).\n" +
+  "- `verifier`: run tests / build / type-check and report objective evidence (read-only).\n\n" +
+  "**Standard flow: scout → planner → worker → reviewer → verifier.** Skip a stage only when it is " +
+  "genuinely unnecessary (trivial edit: scout + worker + verifier). Pass each stage the previous " +
+  "stage's deliverable through `context`. Route review findings back to `worker`, then re-verify. " +
+  "While delegating, your own job is routing, merging and reporting — do not edit files yourself.\n";
 
 export const MCP_SECTION =
   "\n\n## MCP tools\n" +
@@ -412,6 +428,8 @@ export interface PromptContext {
   enabled_tools?: string[];
   mcp_servers?: string[];
   mcp_tool_count?: number;
+  /** 协同模式：pipeline 走角色流水线指令，free 走自由组队指令 */
+  team_mode?: "pipeline" | "free";
 }
 
 export function assembleSystemPrompt(
@@ -425,7 +443,13 @@ export function assembleSystemPrompt(
     : (options.isSubagent ? SUBAGENT_IDENTITY.replace("{workspace}", workspace) : AGENT_IDENTITY.replace("{workspace}", workspace));
   const parts = [identity];
   if (!isSpecialist) {
-    parts.push(TASK_PLANNING_SECTION, BACKGROUND_TASKS_SECTION, TEAMS_SECTION, MCP_SECTION);
+    // 预设：pipeline 给角色流水线指令，free 给自由组队指令（二选一，不叠加）
+    parts.push(
+      TASK_PLANNING_SECTION,
+      BACKGROUND_TASKS_SECTION,
+      context.team_mode === "pipeline" ? PIPELINE_SECTION : TEAMS_SECTION,
+      MCP_SECTION,
+    );
     const servers = context.mcp_servers ?? [];
     if (servers.length > 0) {
       const count = context.mcp_tool_count ?? 0;
@@ -504,5 +528,6 @@ export function updateContext(_context: PromptContext, _messages: unknown[]): Pr
     enabled_tools: [],
     mcp_servers: mcpServers,
     mcp_tool_count: mcpToolCount,
+    team_mode: getTeamMode(),
   };
 }
