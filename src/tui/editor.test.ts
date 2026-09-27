@@ -32,8 +32,6 @@ class FakeTerminal implements Terminal {
   onInput?: (data: string) => void;
 }
 
-const nextTick = () => new Promise<void>((r) => setTimeout(r, 50));
-
 describe("Editor 输入框（06）", () => {
   it("Ctrl+C 清空输入框（对齐 pi app.clear）", async () => {
     const term = new FakeTerminal();

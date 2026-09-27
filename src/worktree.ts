@@ -44,13 +44,6 @@ export function isGitAvailable(): boolean {
   }
 }
 
-export function isGitClean(): boolean {
-  try {
-    return git("status", "--porcelain").length === 0;
-  } catch {
-    return false;
-  }
-}
 
 /** 分支名：agent/task-<id>（ADR：与 .agent/ 数据根保持一致） */
 export function taskBranchName(taskId: string): string {

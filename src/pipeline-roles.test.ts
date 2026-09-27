@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import { AgentProfile } from "./agent-profile.ts";
 import { PIPELINE_ROLES, isPipelineRole, isReadOnlyRole, runWithAgentContext, createAgentContext } from "./teammates/context.ts";
 import { isToolAllowedForRole, executeToolCall, getOpenaiTools } from "./tool.ts";

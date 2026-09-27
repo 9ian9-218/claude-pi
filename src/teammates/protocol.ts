@@ -18,9 +18,6 @@ export interface ProtocolState {
 
 const pendingRequests = new Map<string, ProtocolState>();
 
-export function newRequestId(prefix = "req"): string {
-  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
-}
 
 export function registerRequest(state: ProtocolState): void {
   pendingRequests.set(state.requestId, state);

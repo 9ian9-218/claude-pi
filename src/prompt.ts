@@ -233,9 +233,6 @@ export function buildSkillSection(catalog: string): string {
 export const RELEVANT_MEMORIES_OPEN = "<relevant_memories>";
 export const RELEVANT_MEMORIES_CLOSE = "</relevant_memories>";
 
-export function wrapRelevantMemories(memoriesBody: string): string {
-  return `${RELEVANT_MEMORIES_OPEN}\n\n${memoriesBody}\n\n${RELEVANT_MEMORIES_CLOSE}`;
-}
 
 export function formatCompactedUserMessage(summary: string): string {
   // 对齐 pi COMPACTION_SUMMARY_PREFIX/SUFFIX（CC 同文）
@@ -446,9 +443,13 @@ export function assembleSystemPrompt(
   return parts[0] + parts.slice(1).join("");
 }
 
-let _lastContextKey: string | null = null;
-let _lastPrompt: string | null = null;
-const _rolePromptCache = new Map<string, string>();
+/**
+ * 系统提示缓存：lead / teammate / subagent / 专职角色共用一套 key。
+ * （此前 lead 走单条缓存、其余角色走 Map，是同一件事的两份实现。）
+ * ponytail: 整表 Map，超上限清空；工作集若真变大再换 LRU。
+ */
+const PROMPT_CACHE_MAX = 32;
+const _promptCache = new Map<string, string>();
 
 function contextCacheKey(context: PromptContext, isSubagent: boolean, role?: AgentRole): string {
   return JSON.stringify({ ...context, _isSubagent: isSubagent, _role: role }, Object.keys(context).sort());
@@ -458,30 +459,19 @@ export function getSystemPrompt(
   context: PromptContext,
   options: { isSubagent: boolean; role?: AgentRole },
 ): string {
-  const isSubagent = options.isSubagent;
-  const role = options.role;
+  const { isSubagent, role } = options;
   const key = contextCacheKey(context, isSubagent, role);
-  if (isSubagent || (role && role !== "lead" && role !== "teammate")) {
-    const cached = _rolePromptCache.get(key);
-    if (cached) {
-      console.log(`  \x1b[90m[cache hit] ${role ?? "subagent"} system prompt unchanged\x1b[0m`);
-      return cached;
-    }
-    const assembled = assembleSystemPrompt(context, options);
-    _rolePromptCache.set(key, assembled);
-    console.log(`  \x1b[32m[assembled] ${role ?? "subagent"} sections: identity, skills\x1b[0m`);
-    return assembled;
+  const label = role ?? (isSubagent ? "subagent" : "lead");
+  const cached = _promptCache.get(key);
+  if (cached !== undefined) {
+    console.log(`  \x1b[90m[cache hit] ${label} system prompt unchanged\x1b[0m`);
+    return cached;
   }
-  if (key === _lastContextKey && _lastPrompt !== null) {
-    console.log("  \x1b[90m[cache hit] system prompt unchanged\x1b[0m");
-    return _lastPrompt;
-  }
-  _lastContextKey = key;
-  _lastPrompt = assembleSystemPrompt(context, options);
-  const loaded = ["identity", "task_planning", "skills"];
-  loaded.push(context.memories ? "memory" : "memory_empty");
-  console.log(`  \x1b[32m[assembled] sections: ${loaded.join(", ")}\x1b[0m`);
-  return _lastPrompt;
+  const assembled = assembleSystemPrompt(context, options);
+  if (_promptCache.size >= PROMPT_CACHE_MAX) _promptCache.clear();
+  _promptCache.set(key, assembled);
+  console.log(`  \x1b[32m[assembled] ${label} system prompt\x1b[0m`);
+  return assembled;
 }
 
 /**

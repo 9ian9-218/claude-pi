@@ -13,9 +13,6 @@ export function setTuiApp(a: TuiApp | null): void {
   app = a;
 }
 
-export function getTuiApp(): TuiApp | null {
-  return app;
-}
 
 export interface UiNotifyOptions {
   level?: "info" | "warning" | "error";
@@ -80,9 +77,6 @@ export function renderCustomEntry(customType: string, data: unknown): string | n
   return renderer(data);
 }
 
-export function listEntryRenderers(): string[] {
-  return [...entryRenderers.keys()];
-}
 
 export function clearEntryRenderers(): void {
   entryRenderers.clear();

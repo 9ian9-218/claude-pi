@@ -31,7 +31,6 @@ import {
 // 工具输出体积策略（与窗口无关，属 L3 出口口径）
 export const PERSIST_THRESHOLD_TOKENS = 6_000;
 export const PREVIEW_TOKENS = 500;
-export const MAX_REACTIVE_RETRIES = 2;
 
 /**
  * 单次输出上限（撞输出上限后升级到的天花板）= 压缩的输出预留基准。

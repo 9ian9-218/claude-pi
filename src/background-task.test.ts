@@ -17,7 +17,6 @@ import {
   clearNotifications,
   hasPendingNotifications,
 } from "./message-queue.ts";
-import { runWithWorkdir } from "./workdir.ts";
 
 let ws: string;
 

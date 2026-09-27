@@ -34,7 +34,6 @@ import { formatTokens } from "./footer.ts";
 import { UserMessageComponent } from "./messages/user-message.ts";
 import { AssistantMessageComponent } from "./messages/assistant-message.ts";
 import { SystemMessageComponent } from "./messages/system-message.ts";
-import { ToolExecutionComponent } from "./messages/tool-execution.ts";
 import { StartupMessageComponent } from "./messages/startup-message.ts";
 import { Footer } from "./footer.ts";
 import { CACHE_TTL_MS } from "../cache-stats.ts";
@@ -871,7 +870,7 @@ export class TuiApp {
 
   /** /thinking 实现（Shift+Tab 与 /thinking 共用） */
   private async cycleThinkingLevel(): Promise<void> {
-    const { cycleThinkingLevel, getThinkingLevel } = await import("../ai-runtime.ts");
+    const { cycleThinkingLevel } = await import("../ai-runtime.ts");
     const level = await cycleThinkingLevel();
     if (level === null) {
       this.appendSystem("当前模型不支持思考（或未选择模型）", "warning");

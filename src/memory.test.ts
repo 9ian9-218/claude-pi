@@ -19,7 +19,6 @@ import {
   extractMemories,
   consolidateMemories,
   memoryStopHook,
-  MEMORY_TYPES,
 } from "./memory.ts";
 
 let mock: MockOpenAI;

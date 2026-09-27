@@ -5,7 +5,7 @@ import path from "node:path";
 import { setTeamsDir, TEAM_LEAD_NAME } from "./constants.ts";
 import { createAgentContext, runWithAgentContext } from "./context.ts";
 import { createTeam, getLeaderName } from "./team-helpers.ts";
-import { readMailbox, clearMailbox } from "./mailbox.ts";
+import { readMailbox } from "./mailbox.ts";
 import {
   processPendingLeadPermissions,
   permissionHookWithBubble,
@@ -170,7 +170,6 @@ describe("autonomous idlePoll（S11）", () => {
       agentName: "worker-a",
       teamName: "idle1",
       messages,
-      role: "worker",
       isShutdownRequested: () => false,
       pollIntervalMs: 20,
       idleTimeoutMs: 2000,
@@ -185,7 +184,6 @@ describe("autonomous idlePoll（S11）", () => {
       agentName: "worker-b",
       teamName: "idle2",
       messages: [],
-      role: "worker",
       isShutdownRequested: () => true,
       pollIntervalMs: 20,
       idleTimeoutMs: 2000,
@@ -199,7 +197,6 @@ describe("autonomous idlePoll（S11）", () => {
       agentName: "worker-c",
       teamName: "idle3",
       messages: [],
-      role: "worker",
       isShutdownRequested: () => false,
       pollIntervalMs: 10,
       idleTimeoutMs: 100,

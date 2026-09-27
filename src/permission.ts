@@ -9,7 +9,6 @@
  */
 import path from "node:path";
 import { getWorkdir } from "./workdir.ts";
-import { underlyingToolName } from "./mcp/names.ts";
 
 export const DENY_LIST = ["rm -rf /", "sudo", "shutdown", "reboot", "mkfs", "dd if=", "> /dev/sda"];
 

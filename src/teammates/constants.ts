@@ -25,7 +25,6 @@ export const TEAMMATE_IDLE_POLL_INTERVAL = 5.0;
 /** 空闲上限（秒）：空闲超过该时长即视为结束，回收该 teammate（停止其运行循环） */
 export const TEAMMATE_IDLE_TIMEOUT = 1800.0;
 export const TEAMMATE_WORK_MAX_TURNS = 15;
-export const TEAMMATE_IDENTITY_REINJECT_THRESHOLD = 3;
 
 // 文件锁重试（proper-lockfile 语义）
 export const LOCK_RETRIES = 10;

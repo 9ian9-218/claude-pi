@@ -9,7 +9,7 @@ import path from "node:path";
 import { AGENT_ROOT, resolveAgentDirs } from "./config.ts";
 import { withFileLock } from "./file-lock.ts";
 import { createTaskWorktree, removeTaskWorktree } from "./worktree.ts";
-import { getWorkdir, setWorktreeOverride } from "./workdir.ts";
+import { setWorktreeOverride } from "./workdir.ts";
 
 // 测试可注入；默认 .agent/tasks
 let tasksDir: string = resolveAgentDirs(AGENT_ROOT).tasksDir;
@@ -477,7 +477,3 @@ export function runCompleteTask(taskId: string): Promise<string> {
   return completeTask(taskId);
 }
 
-/** workdir 覆盖状态下的有效目录（供外部查询） */
-export function currentWorkdir(): string {
-  return getWorkdir();
-}

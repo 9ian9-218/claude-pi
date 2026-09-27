@@ -100,18 +100,6 @@ export function createShutdownApproved(requestId: string, fromAgent: string): Re
   };
 }
 
-export function createShutdownRejected(
-  requestId: string,
-  fromAgent: string,
-  reason: string,
-): Record<string, unknown> {
-  return {
-    type: "shutdown_rejected",
-    requestId,
-    from: fromAgent,
-    reason,
-  };
-}
 
 export function createTeammateTerminated(
   agentName: string,

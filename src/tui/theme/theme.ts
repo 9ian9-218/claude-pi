@@ -158,10 +158,6 @@ export function getAvailableThemes(): ThemeName[] {
   return ["dark", "light"];
 }
 
-export function getThemeByName(name: string): Theme {
-  if (name === "light") return new Theme("light");
-  return new Theme("dark");
-}
 
 export const theme: Theme = new Proxy(
   {},

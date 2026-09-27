@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import { TuiApp } from "./app.ts";
 import { getCommandEntry } from "../commands.ts";
 import { MessageList } from "./messages/message-list.ts";
-import { UserMessageComponent } from "./messages/user-message.ts";
 import { SystemMessageComponent } from "./messages/system-message.ts";
 import { theme } from "./theme/theme.ts";
 import { clearAgentRuns, startAgentRun } from "../agent-registry.ts";

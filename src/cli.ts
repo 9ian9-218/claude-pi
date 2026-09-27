@@ -7,12 +7,10 @@
  * 运行模式分派（-p / --mode json）归工单 13，TUI 归 14。
  */
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import readline from "node:readline/promises";
 import { PROJECT_ROOT, initRuntime } from "./config.ts";
 import { installFatalHandlers } from "./fatal.ts";
-import { agentLoop } from "./agent-loop.ts";
 import { runQuery } from "./query-pipeline.ts";
 import { triggerHooks } from "./hook.ts";
 import type { ChatMessage } from "./client.ts";
@@ -22,16 +20,8 @@ import { TuiApp } from "./tui/app.ts";
 import { handleSessionCommand } from "./tui/session-commands.ts";
 import { setTuiApp } from "./tui/ui-provider.ts";
 import { getMCPHub } from "./mcp/hub.ts";
-import { getCurrentWorktreeTaskId } from "./worktree.ts";
-import { getWorkdir } from "./workdir.ts";
 import { ExtensionManager } from "./extensions/loader.ts";
-import {
-  currentModelLabel,
-  getCurrentModel,
-  getThinkingLevel,
-  setThinkingLevel,
-} from "./ai-runtime.ts";
-import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { currentModelLabel, getCurrentModel, getThinkingLevel } from "./ai-runtime.ts";
 import { computeUsageTotals, latestCacheHitRate, computeContextUsage } from "./usage-stats.ts";
 import { aggregateAgentUsage } from "./agent-registry.ts";
 import { getGitBranch } from "./git-branch.ts";
@@ -70,7 +60,6 @@ function thinkingLabel(): string {
 }
 import { registerExtensionTool, buildTool } from "./tool.ts";
 import { registerSlashCommand, clearSlashCommands } from "./commands.ts";
-import { LoopOptions } from "./loop-options.ts";
 import { warmUp } from "./warmup.ts";
 import { TEAM_LEAD_NAME } from "./teammates/constants.ts";
 import { createTeam, readTeamConfig } from "./teammates/team-helpers.ts";

@@ -3,7 +3,7 @@
  */
 import { randomBytes } from "node:crypto";
 import type { ChatMessage } from "../client.ts";
-import { SUBAGENT_IDENTITY, SUBAGENT_STOPPED_MESSAGE, getRoleIdentity } from "../prompt.ts";
+import { SUBAGENT_STOPPED_MESSAGE, getRoleIdentity } from "../prompt.ts";
 import {
   getAgentContext,
   createAgentContext,

@@ -18,7 +18,7 @@ import {
   currentModelLabel,
 } from "../ai-runtime.ts";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import type { Api, Model, Provider } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai";
 
 class FakeTerminal implements Terminal {
   writes: string[] = [];

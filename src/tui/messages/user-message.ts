@@ -5,7 +5,7 @@
  */
 import { Box, Container, Markdown } from "@earendil-works/pi-tui";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
-import { OSC133_ZONE_END_FINAL, OSC133_ZONE_START, wrapOsc133Zone } from "./osc133.ts";
+import { wrapOsc133Zone } from "./osc133.ts";
 
 export class UserMessageComponent extends Container {
   private text: string;

@@ -9,22 +9,6 @@ import { registerHook } from "../hook.ts";
 import type { HookCallback } from "../hook.ts";
 import { ui as uiProvider, registerEntryRenderer } from "../tui/ui-provider.ts";
 
-/** 扩展事件全集（对齐 pi 事件集 + claude-pi 机制事件） */
-export const EXTENSION_EVENTS = new Set([
-  "session_start",
-  "session_end",
-  "user_prompt_submit",
-  "pre_tool_use",
-  "post_tool_use",
-  "stop",
-  "session_before_tree",
-  "session_tree",
-  "session_before_fork",
-  "session_fork",
-  "session_before_clone",
-  "session_clone",
-  "model_change",
-]);
 
 export interface ExtensionToolDef {
   name: string;

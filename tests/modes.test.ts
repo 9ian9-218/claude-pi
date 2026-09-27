@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import fs from "node:fs";
@@ -28,7 +28,7 @@ afterEach(async () => {
 });
 
 function runCli(args: string[], input: string): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const child = execFile(
       process.execPath,
       [tsxCli, cliEntry, ...args],

@@ -9,14 +9,13 @@
  * compact（04）、memory（05）、background（06）、错误恢复（03）后续接入。
  */
 import { randomUUID } from "node:crypto";
-import { sendMessages } from "./client.ts";
 import { triggerHooks } from "./hook.ts";
 import { LoopOptions } from "./loop-options.ts";
 import { executeToolCall, getOpenaiTools } from "./tool.ts";
 import { RecoveryState, sendMessagesWithRecovery, ERROR_PREFIX } from "./error-recovery.ts";
 import { snapshotMessages } from "./memory.ts";
 import { primeMemorySnapshot } from "./memory-scope.ts";
-import { RELEVANT_MEMORIES_OPEN, SUBAGENT_STOPPED_MESSAGE } from "./prompt.ts";
+import { SUBAGENT_STOPPED_MESSAGE } from "./prompt.ts";
 import { consumePendingNotifications } from "./message-queue.ts";
 import { shouldRunBackground, startBackgroundTask } from "./background-task.ts";
 import { getWorkdir, runWithWorkdir } from "./workdir.ts";
@@ -26,7 +25,7 @@ import type { SessionManager } from "./session-manager.ts";
 import type { ChatMessage } from "./client.ts";
 import { consumePendingInjections, consumePendingIdleNotifications } from "./teammates/poller.ts";
 import { detectCacheMiss, CACHE_TTL_MS } from "./cache-stats.ts";
-import { UiEventSink, emitNoticeOrLog, type TurnEndEvent } from "./ui-events.ts";
+import { emitNoticeOrLog, type TurnEndEvent } from "./ui-events.ts";
 import { processPendingLeadPermissions } from "./permission-sync.ts";
 import { formatIdleNotificationInjection } from "./teammates/protocol.ts";
 

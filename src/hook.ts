@@ -9,7 +9,6 @@
  * memory_stop_hook 归 05。
  */
 
-import { getSystemPrompt, updateContext } from "./prompt.ts";
 import { getToolParameters, validateArgs } from "./tool.ts";
 import { memoryStopHook } from "./memory.ts";
 import { permissionHookWithBubble } from "./permission-sync.ts";
@@ -41,7 +40,7 @@ export async function triggerHooks(event: string, ...args: unknown[]): Promise<u
 
 // ── 内置 hook ─────────────────────────────────────────────────────────────
 
-export function contextInjectHook(query: string): void {
+export function contextInjectHook(): void {
   console.log(`\x1b[90m[HOOK] UserPromptSubmit: working in ${process.cwd()}\x1b[0m`);
 }
 

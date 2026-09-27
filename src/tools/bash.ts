@@ -2,7 +2,6 @@
  * bash.ts — run_bash 工具（从 tool.ts 拆出）
  */
 import { spawnSync } from "node:child_process";
-import path from "node:path";
 import { getWorkdir } from "../workdir.ts";
 import { buildTool } from "./core.ts";
 

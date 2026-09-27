@@ -38,14 +38,13 @@ export interface IdlePollOptions {
   teamName: string;
   messages: ChatMessage[];
   isShutdownRequested: () => boolean;
-  role?: string;
   pollIntervalMs?: number;
   idleTimeoutMs?: number;
 }
 
 /** 空闲轮询：收件箱 → 看板 auto-claim → 等待 */
 export async function idlePoll(options: IdlePollOptions): Promise<IdleResult> {
-  const { agentName, teamName, messages, isShutdownRequested, role = "" } = options;
+  const { agentName, teamName, messages, isShutdownRequested } = options;
   const pollIntervalMs = options.pollIntervalMs ?? TEAMMATE_IDLE_POLL_INTERVAL * 1000;
   const idleTimeoutMs = options.idleTimeoutMs ?? TEAMMATE_IDLE_TIMEOUT * 1000;
   const polls = Math.max(1, Math.trunc(idleTimeoutMs / pollIntervalMs));

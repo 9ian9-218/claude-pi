@@ -5,7 +5,6 @@
  * 与 Python 版 .claude/ 对应，目录名去 Claude 化）。
  */
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";

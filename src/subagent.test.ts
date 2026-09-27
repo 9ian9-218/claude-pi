@@ -8,7 +8,7 @@ import { LoopOptions } from "./loop-options.ts";
 import { getOpenaiTools, spawnSubagent, executeToolCall } from "./tool.ts";
 import { getAgentContext, isSubagent, runWithAgentContext, resetAgentContext } from "./teammates/context.ts";
 import { AgentProfile, profileToContext } from "./agent-profile.ts";
-import { setAskUserImpl, resetAskUserImpl } from "./permission-sync.ts";import fs from "node:fs";
+import { resetAskUserImpl } from "./permission-sync.ts";import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { SessionManager, setSessionRoot } from "./session-manager.ts";
@@ -110,7 +110,7 @@ describe("subagent 身份（Agent Profile）", () => {
 
   it("spawnSubagent 在 loop 内写入 role=subagent（权限可同步冒泡）", async () => {
     // 默认 responder：空回复即终止回合
-    mock.push((req) => ({ kind: "json", content: "ok" }));
+    mock.push(() => ({ kind: "json", content: "ok" }));
     const result = await spawnSubagent("say hi");
     expect(result).toBeTruthy();
     // After spawn, context should restore (not leak subagent role into parent)

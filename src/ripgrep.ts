@@ -207,8 +207,3 @@ export function ensureRipgrep(): Promise<string> {
   }
   return ensurePromise;
 }
-
-/** 仅供测试：重置单飞缓存，使后续 ensureRipgrep 重新解析。 */
-export function _resetRipgrepForTests(): void {
-  ensurePromise = null;
-}

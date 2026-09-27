@@ -53,7 +53,3 @@ export function loadMcpConfig(configPath?: string): Record<string, McpServerConf
   return out;
 }
 
-/** 测试隔离 */
-export function mcpConfigPath(): string {
-  return path.join(resolveAgentDirs(AGENT_ROOT).agentsDir, "mcp.json");
-}

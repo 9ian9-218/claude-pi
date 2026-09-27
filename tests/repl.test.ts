@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import fs from "node:fs";
@@ -33,7 +33,7 @@ afterEach(async () => {
 });
 
 function runRepl(input: string, timeoutMs = 20000): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     // 每个测试独立临时 cwd：会话按 cwd 组织，天然隔离
     const workdir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-repl-"));
     workdirs.push(workdir);

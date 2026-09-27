@@ -11,7 +11,6 @@ import {
   canStart,
   allocateTaskId,
   taskGraphHasCycle,
-  buildDependencyGraph,
   validateCreateTaskDependencies,
   claimTask,
   completeTask,
@@ -157,7 +156,7 @@ describe("claim / complete 全流程（S8-4）", () => {
 
   it("complete 后解除下游阻塞", async () => {
     const t1 = createTask("a");
-    const t2 = createTask("b", "", [t1.id]);
+    createTask("b", "", [t1.id]);
     await claimTask(t1.id, "agent");
     const done = await completeTask(t1.id);
     expect(done).toContain("Unblocked: b");

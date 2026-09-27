@@ -4,7 +4,7 @@
  * 每 1s 轮询 Lead 邮箱：结构化消息路由（10：idle_notification；
  * permission/plan 归 11），普通消息包装为 <teammate-message> 注入队列。
  */
-import { LEAD_INBOX_POLL_INTERVAL, getTeamsDir } from "./constants.ts";
+import { LEAD_INBOX_POLL_INTERVAL } from "./constants.ts";
 import { readMailbox, markMessageAsReadByIndex, type MailboxMessage } from "./mailbox.ts";
 import { formatTeammateMessages, isStructuredProtocolMessage, parseStructured } from "./message-types.ts";
 import { getLeaderName } from "./team-helpers.ts";

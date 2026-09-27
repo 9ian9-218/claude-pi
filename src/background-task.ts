@@ -6,10 +6,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { getWorkdir } from "./workdir.ts";
-import {
-  enqueuePendingNotification,
-  type NotificationPriority,
-} from "./message-queue.ts";
+import { enqueuePendingNotification } from "./message-queue.ts";
 import { triggerHooks } from "./hook.ts";
 
 // ── Stall 看门狗配置（默认对齐 Python；测试可注入） ───────────────────────
@@ -324,7 +321,3 @@ export function startBackgroundTask(
   return bgId;
 }
 
-// 测试隔离
-export function clearRunningTasks(): void {
-  runningTasks.clear();
-}

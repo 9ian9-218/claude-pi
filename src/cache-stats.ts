@@ -120,10 +120,6 @@ function scan(entries: SessionEntry[]): ScanResult {
   return { prev, totals };
 }
 
-/** 会话累计缓存浪费：应命中却重计费的 prompt tokens/成本/miss 次数 */
-export function computeCacheWaste(entries: SessionEntry[]): CacheMissTotals {
-  return scan(entries).totals;
-}
 
 /**
  * 检测刚完成的 assistant 消息是否 miss（入口契约同 pi：entries 尚未包含该消息）

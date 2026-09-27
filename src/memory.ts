@@ -28,9 +28,6 @@ export function setMemoryDir(dir: string): void {
   memoryDir = dir;
 }
 
-export function getMemoryDir(): string {
-  return memoryDir;
-}
 
 export function memoryIndexPath(): string {
   return path.join(memoryDir, "MEMORY.md");

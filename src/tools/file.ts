@@ -3,7 +3,6 @@
  */
 import fs from "node:fs";
 import { createReadStream } from "node:fs";
-import path from "node:path";
 import { createInterface } from "node:readline";
 import { globSync } from "glob";
 import { getWorkdir } from "../workdir.ts";
@@ -201,7 +200,6 @@ export const EDIT_FILE_TOOL = buildTool({
 function execGlob(args: Record<string, unknown>): string {
   const pattern = String(args["pattern"]);
   try {
-    const recursive = pattern.includes("**");
     return globSync(pattern, { cwd: getWorkdir(), nodir: true }).join("\n");
   } catch (e) {
     return `Error: ${String(e)}`;

@@ -10,7 +10,7 @@ import { getMCPHub } from "../mcp/hub.ts";
 import { isMcpTool } from "../mcp/names.ts";
 import { checkPath } from "./path.ts";
 import { getAgentContext, type AgentRole } from "../teammates/context.ts";
-import { Tool, buildTool, type ExecuteFn, type ToolExecContext } from "./core.ts";
+import { Tool, type ToolExecContext } from "./core.ts";
 export { Tool, buildTool, type ExecuteFn } from "./core.ts";
 export type { ToolExecContext } from "./core.ts";
 import { RUN_BASH_TOOL } from "./bash.ts";

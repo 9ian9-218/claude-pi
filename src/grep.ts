@@ -90,7 +90,6 @@ export async function runGrepSearch(args: GrepArgs, opts: GrepRunOptions): Promi
     let linesTruncated = false;
     let byteTotal = 0;
     let byteCapped = false;
-    let timedOut = false;
     let killed = false;
     let settled = false;
 
@@ -103,7 +102,6 @@ export async function runGrepSearch(args: GrepArgs, opts: GrepRunOptions): Promi
     };
 
     const timer = setTimeout(() => {
-      timedOut = true;
       killed = true;
       finish(`Error: grep timed out after ${timeoutMs}ms`);
     }, timeoutMs);

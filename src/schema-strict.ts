@@ -5,9 +5,6 @@
  * strict 语义由 pi-ai 的 constrainedSampling（prefer）承接。
  */
 
-export function isToolStrictEnabled(): boolean {
-  return true;
-}
 
 /** 递归 enforce strict 规则：object → additionalProperties=false + required=全部属性；array → 递归 items */
 export function sanitizeSchemaForStrict(schema: unknown): unknown {

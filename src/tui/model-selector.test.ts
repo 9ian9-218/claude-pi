@@ -4,7 +4,6 @@ import { makeCompletionsModel } from "../../tests/helpers/test-client.ts";
 import { resetClient } from "../client.ts";
 import { setModelRuntimeOverride, currentModelLabel } from "../ai-runtime.ts";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import type { Api } from "@earendil-works/pi-ai";
 import type { Terminal } from "@earendil-works/pi-tui";
 
 class FakeTerminal implements Terminal {

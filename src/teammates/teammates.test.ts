@@ -4,11 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { MockOpenAI } from "../../tests/helpers/mock-openai.ts";
 import { installMockModels } from "../../tests/helpers/test-client.ts";
-import { resetClient, type ChatMessage } from "../client.ts";
+import { resetClient } from "../client.ts";
 import { setTeamsDir, TEAM_LEAD_NAME } from "./constants.ts";
-import { setGitRoot } from "../worktree.ts";
-import { setTasksDir } from "../tasks.ts";
-import { setSkillsDir } from "../skill-load.ts";
 import { installBuiltinHooks } from "../hook.ts";
 import {
   writeToMailbox,
@@ -217,7 +214,8 @@ describe("spawn 端到端（S10）", () => {
     createTeam("eta", TEAM_LEAD_NAME);
     mock.always(() => ({ kind: "sse", chunks: [{ content: "ok", finishReason: "stop" }] }));
 
-    spawnTeammate({ name: "again", role: "worker", prompt: "第一轮", teamName: "eta", idleTimeoutMs: 200, idlePollIntervalMs: 50 });
+    const first = spawnTeammate({ name: "again", role: "worker", prompt: "第一轮", teamName: "eta", idleTimeoutMs: 200, idlePollIntervalMs: 50 });
+    expect(first).toContain("spawned");
     await vi.waitFor(
       () => {
         expect(getAgentRun("again@eta")?.status).toBe("done");
@@ -225,7 +223,8 @@ describe("spawn 端到端（S10）", () => {
       { timeout: 15000, interval: 50 },
     );
 
-    spawnTeammate({ name: "again", role: "worker", prompt: "第二轮", teamName: "eta", idleTimeoutMs: 200, idlePollIntervalMs: 50 });
+    const second = spawnTeammate({ name: "again", role: "worker", prompt: "第二轮", teamName: "eta", idleTimeoutMs: 200, idlePollIntervalMs: 50 });
+    expect(second).toContain("spawned");
     // 旧记录仍在，新纪录用带后缀的 id
     expect(getAgentRun("again@eta")?.label ?? "").toContain("第一轮");
     expect(getAgentRun("again@eta·2")).not.toBeNull();

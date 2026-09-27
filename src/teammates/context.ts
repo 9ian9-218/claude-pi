@@ -53,9 +53,6 @@ export function isReadOnlyRole(role: AgentRole): boolean {
   return role === "scout" || role === "planner" || role === "reviewer" || role === "verifier";
 }
 
-export function isWorker(ctx: AgentContext): boolean {
-  return ctx.role === "teammate" || ctx.role === "subagent" || isPipelineRole(ctx.role);
-}
 
 const ctxStore = new AsyncLocalStorage<AgentContext>();
 
@@ -80,16 +77,4 @@ export function resetAgentContext(): void {
 
 export function runWithAgentContext<T>(ctx: AgentContext, fn: () => T): T {
   return ctxStore.run(ctx, fn);
-}
-
-/** 在给定身份下运行 fn，结束后恢复原身份（对齐 agent_context 上下文管理器） */
-export function withAgentContext<T>(ctx: AgentContext, fn: () => T): T {
-  const prev = getAgentContext();
-  return ctxStore.run(ctx, () => {
-    try {
-      return fn();
-    } finally {
-      void prev;
-    }
-  });
 }

@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 import { MCPHub, getMCPHub, resetMCPHub } from "./hub.ts";
 import { buildPrefixedName, isMcpTool, parsePrefixedName, underlyingToolName } from "./names.ts";
 import { loadMcpConfig } from "./config.ts";

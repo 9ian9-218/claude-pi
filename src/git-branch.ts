@@ -32,7 +32,3 @@ export function getGitBranch(cwd: string): string | null {
   return branch;
 }
 
-/** 测试用：清缓存 */
-export function resetGitBranchCache(): void {
-  cache.clear();
-}

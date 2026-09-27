@@ -47,9 +47,6 @@ export function readMailbox(agentName: string, teamName: string): MailboxMessage
   }
 }
 
-export function readUnreadMessages(agentName: string, teamName: string): MailboxMessage[] {
-  return readMailbox(agentName, teamName).filter((m) => !m.read);
-}
 
 export async function writeToMailbox(
   recipientName: string,

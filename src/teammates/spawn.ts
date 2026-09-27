@@ -4,18 +4,18 @@
  * WORK → IDLE → SHUTDOWN 循环（async 协程替代线程）；
  * idle 阶段归 11（autonomous），10 中空闲等待 + shutdown 检查。
  */
-import {
-  TEAM_LEAD_NAME,
-  TEAMMATE_IDLE_TIMEOUT,
-  TEAMMATE_WORK_MAX_TURNS,
-  getTeamsDir,
-} from "./constants.ts";
+import { TEAM_LEAD_NAME, TEAMMATE_IDLE_TIMEOUT, TEAMMATE_WORK_MAX_TURNS } from "./constants.ts";
 import { runWithAgentContext } from "./context.ts";
 import { dispatchInboxBatch, maybeReinjectIdentity } from "./inbox-dispatch.ts";
 import { idlePoll } from "./autonomous.ts";
 import { sendIdleNotification, notifyTeammateTerminated, sendShutdownRequest } from "./lifecycle.ts";
 import { sendPlainMessage } from "./mailbox.ts";
-import { ensureTeammateForSpawn, readTeamConfig, getLeaderName } from "./team-helpers.ts";
+import {
+  deactivateTeammate,
+  ensureTeammateForSpawn,
+  readTeamConfig,
+  getLeaderName,
+} from "./team-helpers.ts";
 import { getSkillCatalog } from "../skill-load.ts";
 import { SUBAGENT_IDENTITY } from "../prompt.ts";
 import { LoopOptions } from "../loop-options.ts";
@@ -57,8 +57,6 @@ function teammateIdentity(name: string, role: string, teamName: string): string 
     `You cannot spawn other teammates.`
   );
 }
-
-let running = false;
 
 async function runTeammateLoop(options: {
   name: string;
@@ -160,7 +158,6 @@ async function runTeammateLoop(options: {
           agentName: name,
           teamName,
           messages,
-          role,
           isShutdownRequested: () => isShutdownRequested(teamName, name, runId),
           ...(options.idlePollIntervalMs !== undefined
             ? { pollIntervalMs: options.idlePollIntervalMs }
@@ -188,7 +185,12 @@ async function runTeammateLoop(options: {
   } catch (err) {
     finishAgentRun(runKey, { status: "failed", error: String((err as Error)?.message ?? err) });
   } finally {
-    // 收尾本身失败（例如团队目录已被移除）不得升级为未处理拒绝
+    // 同步翻转两张表：注册表状态（done/failed）、进程内 active 表、团队成员表。
+    // 三者之间不能有 await —— 否则外部会看到「已结束」却又被判定为仍活跃/仍占位，
+    // 重新 spawn 同名 teammate 会被团队成员表的 isActive 守卫误拒。
+    activeTeammates.delete(teammateKey(teamName, name));
+    deactivateTeammate(teamName, name);
+    // 终止广播本身失败（例如团队目录已被移除）不得升级为未处理拒绝
     try {
       await notifyTeammateTerminated({ agentName: name, teamName });
     } catch (err) {
@@ -196,7 +198,6 @@ async function runTeammateLoop(options: {
         `  \x1b[33m[teammate] ${name} 终止广播失败：${String((err as Error)?.message ?? err)}\x1b[0m`,
       );
     }
-    activeTeammates.delete(teammateKey(teamName, name));
     lockedPrint(`  \x1b[32m[teammate] ${name} stopped\x1b[0m`);
   }
 }

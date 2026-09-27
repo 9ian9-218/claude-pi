@@ -55,7 +55,7 @@ export default function (pi: any) {
   });
 
   it("扩展工具可被调用", async () => {
-    const ext = writeExt(
+    writeExt(
       "tool-ext",
       `
 export default function (pi: any) {

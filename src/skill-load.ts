@@ -37,7 +37,7 @@ export function rescanSkills(): void {
     const manifest = path.join(dirPath, "SKILL.md");
     if (!fs.existsSync(manifest)) continue;
     const raw = fs.readFileSync(manifest, "utf8");
-    const [meta, body] = parseFrontmatter(raw);
+    const [meta] = parseFrontmatter(raw);
     const name = meta.name ?? d;
     const desc = meta.description ?? raw.split("\n")[0].replace(/^#\s*/, "").trim();
     SKILL_REGISTRY.set(name, { name, description: desc, content: raw });

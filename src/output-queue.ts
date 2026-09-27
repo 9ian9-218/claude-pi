@@ -12,11 +12,6 @@ export function lockedPrint(...args: unknown[]): void {
   });
 }
 
-export function lockedStdoutWrite(text: string): void {
-  enqueueOutput(() => {
-    process.stdout.write(text);
-  });
-}
 
 export function enqueueOutput(fn: () => void): void {
   queue = queue.then(async () => {
@@ -24,7 +19,3 @@ export function enqueueOutput(fn: () => void): void {
   });
 }
 
-/** 等待队列排空（测试用） */
-export function drainOutputQueue(): Promise<void> {
-  return queue;
-}
