@@ -151,7 +151,7 @@ export function readPiSettings(): PiSettings {
       ? {
           team: {
             mode:
-              (parsed["team"] as Record<string, unknown>)["mode"] === "free" ? "free" : "pipeline",
+              (parsed["team"] as Record<string, unknown>)["mode"] === "pipeline" ? "pipeline" : "free",
           },
         }
       : {}),
@@ -251,7 +251,9 @@ export function isMemoryEnabled(): boolean {
 
 export function getTeamMode(): TeamMode {
   const s = readPiSettings();
-  return s.team?.mode ?? "pipeline";
+  // 默认 free：pipeline 预设会强制角色委派（lead 不能自己写文件/跑命令），
+  // 必须是显式 opt-in，否则所有既有用法会被默认改行为
+  return s.team?.mode ?? "free";
 }
 
 export function setTeamMode(mode: TeamMode): void {

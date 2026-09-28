@@ -106,7 +106,11 @@ export const PIPELINE_SECTION =
   "**Standard flow: scout → planner → worker → reviewer → verifier.** Skip a stage only when it is " +
   "genuinely unnecessary (trivial edit: scout + worker + verifier). Pass each stage the previous " +
   "stage's deliverable through `context`. Route review findings back to `worker`, then re-verify. " +
-  "While delegating, your own job is routing, merging and reporting — do not edit files yourself.\n";
+  "While delegating, your own job is routing, merging and reporting — do not edit files yourself.\n\n" +
+  "**This is enforced by the runtime, not a request:** your own `write_file` / `edit_file` / " +
+  "`run_bash` calls are rejected while this preset is on. `read_file` / `grep` / `glob` / " +
+  "`delegate` still work. Need a file changed → `delegate(role=\"worker\", ...)`; need a " +
+  "command run → `delegate(role=\"verifier\", ...)`.\n";
 
 export const MCP_SECTION =
   "\n\n## MCP tools\n" +

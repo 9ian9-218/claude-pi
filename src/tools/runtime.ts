@@ -10,6 +10,7 @@ import { getMCPHub } from "../mcp/hub.ts";
 import { isMcpTool } from "../mcp/names.ts";
 import { checkPath } from "./path.ts";
 import { getAgentContext, type AgentRole } from "../teammates/context.ts";
+import { getTeamMode } from "../settings.ts";
 import { Tool, type ToolExecContext } from "./core.ts";
 export { Tool, buildTool, type ExecuteFn } from "./core.ts";
 export type { ToolExecContext } from "./core.ts";
@@ -129,6 +130,35 @@ export function describeRoleRestrictions(role: AgentRole): string {
     .join("\n");
 }
 
+/**
+ * pipeline 预设下 lead 不得自己落地：写文件与跑命令必须交给 worker / verifier 角色。
+ */
+export const PIPELINE_LEAD_FORBIDDEN = new Set(["write_file", "edit_file", "run_bash"]);
+
+/**
+ * 预设禁令 —— 只在「执行闸」生效，**不动「呈现的工具面」**。
+ *
+ * 原因：fork 子 agent 复用父的工具面以复用 prompt cache（getOpenaiTools(cachePrefix.role)），
+ * 若把 lead 的工具面直接收窄，worker 也会拿不到 write_file（它的角色白名单本来允许）。
+ * 所以「看见」与「能执行」在这里刻意分离。
+ */
+export function isToolBlockedByPreset(role: AgentRole, toolName: string): boolean {
+  if (role !== "lead") return false;
+  return getTeamMode() === "pipeline" && PIPELINE_LEAD_FORBIDDEN.has(toolName);
+}
+
+/** 预设拦截时的可操作提示（告诉模型该怎么绕道，而不是只说「不行」） */
+export function presetBlockedMessage(toolName: string): string {
+  const hint =
+    toolName === "run_bash"
+      ? 'delegate(role="verifier", task="<要跑什么、要什么证据>", context="<上游交付物>")'
+      : 'delegate(role="worker", task="<要改什么>", context="<上游交付物>")';
+  return (
+    `Pipeline preset is ON: the lead does not run '${toolName}' itself — it only routes. ` +
+    `被禁止的工具：write_file / edit_file / run_bash。改用 ${hint}。`
+  );
+}
+
 export function isToolAllowedForRole(role: AgentRole, toolName: string): boolean {
   if (role === "lead" || role === "teammate") return true;
   if (role === "subagent") return !SUBAGENT_EXCLUDED.has(toolName);
@@ -198,6 +228,10 @@ export async function executeToolCall(
       status: "error",
       message: reason,
     });
+  }
+  // Pipeline 预设：lead 只能路由，自己写文件/跑命令会被这里拒掉
+  if (isToolBlockedByPreset(ctx.role, name)) {
+    return JSON.stringify({ status: "error", message: presetBlockedMessage(name) });
   }
 
   if (args === undefined) {

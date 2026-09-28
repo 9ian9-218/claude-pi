@@ -24,6 +24,8 @@ export {
   executeToolCall,
   validateArgs,
   isToolAllowedForRole,
+  isToolBlockedByPreset,
+  PIPELINE_LEAD_FORBIDDEN,
   ROLE_TOOL_ALLOWLIST,
 } from "./tools/runtime.ts";
 export { checkPath, safePath } from "./tools/path.ts";

@@ -25,10 +25,12 @@ const settingsPath = () => path.join(dir, "settings.json");
 
 describe("设置读写往返", () => {
   it("team.mode 写入后能读回（此前读侧漏解析，开关是死的）", () => {
-    setTeamMode("free");
+    // 默认 free（预设是显式 opt-in）
     expect(getTeamMode()).toBe("free");
     setTeamMode("pipeline");
     expect(getTeamMode()).toBe("pipeline");
+    setTeamMode("free");
+    expect(getTeamMode()).toBe("free");
   });
 
   it("memory.enabled 写入后能读回", () => {
@@ -52,7 +54,7 @@ describe("设置读写往返", () => {
   it("损坏的 settings.json 不阻断读取（走默认值）", () => {
     fs.writeFileSync(settingsPath(), "{ 不是 JSON");
     resetSettingsCache();
-    expect(getTeamMode()).toBe("pipeline");
+    expect(getTeamMode()).toBe("free");
     expect(readPiSettings().retry.enabled).toBe(true);
   });
 });

@@ -28,10 +28,16 @@
 
 ### 多 Agent 协作（双模共存）
 
-系统支持两种协同模式，可通过 `cpi --team-mode <free|pipeline>` 或 `/team-mode` 随时切换：
+系统支持两种协同模式，可通过 `cpi --team-mode <free|pipeline>` 或 `/team-mode` 随时切换。
+**默认为 `free`（原有行为）**；`pipeline` 是显式开启的预设，开启后由运行时**强制执行**角色委派（见下）。
 
 - **自由组队模式 (Free Swarm)**：保留开放式多代理能力。通过 `create_team` / `spawn_teammate` 自由命名角色，独立异步 loop，文件邮箱通信与任务看板认领，危险操作向 Lead 冒泡审批。**空闲超过 30 分钟即视为结束**，该 teammate 的运行循环被回收（需要时重新 `spawn_teammate`）。
 - **固定研发流水线预设 (Coding Pipeline Preset)**：专为代码编写任务打造的高确定性协同预设。由主 Agent（Lead）统一调度 5 个专职角色，各司其职，遵循标准 Markdown 交付契约与工具面白名单硬隔离：
+  **开启后强制走角色委派（由运行时执行，不是提示词建议）**：Lead 自己的 `write_file` / `edit_file` /
+  `run_bash` 会被直接拒绝，错误信息会引导它改用 `delegate(role="worker"|"verifier", ...)`，
+  因此实现与验证只能由 `worker` / `verifier` 完成。只读工具（`read_file` / `grep` / `glob`）与
+  `delegate` 不受影响。注意：呈现给模型的工具面**刻意保持不变**——fork 子 agent 复用父的工具面来复用
+  prompt cache，若在呈现层收窄，`worker` 也会拿不到 `write_file`（所以「看见」与「能执行」是两层）。
   - **scout（侦察员）**：快速定位代码、梳理调用依赖，提取最小上下文包（纯只读，严禁写文件）。
   - **planner（规划师）**：制定原子化施工步骤与验收标准（纯只读，严禁写文件）。
   - **worker（实现员）**：按计划落地代码改动并生成变更报告（全工具面，允许修改）。
