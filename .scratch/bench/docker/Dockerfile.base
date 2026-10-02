@@ -1,0 +1,24 @@
+# claude-pi 权威基准评测基础镜像
+#
+# 目标：一个容器里同时具备「跑 claude-pi」与「跑被评测仓库自带测试」的能力。
+#   - node 从官方 node 镜像搬 /usr/local（两边同为 Debian bookworm，glibc 兼容）
+#   - python 来自 python:3.11-slim（SWE-bench Verified 多数实例的原生环境代际）
+#   - pip 走国内镜像：直连 PyPI 拿不到 wheel（实测 pyarrow 无候选）
+#
+# claude-pi 源码不烤进镜像：用 bind mount 挂 /cpi，改代码免重建。
+FROM node:22-slim AS node
+
+FROM python:3.11-slim
+
+COPY --from=node /usr/local /usr/local
+
+RUN printf '[global]\nindex-url = https://pypi.tuna.tsinghua.edu.cn/simple\ntrusted-host = pypi.tuna.tsinghua.edu.cn\nbreak-system-packages = true\ndisable-pip-version-check = true\n' > /etc/pip.conf
+
+# git：agent 会用到；pytest：polyglot python 题与多数仓库测试需要
+RUN apt-get update -qq \
+ && apt-get install -y -qq --no-install-recommends git ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/* \
+ && pip install -q pytest
+
+ENV NODE_OPTIONS=""
+WORKDIR /testbed
