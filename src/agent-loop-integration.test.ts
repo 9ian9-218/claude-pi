@@ -36,7 +36,7 @@ afterEach(async () => {
   fs.rmSync(ws, { recursive: true, force: true });
 });
 
-const quiet = new LoopOptions({ quietOutput: true });
+const quiet = new LoopOptions({ quietOutput: true, skipMemoryStopHook: true });
 
 describe("agentLoop 集成（03/04）", () => {
   it("429 后指数退避重试成功（错误恢复接入 loop）", async () => {
@@ -331,7 +331,7 @@ describe("agentLoop 集成（12 会话机制）", () => {
       const comp = session.getEntries().find((e) => e.type === "compaction");
       expect(comp).toBeDefined();
       expect((comp as { summary: string }).summary).toContain("kE 摘要");
-      expect((comp as { tokensBefore: number }).tokensBefore).toBe(threshold + 1);
+      expect((comp as { tokensBefore: number }).tokensBefore).toBeGreaterThan(threshold + 1);
     } finally {
       fs.rmSync(sessDir, { recursive: true, force: true });
     }
@@ -401,8 +401,8 @@ describe("agentLoop 集成（12 会话机制）", () => {
   }, 30000);
 });
 
-describe("agentLoop 会话落盘与中断回滚（恢复）", () => {
-  it("工具执行中途中断：回滚本轮落盘，恢复后只剩 user 消息", async () => {
+describe("agentLoop 会话落盘与中断审计（恢复）", () => {
+  it("工具执行中途中断：保留调用记录并闭合所有未执行工具", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-rollback-"));
     try {
       const session = SessionManager.create(process.cwd(), dir);
@@ -433,13 +433,13 @@ describe("agentLoop 会话落盘与中断回滚（恢复）", () => {
         });
       });
       unsubscribe();
-      // ADR-0008：本轮 assistant(tool_calls) + 已执行工具结果全部回滚
+      // Cancellation preserves the assistant call and explicit cancelled results.
       const entries = session.getEntries();
-      expect(entries.filter((e) => e.type === "message")).toHaveLength(1);
-      expect(session.buildSessionContext().messages).toHaveLength(1);
-      // 磁盘文件同步回滚（重新打开验证）
+      expect(entries.filter((e) => e.type === "message")).toHaveLength(4);
+      expect(session.buildSessionContext().messages.filter(m => m.role === "tool").map(m => m.toolStatus)).toEqual(["cancelled", "cancelled"]);
+      // Reopening does not erase evidence or leave unmatched tool calls.
       const reopened = SessionManager.open(session.getSessionFile()!);
-      expect(reopened.getEntries()).toHaveLength(1);
+      expect(reopened.buildSessionContext().messages).toHaveLength(4);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

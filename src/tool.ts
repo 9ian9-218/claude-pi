@@ -22,6 +22,7 @@ export {
   getOpenaiTools,
   getToolParameters,
   executeToolCall,
+  executeToolCallResult,
   validateArgs,
   isToolAllowedForRole,
   isToolBlockedByPreset,

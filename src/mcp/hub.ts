@@ -11,6 +11,9 @@ import { type Tool } from "@modelcontextprotocol/sdk/types.js";
 import { normalizeMcpName, buildPrefixedName, parsePrefixedName, LOCAL_SERVER_NAME } from "./names.ts";
 import { sanitizeOpenaiTool, type OpenaiTool } from "../schema-strict.ts";
 import { loadMcpConfig, type McpServerConfig } from "./config.ts";
+import { isProjectCodeTrusted } from "../workspace-trust.ts";
+import { AGENT_ROOT } from "../config.ts";
+import { childEnvironment } from "../sandbox.ts";
 
 export interface RegisteredMcpTool {
   prefixedName: string;
@@ -36,6 +39,7 @@ export class MCPHub {
   private tools = new Map<string, RegisteredMcpTool>();
 
   static toolReadOnly(description: string): boolean {
+    // Display hint only; never used as a role capability grant.
     const lowered = description.toLowerCase();
     return lowered.includes("(readonly)") || lowered.includes("(read-only)") || lowered.includes("read only");
   }
@@ -66,13 +70,16 @@ export class MCPHub {
     const transport = new StdioClientTransport({
       command: config.command,
       args: config.args,
-      env: config.env,
+      env: { ...childEnvironment(), ...config.env } as Record<string, string>,
       cwd: config.cwd ?? process.cwd(),
       stderr: "pipe",
     });
     const client = new Client({ name: "claude-pi", version: "0.1.0" });
-    await client.connect(transport);
-    const listed = await client.listTools();
+    let listed: Awaited<ReturnType<Client["listTools"]>>;
+    try {
+      await client.connect(transport);
+      listed = await client.listTools({}, { timeout: 15000 });
+    } catch (e) { await transport.close().catch(() => {}); throw e; }
 
     const state: ServerState = {
       name: config.name,
@@ -117,6 +124,10 @@ export class MCPHub {
   /** 按配置连接全部 autoConnect server */
   async connectFromConfig(): Promise<void> {
     const configs = loadMcpConfig();
+    if (!isProjectCodeTrusted(AGENT_ROOT)) {
+      if (Object.values(configs).some(c => c.autoConnect)) console.error("[mcp] Automatic project MCP launches require cpi --trust-project-code.");
+      return;
+    }
     for (const cfg of Object.values(configs)) {
       if (!cfg.autoConnect) continue;
       try {
@@ -139,11 +150,11 @@ export class MCPHub {
     return this.tools.get(prefixedName) ?? null;
   }
 
-  async callPrefixedTool(prefixedName: string, arguments_: Record<string, unknown>): Promise<string> {
+  async callPrefixedTool(prefixedName: string, arguments_: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
     const [server, tool] = parsePrefixedName(prefixedName);
     const state = this.servers.get(server);
     if (!state) throw new Error(`MCP server '${server}' is not connected`);
-    const result = await state.client.callTool({ name: tool, arguments: arguments_ });
+    const result = await state.client.callTool({ name: tool, arguments: arguments_ }, undefined, { signal, timeout: 60000, maxTotalTimeout: 60000 });
     return MCPHub.formatCallResult(result as unknown as { isError?: boolean; content: unknown[]; structuredContent?: unknown });
   }
 

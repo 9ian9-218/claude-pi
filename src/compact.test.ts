@@ -236,7 +236,7 @@ describe("estimateContextTokensByUsage（kE 口径）", () => {
       { role: "tool", tool_call_id: "t", content: "r" },
       { role: "assistant", content: "b", usage: { input: 500, output: 20, cacheRead: 400, cacheWrite: 0, totalTokens: 920, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } },
     ] as ChatMessage[];
-    expect(estimateContextTokensByUsage(msgs)).toBe(500 + 400);
+    expect(estimateContextTokensByUsage(msgs)).toBe(500 + 400 + 20);
   });
 
   it("无 usage → null（调用方兜底字符估算）", () => {
@@ -318,7 +318,7 @@ describe("compactContext（手动 /compact 与自动压缩共用的执行体）"
     const out = await compactContext(messages, { session, instructions: "只保留 bug 线索" });
 
     // 口径 = 真实 usage（kE）
-    expect(out.tokensBefore).toBe(500);
+    expect(out.tokensBefore).toBe(520);
     const comp = session.getEntries().find((e) => e.type === "compaction") as
       | { summary: string; retainedTail?: ChatMessage[] }
       | undefined;

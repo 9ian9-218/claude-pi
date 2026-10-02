@@ -70,7 +70,7 @@ describe("spawnSubagent（S9）", () => {
         },
       ],
     }));
-    const result = await spawnSubagent("跑不动的任务");
+    const result = await spawnSubagent("跑不动的任务", { maxTurns: 2 });
     expect(result).toContain("Subagent stopped");
   });
 

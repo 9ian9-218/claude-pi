@@ -100,7 +100,8 @@ export class Footer extends Container {
     if ((t.cacheRead > 0 || t.cacheWrite > 0) && s.latestCacheHitRate !== undefined) {
       parts.push(dim(`CH${s.latestCacheHitRate.toFixed(1)}%`));
     }
-    if (t.cost) parts.push(dim(`$${t.cost.toFixed(3)}`));
+    if (s.priceUnknown) parts.push(dim("$?"));
+    else if (t.cost) parts.push(dim(`$${t.cost.toFixed(3)}`));
     // 子 agent 编队：用量已并入上面的 ↑↓R W $，这里只标出数量与在跑数
     if (s.agents && s.agents.count > 0) {
       const running = s.agents.running > 0 ? ` ▶${s.agents.running}` : "";

@@ -7,14 +7,16 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 
-export function writeFileAtomic(filePath: string, data: string): void {
+export function writeFileAtomic(filePath: string, data: string | Buffer): void {
   const tmp = path.join(
     path.dirname(filePath),
-    `.${path.basename(filePath)}.tmp-${process.pid.toString(36)}-${Date.now().toString(36)}`,
+    `.${path.basename(filePath)}.tmp-${randomUUID()}`,
   );
   try {
-    fs.writeFileSync(tmp, data);
+    const mode = fs.existsSync(filePath) ? fs.statSync(filePath).mode & 0o777 : 0o600;
+    fs.writeFileSync(tmp, data, { mode });
     fs.renameSync(tmp, filePath);
   } catch (e) {
     try {

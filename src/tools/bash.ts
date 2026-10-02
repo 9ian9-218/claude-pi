@@ -1,33 +1,22 @@
 /**
  * bash.ts — run_bash 工具（从 tool.ts 拆出）
  */
-import { spawnSync } from "node:child_process";
 import { getWorkdir } from "../workdir.ts";
-import { buildTool } from "./core.ts";
+import { buildTool, type ToolExecContext } from "./core.ts";
+import { runProcess } from "../process-runner.ts";
+import { shellInvocation } from "../sandbox.ts";
 
 // ── run_bash ──────────────────────────────────────────────────────────────
 
 const BASH_TIMEOUT_MS = 120_000;
 
-function execRunBash(args: Record<string, unknown>): string {
+async function execRunBash(args: Record<string, unknown>, ctx?: ToolExecContext) {
   const command = String(args["command"]);
-  try {
-    const r = spawnSync(command, {
-      cwd: getWorkdir(),
-      shell: true,
-      encoding: "utf8",
-      timeout: BASH_TIMEOUT_MS,
-      maxBuffer: 16 * 1024 * 1024,
-    });
-    if (r.status === null) {
-      return "Error: Timeout (120s)";
-    }
-    const out = `${r.stdout ?? ""}${r.stderr ?? ""}`.trim();
-    if (!out) return "(no output)";
-    return out;
-  } catch (e) {
-    return `Error: ${String(e)}`;
-  }
+  const invocation = shellInvocation(command, getWorkdir());
+  return runProcess(invocation.executable, invocation.args, {
+    cwd: getWorkdir(), signal: ctx?.signal, env: invocation.env,
+    timeoutMs: typeof args.timeout_ms === "number" ? args.timeout_ms : BASH_TIMEOUT_MS,
+  });
 }
 
 const BASH_SCHEMA = {
@@ -38,6 +27,7 @@ const BASH_SCHEMA = {
       type: "boolean",
       description: "Whether to run the command in background",
     },
+    timeout_ms: { type: "integer", minimum: 1, maximum: 3600000, description: "Command timeout in milliseconds (default 120000)." },
   },
   required: ["command", "run_in_background"],
   additionalProperties: false,

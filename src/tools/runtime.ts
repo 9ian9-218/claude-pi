@@ -12,15 +12,25 @@ import { checkPath } from "./path.ts";
 import { getAgentContext, type AgentRole } from "../teammates/context.ts";
 import { getTeamMode } from "../settings.ts";
 import { Tool, type ToolExecContext } from "./core.ts";
+import { errorResult, toolResult, type ToolResult } from "../results.ts";
+import { currentBudget, BudgetExceeded } from "../task-budget.ts";
+import { Ajv2020 } from "ajv/dist/2020.js";
+import type { ValidateFunction } from "ajv";
+import { instructionText, instructionHash } from "../repository-context.ts";
 export { Tool, buildTool, type ExecuteFn } from "./core.ts";
 export type { ToolExecContext } from "./core.ts";
 import { RUN_BASH_TOOL } from "./bash.ts";
+import { REPOSITORY_INFO_TOOL, SYMBOL_SEARCH_TOOL } from "./repository.ts";
+import { BACKGROUND_JOB_TOOL } from "./jobs.ts";
+import { RUN_VERIFICATION_TOOL } from "./verification.ts";
 import {
   READ_FILE_TOOL,
   WRITE_FILE_TOOL,
   EDIT_FILE_TOOL,
   GLOB_TOOL,
   GREP_TOOL,
+  APPLY_PATCH_TOOL,
+  RESTORE_CHECKPOINT_TOOL,
 } from "./file.ts";
 import { TODO_WRITE_TOOL } from "./todo.ts";
 import { LOAD_SKILL_TOOL } from "./skill.ts";
@@ -30,6 +40,7 @@ import {
   GET_TASK_TOOL,
   CLAIM_TASK_TOOL,
   COMPLETE_TASK_TOOL,
+  INTEGRATE_TASK_TOOL,
 } from "./tasks-board.ts";
 import {
   SUBAGENT_TASK_TOOL,
@@ -45,11 +56,17 @@ import {
 
 export const BUILTIN_TOOLS: Tool[] = [
   RUN_BASH_TOOL,
+  RUN_VERIFICATION_TOOL,
+  BACKGROUND_JOB_TOOL,
+  REPOSITORY_INFO_TOOL,
+  SYMBOL_SEARCH_TOOL,
   READ_FILE_TOOL,
   WRITE_FILE_TOOL,
   EDIT_FILE_TOOL,
   GLOB_TOOL,
   GREP_TOOL,
+  APPLY_PATCH_TOOL,
+  RESTORE_CHECKPOINT_TOOL,
   TODO_WRITE_TOOL,
   LOAD_SKILL_TOOL,
   CREATE_TASK_TOOL,
@@ -57,6 +74,7 @@ export const BUILTIN_TOOLS: Tool[] = [
   GET_TASK_TOOL,
   CLAIM_TASK_TOOL,
   COMPLETE_TASK_TOOL,
+  INTEGRATE_TASK_TOOL,
   SUBAGENT_TASK_TOOL,
   DELEGATE_TASK_TOOL,
   CREATE_TEAM_TOOL,
@@ -73,41 +91,39 @@ export const ROLE_TOOL_ALLOWLIST: Record<string, Set<string>> = {
   scout: new Set([
     "read_file",
     "grep",
-    "find_files",
-    "list_dir",
+    "glob",
     "run_bash",
   ]),
   planner: new Set([
     "read_file",
     "grep",
-    "find_files",
-    "list_dir",
+    "glob",
   ]),
   worker: new Set([
     "read_file",
     "edit_file",
     "write_file",
     "grep",
-    "find_files",
-    "list_dir",
+    "glob",
+    "apply_patch",
+    "restore_checkpoint",
     "run_bash",
     "todo_write",
   ]),
   reviewer: new Set([
     "read_file",
     "grep",
-    "find_files",
-    "list_dir",
+    "glob",
     "run_bash",
   ]),
   verifier: new Set([
     "read_file",
     "grep",
-    "find_files",
-    "list_dir",
+    "glob",
     "run_bash",
   ]),
 };
+for (const [role, allow] of Object.entries(ROLE_TOOL_ALLOWLIST)) { allow.add("repository_info"); allow.add("symbol_search"); if (role === "worker" || role === "verifier") allow.add("run_verification"); }
 
 /**
  * 角色限制的文本描述（fork 子 agent 的「后缀限制」用）。
@@ -133,7 +149,7 @@ export function describeRoleRestrictions(role: AgentRole): string {
 /**
  * pipeline 预设下 lead 不得自己落地：写文件与跑命令必须交给 worker / verifier 角色。
  */
-export const PIPELINE_LEAD_FORBIDDEN = new Set(["write_file", "edit_file", "run_bash"]);
+export const PIPELINE_LEAD_FORBIDDEN = new Set(["write_file", "edit_file", "apply_patch", "restore_checkpoint", "run_bash", "run_verification"]);
 
 /**
  * 预设禁令 —— 只在「执行闸」生效，**不动「呈现的工具面」**。
@@ -161,6 +177,7 @@ export function presetBlockedMessage(toolName: string): string {
 
 export function isToolAllowedForRole(role: AgentRole, toolName: string): boolean {
   if (role === "lead" || role === "teammate") return true;
+  if (isMcpTool(toolName) && !toolName.startsWith("mcp__local__")) return false;
   if (role === "subagent") return !SUBAGENT_EXCLUDED.has(toolName);
   const allowlist = ROLE_TOOL_ALLOWLIST[role];
   if (!allowlist) return true;
@@ -168,8 +185,11 @@ export function isToolAllowedForRole(role: AgentRole, toolName: string): boolean
 }
 
 /** 扩展注册工具（16）：动态加入注册表 */
-export function registerExtensionTool(tool: Tool): void {
+export function registerExtensionTool(tool: Tool): () => void {
+  if (BUILTIN_TOOLS.some(t => t.name === tool.name)) throw new Error(`Extensions cannot replace built-in tool '${tool.name}'`);
+  const previous = TOOL_MAP.get(tool.name);
   TOOL_MAP.set(tool.name, tool);
+  return () => { if (TOOL_MAP.get(tool.name) === tool) { if (previous) TOOL_MAP.set(tool.name, previous); else TOOL_MAP.delete(tool.name); } };
 }
 
 export function getOpenaiTools(roleOrSubagent: AgentRole | boolean = false): OpenaiTool[] {
@@ -215,7 +235,16 @@ export async function executeToolCall(
   args?: Record<string, unknown>,
   execCtx?: ToolExecContext,
 ): Promise<string> {
-  const name = toolCall.function.name;
+  return (await executeToolCallResult(toolCall, args, execCtx)).output;
+}
+
+export async function executeToolCallResult(
+  toolCall: ToolCallLike,
+  args?: Record<string, unknown>,
+  execCtx?: ToolExecContext,
+): Promise<ToolResult> {
+  // Local MCP aliases execute in this process and keep the caller's capabilities.
+  const name = toolCall.function.name.startsWith("mcp__local__") ? toolCall.function.name.slice("mcp__local__".length) : toolCall.function.name;
 
   // 角色门禁：按角色硬白名单校验（展示层过滤之外的第二道执行闸）
   const ctx = getAgentContext();
@@ -224,14 +253,11 @@ export async function executeToolCall(
       ctx.role === "subagent"
         ? `Tool '${name}' is not available to subagents`
         : `Role '${ctx.role}' is not allowed to use tool '${name}'`;
-    return JSON.stringify({
-      status: "error",
-      message: reason,
-    });
+    return errorResult(reason);
   }
   // Pipeline 预设：lead 只能路由，自己写文件/跑命令会被这里拒掉
   if (isToolBlockedByPreset(ctx.role, name)) {
-    return JSON.stringify({ status: "error", message: presetBlockedMessage(name) });
+    return errorResult(presetBlockedMessage(name));
   }
 
   if (args === undefined) {
@@ -239,37 +265,67 @@ export async function executeToolCall(
     try {
       parsed = JSON.parse(toolCall.function.arguments);
     } catch (e) {
-      return JSON.stringify({ status: "error", message: `Invalid arguments JSON: ${String(e)}` });
+      return errorResult(`Invalid arguments JSON: ${String(e)}`);
     }
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      return JSON.stringify({ status: "error", message: "Arguments must be a JSON object" });
+      return errorResult("Arguments must be a JSON object");
     }
     args = parsed as Record<string, unknown>;
   }
 
-  // MCP 工具（19）：hub 调用
-  if (isMcpTool(name)) {
-    try {
-      return await getMCPHub().callPrefixedTool(name, args);
-    } catch (e) {
-      return JSON.stringify({ status: "error", message: `MCP error: ${String((e as Error).message)}` });
+  try {
+    currentBudget()?.useTool();
+    const schema = getToolParameters(name);
+    if (!schema) return errorResult(`Unknown tool: ${name}`);
+    // Strict OpenAI tool schemas represent omitted optional fields as null.
+    // Normalize only genuinely optional, non-nullable original parameters.
+    args = structuredClone(args);
+    const required = (schema.required ?? []) as string[];
+    const properties = (schema.properties ?? {}) as Record<string, Record<string, unknown>>;
+    for (const [key, value] of Object.entries(args)) {
+      const prop = properties[key];
+      if (value === null && prop && !required.includes(key) && prop.type !== "null" && !Array.isArray(prop.anyOf) && !Array.isArray(prop.oneOf) && !Array.isArray(prop.type)) delete args[key];
     }
-  }
+    const invalid = validateArgs(args, schema);
+    if (invalid) return errorResult(invalid);
+    args = freezeInput(args);
+    const { permissionHookWithBubble } = await import("../permission-sync.ts");
+    const denied = await permissionHookWithBubble({ name, input: args, id: toolCall.id });
+    if (denied) return errorResult(denied);
+    const { triggerToolHooks, triggerHooks } = await import("../hook.ts");
+    const block = { name, input: args, id: toolCall.id };
+    const blocked = await triggerToolHooks(block);
+    if (blocked !== undefined && blocked !== null) return errorResult(String(blocked));
+    const paths = name === "apply_patch" ? (args.edits as Array<{ path: string }>).map(e => e.path) : ["write_file", "edit_file"].includes(name) ? [String(args.path)] : [];
+    for (const path of paths) {
+      const text = instructionText(path);
+      const budget = currentBudget();
+      if (text && budget && !budget.seenInstructions.has(instructionHash(text))) {
+        budget.seenInstructions.add(instructionHash(text));
+        return errorResult(`Review these scoped repository instructions before retrying the edit:${text}`);
+      }
+    }
+    if (execCtx?.signal?.aborted) return { status: "cancelled", output: "Error: tool cancelled before execution" };
+    if (execCtx?.allowBackground && name === "run_bash") {
+      const { shouldRunBackground, startBackgroundTask } = await import("../background-task.ts");
+      if (shouldRunBackground(name, args)) {
+        const id = startBackgroundTask({ ...toolCall, function: { ...toolCall.function, name } }, args, { signal: execCtx.signal });
+        return { status: "success", output: `[Background task ${id} started] Command: ${String(args.command)}. Output will arrive as a <task_notification> user message when the task completes or stalls.` };
+      }
+    }
+    const value = isMcpTool(name) ? await getMCPHub().callPrefixedTool(name, args, execCtx?.signal) : await TOOL_MAP.get(name)!.run(args, execCtx);
+    const result = toolResult(value);
+    await triggerHooks("PostToolUse", block, result.output);
+    return { ...result, output: finalizeToolOutput(name, toolCall.id, result.output) };
+  } catch (e) { if (e instanceof BudgetExceeded) return { status: "budget_exceeded", output: `Error: ${e.message}` }; return errorResult(`Tool '${name}' failed: ${String((e as Error)?.message ?? e)}`); }
+}
 
-  const tool = TOOL_MAP.get(name);
-  if (!tool) {
-    return JSON.stringify({ status: "error", message: `Unknown tool: ${name}` });
+function freezeInput<T>(value: T): T {
+  if (value && typeof value === "object") {
+    for (const child of Object.values(value)) freezeInput(child);
+    Object.freeze(value);
   }
-
-  const result = tool.run(args, execCtx);
-  const out =
-    typeof result === "string"
-      ? result
-      : result instanceof Promise
-        ? String(await result)
-        : JSON.stringify(result);
-  // L3（CC 式）：所有工具输出统一截断 + 大输出落盘引用
-  return finalizeToolOutput(name, toolCall.id, out);
+  return value;
 }
 
 // validate_args（由 hook.ts 的 validateHook 调用；对齐 hook.py validate_args）
@@ -300,7 +356,7 @@ export function validateArgs(
     if (expected === "string" && typeof value !== "string") {
       return `Parameter '${key}' must be a string`;
     }
-    if (expected === "integer" && typeof value !== "number") {
+    if (expected === "integer" && (typeof value !== "number" || !Number.isInteger(value))) {
       return `Parameter '${key}' must be an integer`;
     }
     if (expected === "number" && typeof value !== "number") {
@@ -314,8 +370,47 @@ export function validateArgs(
     }
   }
 
+  const nestedError = validateSchemaValue(args, schema);
+  if (nestedError) return nestedError;
+  try {
+    let validate = schemaValidators.get(schema);
+    if (!validate) { validate = schemaValidator.compile(schema); schemaValidators.set(schema, validate); }
+    if (!validate(args)) return `Invalid arguments: ${schemaValidator.errorsText(validate.errors)}`;
+  } catch { return "Tool schema cannot be validated; execution refused"; }
+
   if ("path" in properties && typeof args["path"] === "string") {
     return checkPath(args["path"] as string);
+  }
+  return null;
+}
+
+const schemaValidator = new Ajv2020({ strict: false, allErrors: false, validateFormats: false });
+const schemaValidators = new WeakMap<object, ValidateFunction>();
+
+function validateSchemaValue(value: unknown, schema: Record<string, unknown>, at = "arguments"): string | null {
+  if (Array.isArray(schema.enum) && !schema.enum.includes(value)) return `${at}: value is not in enum`;
+  if (schema.type === "object") {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return `${at}: expected object`;
+    const object = value as Record<string, unknown>;
+    const props = (schema.properties ?? {}) as Record<string, Record<string, unknown>>;
+    for (const key of (schema.required ?? []) as string[]) if (!(key in object)) return `${at}: Missing required parameter: ${key}`;
+    if (schema.additionalProperties === false) for (const key of Object.keys(object)) if (!(key in props)) return `${at}: Unexpected parameter: ${key}`;
+    for (const [key, prop] of Object.entries(props)) if (key in object) {
+      const err = validateSchemaValue(object[key], prop, `${at}.${key}`); if (err) return err;
+    }
+  }
+  if (schema.type === "array") {
+    if (!Array.isArray(value)) return `${at}: expected array`;
+    if (typeof schema.minItems === "number" && value.length < schema.minItems) return `${at}: too few items`;
+    if (schema.items) for (const item of value) { const err = validateSchemaValue(item, schema.items as Record<string, unknown>, at); if (err) return err; }
+  }
+  if (schema.type === "string" && typeof value !== "string") return `${at}: expected string`;
+  if (schema.type === "boolean" && typeof value !== "boolean") return `${at}: expected boolean`;
+  if (schema.type === "integer" && !Number.isInteger(value)) return `${at}: expected integer`;
+  if (schema.type === "number" && (typeof value !== "number" || !Number.isFinite(value))) return `${at}: expected number`;
+  if (typeof value === "number") {
+    if (typeof schema.minimum === "number" && value < schema.minimum) return `${at}: below minimum`;
+    if (typeof schema.maximum === "number" && value > schema.maximum) return `${at}: above maximum`;
   }
   return null;
 }

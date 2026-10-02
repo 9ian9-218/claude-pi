@@ -8,7 +8,8 @@
  * （-p/--mode json 对拍路径不触发 Hook，保持字节级行为）。
  */
 import { triggerHooks } from "./hook.ts";
-import { agentLoop } from "./agent-loop.ts";
+import { agentLoopDetailed } from "./agent-loop.ts";
+import type { RunResult } from "./results.ts";
 import { LoopOptions } from "./loop-options.ts";
 import type { SessionManager } from "./session-manager.ts";
 import type { UiEventSink } from "./ui-events.ts";
@@ -45,6 +46,10 @@ export async function runQuery(
   query: string,
   opts: QueryTurnOptions = {},
 ): Promise<string | null> {
+  return (await runQueryDetailed(query, opts)).final;
+}
+
+export async function runQueryDetailed(query: string, opts: QueryTurnOptions = {}): Promise<RunResult> {
   if (opts.runHooks !== false) {
     await triggerHooks("UserPromptSubmit", query);
     void triggerHooks("user_prompt_submit", query);
@@ -71,9 +76,10 @@ export async function runQuery(
       // 脚本模式（runHooks=false）不跑记忆 Stop 钩子：它是 fire-and-forget 的
       // 额外 LLM 调用，既不计入 usage，输出又会晚于 console 重定向还原漏进 stdout。
       ...(opts.runHooks === false ? { skipMemoryStopHook: true } : {}),
+      ...(opts.runHooks === false ? { enableBackground: false } : {}),
     });
 
-  return agentLoop(messages, {
+  return agentLoopDetailed(messages, {
     session: opts.session ?? undefined,
     loopOptions,
   });

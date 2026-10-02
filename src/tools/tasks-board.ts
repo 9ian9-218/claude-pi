@@ -7,6 +7,7 @@ import {
   runGetTask,
   runClaimTask,
   runCompleteTask,
+  integrateTask,
 } from "../tasks.ts";
 import { syncTodoFromTasks } from "./todo.ts";
 import { buildTool } from "./core.ts";
@@ -67,7 +68,7 @@ const LIST_TASKS_SCHEMA = {
   properties: {
     status_filter: {
       type: "string",
-      enum: ["all", "pending", "in_progress", "completed"],
+      enum: ["all", "pending", "in_progress", "ready_for_review", "completed"],
       description: "Filter by status, or 'all' for every task",
     },
   },
@@ -143,10 +144,12 @@ export const CLAIM_TASK_TOOL = buildTool({
 
 export const COMPLETE_TASK_TOOL = buildTool({
   name: "complete_task",
-  description: "Complete a claimed task (removes its worktree and restores the working directory).",
+  description: "Save the claimed task's patch and new files for review. Unintegrated changes retain the worktree and block dependencies. After integrating the reviewed files, call again to mark completed; dirty/unmerged worktrees are never force-deleted.",
   parameters: COMPLETE_TASK_SCHEMA,
   execute: execCompleteTask,
   isReadOnly: false,
 });
+
+export const INTEGRATE_TASK_TOOL = buildTool({ name: "integrate_task", description: "Integrate a reviewed ready_for_review task's saved files into the main workspace. Checks original file hashes, refuses conflicts, keeps checkpoints and worktrees, then completes and unblocks dependencies. Does not commit or alter staging.", parameters: COMPLETE_TASK_SCHEMA, execute: async args => { try { return await integrateTask(String(args.task_id)); } catch (e) { return `Error: ${String(e)}`; } }, isReadOnly: false });
 
 // ── subagent（09） ─────────────────────────────────────────────────────────

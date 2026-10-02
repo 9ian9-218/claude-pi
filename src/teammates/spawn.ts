@@ -86,7 +86,7 @@ async function runTeammateLoop(options: {
   });
   const ctx = profileToContext(profile);
 
-  const { agentLoop } = await import("../agent-loop.ts");
+  const { agentLoopDetailed } = await import("../agent-loop.ts");
 
   // 可观测性：teammate 的事件只喂注册表（TUI 折叠面板 / /agents），不占 lead 聊天区。
   // 它是持久 agent（WORK → IDLE → … 直到 shutdown / 空闲超时），故用量按回合累计。
@@ -138,20 +138,21 @@ async function runTeammateLoop(options: {
         maybeReinjectIdentity(messages, { name, role, teamName });
 
         updateAgentRun(runKey, { phase: "working" });
-        const result = await agentLoop(messages, {
+        const result = await agentLoopDetailed(messages, {
           maxTurn: TEAMMATE_WORK_MAX_TURNS,
           maxTokens: 6000,
           loopOptions: LoopOptions.fromProfile(profile, { uiEvents: agentSink }),
         });
-        if (result) {
+        if (result.status !== "success") throw new Error(`Teammate ${result.status}: ${result.reason ?? "no final result"}`);
+        if (result.final) {
           await sendPlainMessage({
             fromAgent: name,
             toAgent: TEAM_LEAD_NAME,
-            text: result,
+            text: result.final,
             teamName,
             color,
           });
-          updateAgentRun(runKey, { result });
+          updateAgentRun(runKey, { result: result.final });
           lockedPrint(`  \x1b[36m[${name}]\x1b[0m work round done — report sent to lead inbox`);
         }
 

@@ -9,7 +9,7 @@ import { writeFileAtomic } from "./atomic-write.ts";
 import path from "node:path";
 import { AGENT_ROOT, resolveAgentDirs } from "./config.ts";
 import { withFileLock } from "./file-lock.ts";
-import { createTaskWorktree, removeTaskWorktree } from "./worktree.ts";
+import { createTaskWorktree, removeTaskWorktree, preserveTaskArtifact, artifactIntegrated, integrateTaskArtifact, type TaskArtifact } from "./worktree.ts";
 import { setWorktreeOverride } from "./workdir.ts";
 
 // 测试可注入；默认 .agent/tasks
@@ -23,7 +23,8 @@ export interface Task {
   id: string;
   subject: string;
   description: string;
-  status: "pending" | "in_progress" | "completed";
+  status: "pending" | "in_progress" | "ready_for_review" | "completed";
+  artifact?: TaskArtifact;
   owner: string | null;
   blockedBy: string[];
   blocks: string[];
@@ -34,6 +35,7 @@ function highwatermarkFile(): string {
 }
 
 function taskPath(taskId: string): string {
+  if (!/^task_\d+$/.test(taskId)) throw new Error("Invalid task id");
   return path.join(tasksDir, `${taskId}.json`);
 }
 
@@ -62,6 +64,7 @@ function writeHighwatermark(value: number): void {
 
 function maxIdFromTaskFiles(): number {
   let maxId = 0;
+  if (!fs.existsSync(tasksDir)) return maxId;
   for (const f of fs.readdirSync(tasksDir).filter((f) => f.startsWith("task_") && f.endsWith(".json"))) {
     const num = parseTaskNum(path.basename(f, ".json"));
     if (num !== null) maxId = Math.max(maxId, num);
@@ -121,6 +124,7 @@ function taskFromDict(data: Record<string, unknown>): Task {
     owner: (data["owner"] as string | null) ?? null,
     blockedBy: Array.isArray(data["blockedBy"]) ? (data["blockedBy"] as string[]) : [],
     blocks: Array.isArray(data["blocks"]) ? (data["blocks"] as string[]) : [],
+    ...(data.artifact ? { artifact: data.artifact as TaskArtifact } : {}),
   };
 }
 
@@ -398,7 +402,7 @@ export async function completeTask(
   let blockIds: string[] = [];
   await withFileLock(taskLockPath(taskId), async () => {
     const task = taskFromDict(JSON.parse(fs.readFileSync(p, "utf8")));
-    if (task.status !== "in_progress") {
+    if (task.status !== "in_progress" && task.status !== "ready_for_review") {
       throw new Error(`Task ${taskId} is ${task.status}, cannot complete`);
     }
     if (options.owner !== null && options.owner !== undefined && task.owner !== null && task.owner !== options.owner) {
@@ -406,12 +410,20 @@ export async function completeTask(
         `Task ${taskId} is owned by ${task.owner}; only the owner can complete it`,
       );
     }
-    task.status = "completed";
+    const artifact = preserveTaskArtifact(taskId) ?? task.artifact;
+    if (artifact) task.artifact = artifact;
+    task.status = artifact && artifact.files.length > 0 && !artifactIntegrated(artifact) ? "ready_for_review" : "completed";
     writeFileAtomic(p, JSON.stringify(task, null, 2));
     subject = task.subject;
     taskRef = task.id;
     blockIds = [...task.blocks];
   });
+
+  const delivered = loadTask(taskId);
+  if (delivered.status === "ready_for_review") {
+    setWorktreeOverride(null);
+    return `Ready for review ${taskRef} (${subject}). Worktree retained at ${delivered.artifact?.worktree}; artifacts: ${delivered.artifact?.directory}. Integrate the reviewed files, then call complete_task again. Dependencies remain blocked until integration.`;
+  }
 
   // 移除 worktree（best-effort）并恢复工作目录
   removeTaskWorktree(taskId);
@@ -434,6 +446,15 @@ export async function completeTask(
   return msg;
 }
 
+export async function integrateTask(taskId: string): Promise<string> {
+  await withFileLock(taskLockPath(taskId), async () => {
+    const task = loadTask(taskId);
+    if (task.status !== "ready_for_review" || !task.artifact) throw new Error("Task must be ready_for_review with saved artifacts");
+    integrateTaskArtifact(task.artifact);
+  });
+  return completeTask(taskId);
+}
+
 // ── 工具入口（供 LLM 调用）───────────────────────────────────────────────
 
 export function runCreateTask(subject: string, description = "", blockedBy: string[] = []): string {
@@ -452,7 +473,7 @@ export function runListTasks(statusFilter = "all"): string {
   const filtered = statusFilter !== "all" ? tasks.filter((t) => t.status === statusFilter) : tasks;
   if (filtered.length === 0) return "No tasks. Use create_task to add some.";
   const lines = filtered.map((t) => {
-    const icon = { pending: "○", in_progress: "●", completed: "✓" }[t.status] ?? "?";
+    const icon = { pending: "○", in_progress: "●", ready_for_review: "◇", completed: "✓" }[t.status] ?? "?";
     const deps = t.blockedBy.length > 0 ? ` (blockedBy: ${t.blockedBy.join(", ")})` : "";
     const blocks = t.blocks.length > 0 ? ` (blocks: ${t.blocks.join(", ")})` : "";
     const owner = t.owner ? ` [${t.owner}]` : "";
@@ -477,4 +498,3 @@ export function runClaimTask(taskId: string, owner?: string): Promise<string> {
 export function runCompleteTask(taskId: string): Promise<string> {
   return completeTask(taskId);
 }
-

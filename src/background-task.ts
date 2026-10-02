@@ -4,7 +4,13 @@
  * 长耗时 bash 后台运行：子进程事件驱动 + stall 看门狗（静默/交互 prompt 检测），
  * 完成/停滞时经 message-queue 注入 <task_notification>。
  */
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { runProcess } from "./process-runner.ts";
+import { shellInvocation } from "./sandbox.ts";
+import { writeFileAtomic } from "./atomic-write.ts";
+import type { ToolResult } from "./results.ts";
 import { getWorkdir } from "./workdir.ts";
 import { enqueuePendingNotification } from "./message-queue.ts";
 import { triggerHooks } from "./hook.ts";
@@ -129,7 +135,7 @@ export function enqueueCompletionNotification(
   summary: string,
   output: string,
   toolUseId: string | null,
-  options: { recipient?: string } = {},
+  options: { recipient?: string; status?: string } = {},
 ): void {
   let preview: string;
   if (output.length <= COMPLETION_OUTPUT_PREVIEW) {
@@ -142,7 +148,7 @@ export function enqueueCompletionNotification(
   const message =
     `<task_notification>\n` +
     `  <task_id>${bgId}</task_id>\n` +
-    `  <status>completed</status>\n` +
+    `  <status>${options.status === undefined || options.status === "success" ? "completed" : options.status}</status>\n` +
     `  <summary>${summary}</summary>\n` +
     toolUseLine +
     `\nOutput:\n${preview}\n` +
@@ -152,172 +158,102 @@ export function enqueueCompletionNotification(
 
 // ── 后台执行 ──────────────────────────────────────────────────────────────
 
-const BASH_MAX_OUTPUT = 50_000;
-
 interface RunningTask {
   process: ChildProcess | null;
   command: string;
   toolName: string;
+  controller: AbortController;
+  recordPath?: string;
 }
-
 const runningTasks = new Map<string, RunningTask>();
 let bgCounter = 0;
 
-export function runBashWithExitCode(
+export async function runBashWithExitCode(
   command: string,
-  options: { bgId?: string; toolUseId?: string | null; recipient?: string } = {},
+  options: { bgId?: string; toolUseId?: string | null; recipient?: string; signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<[string, number]> {
-  const { bgId = "", toolUseId = null, recipient } = options;
-  return new Promise((resolve) => {
-    let proc: ChildProcess;
-    try {
-      proc = spawn(command, { shell: true, cwd: getWorkdir(), stdio: ["ignore", "pipe", "pipe"] });
-    } catch (e) {
-      resolve([`Error: ${String(e)}`, 1]);
-      return;
+  const result = await runBackgroundProcess(command, options);
+  // Compatibility surface. Structured results are persisted and used by notifications.
+  return [((result.stdout ?? "") + (result.stderr ?? "")).trim().slice(0, 50_000) || (result.exitCode !== null ? "(no output)" : result.output), result.exitCode ?? 1];
+}
+
+async function runBackgroundProcess(command: string, options: {
+  bgId?: string; toolUseId?: string | null; recipient?: string; signal?: AbortSignal; timeoutMs?: number;
+}): Promise<ToolResult> {
+  let tail = "", lastGrowth = Date.now();
+  const started = Date.now();
+  let notified = false;
+  const watchdog = setInterval(() => {
+    if (notified || Date.now() - lastGrowth < STALL_THRESHOLD_S * 1000) return;
+    const prompt = looksLikePrompt(tail);
+    if (prompt || Date.now() - started >= STALL_MAX_WATCHDOG_S * 1000) {
+      notified = true;
+      enqueueStallNotification(options.bgId ?? "", command, options.toolUseId ?? null, tail, { recipient: options.recipient, isPrompt: prompt });
     }
-
-    if (bgId) {
-      runningTasks.set(bgId, { process: proc, command, toolName: "run_bash" });
-    }
-
-    const outputChunks: string[] = [];
-    let lastGrowth = Date.now();
-    let lastSize = 0;
-    let stallNotified = false;
-    const startTime = Date.now();
-
-    proc.stdout?.on("data", (chunk: Buffer) => {
-      outputChunks.push(chunk.toString());
-      lastGrowth = Date.now();
+  }, STALL_CHECK_INTERVAL_S * 1000);
+  try {
+    const invocation = shellInvocation(command, getWorkdir());
+    return await runProcess(invocation.executable, invocation.args, {
+      cwd: getWorkdir(), env: invocation.env, signal: options.signal,
+      timeoutMs: options.timeoutMs ?? 120_000, outputLimitBytes: 50_000,
+      onOutput: chunk => { tail = (tail + chunk).slice(-STALL_TAIL_BYTES); lastGrowth = Date.now(); },
+      onSpawn: process => { const task = runningTasks.get(options.bgId ?? ""); if (task) task.process = process; },
     });
-    proc.stderr?.on("data", (chunk: Buffer) => {
-      outputChunks.push(chunk.toString());
-      lastGrowth = Date.now();
-    });
-
-    // stall 看门狗（对齐 Python watchdog 线程）
-    const watchdog = setInterval(() => {
-      if (proc.exitCode !== null) {
-        clearInterval(watchdog);
-        return;
-      }
-      const currentSize = outputChunks.reduce((sum, c) => sum + c.length, 0);
-      if (currentSize > lastSize) {
-        lastSize = currentSize;
-        lastGrowth = Date.now();
-        return;
-      }
-      if (Date.now() - lastGrowth < STALL_THRESHOLD_S * 1000) return;
-      const tail = outputChunks.join("").slice(-STALL_TAIL_BYTES);
-      const isPrompt = looksLikePrompt(tail);
-      const elapsed = Date.now() - startTime;
-
-      if (isPrompt) {
-        if (stallNotified) {
-          clearInterval(watchdog);
-          return;
-        }
-        stallNotified = true;
-        enqueueStallNotification(bgId, command, toolUseId, tail, { recipient, isPrompt: true });
-        console.log(`  \x1b[33m[stall watchdog] ${bgId}: interactive prompt detected\x1b[0m`);
-        clearInterval(watchdog);
-      } else if (elapsed >= STALL_MAX_WATCHDOG_S * 1000) {
-        if (stallNotified) {
-          clearInterval(watchdog);
-          return;
-        }
-        stallNotified = true;
-        enqueueStallNotification(bgId, command, toolUseId, tail, { recipient, isPrompt: false });
-        console.log(
-          `  \x1b[33m[stall watchdog] ${bgId}: no output for ${STALL_THRESHOLD_S}s (total > ${STALL_MAX_WATCHDOG_S}s)\x1b[0m`,
-        );
-        clearInterval(watchdog);
-      } else {
-        lastGrowth = Date.now();
-      }
-    }, STALL_CHECK_INTERVAL_S * 1000);
-
-    proc.on("close", (code) => {
-      clearInterval(watchdog);
-      if (bgId) runningTasks.delete(bgId);
-      const out = outputChunks.join("").trim();
-      const output = out ? out.slice(0, BASH_MAX_OUTPUT) : "(no output)";
-      resolve([output, code ?? 1]);
-    });
-    proc.on("error", (e) => {
-      clearInterval(watchdog);
-      if (bgId) runningTasks.delete(bgId);
-      resolve([`Error: ${String(e)}`, 1]);
-    });
-  });
+  } catch (e) { return { status: "error", output: `Error: ${String(e)}`, exitCode: null }; }
+  finally { clearInterval(watchdog); }
 }
 
 export function killBgTask(bgId: string): string {
   const info = runningTasks.get(bgId);
   if (!info) return `Error: no running task '${bgId}'`;
-  const proc = info.process;
-  if (!proc) return `Error: task '${bgId}' is not a bash process and cannot be killed`;
-  const command = info.command;
-  runningTasks.delete(bgId);
-  try {
-    proc.kill();
-  } catch (e) {
-    return `Error killing task '${bgId}': ${String(e)}`;
-  }
-  console.log(`  \x1b[33m[kill] ${bgId}: ${command.slice(0, 60)}\x1b[0m`);
-  return `Killed background task '${bgId}' (${command.slice(0, 60)})`;
+  info.controller.abort();
+  return `Killed background task '${bgId}' (${info.command.slice(0, 60)})`;
 }
 
-export interface ToolCallLike {
-  id?: string;
-  function: { name: string; arguments: string };
-}
+export interface ToolCallLike { id?: string; function: { name: string; arguments: string } }
 
-/** 启动后台任务，返回 bg_id（对齐 start_background_task） */
-export function startBackgroundTask(
-  toolCall: ToolCallLike,
-  args: Record<string, unknown>,
-  options: { recipient?: string } = {},
-): string {
+export function startBackgroundTask(toolCall: ToolCallLike, args: Record<string, unknown>, options: { recipient?: string; signal?: AbortSignal } = {}): string {
   bgCounter += 1;
   const bgId = `bg_${String(bgCounter).padStart(4, "0")}`;
+  const command = String(args.command ?? "");
   const toolName = toolCall.function.name;
-  const command = String(args["command"] ?? "");
-  const block = { name: toolName, input: args };
-
-  runningTasks.set(bgId, { process: null, command, toolName });
-
+  const controller = new AbortController();
+  const signal = options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal;
+  const jobDir = path.join(getWorkdir(), ".agent", "jobs");
+  fs.mkdirSync(jobDir, { recursive: true });
+  // The process identity in the filename prevents stale IDs overwriting previous runs.
+  const recordPath = path.join(jobDir, `${process.pid}-${bgId}.json`);
+  const record = { id: bgId, ownerPid: process.pid, command, startedAt: Date.now(), status: "running" };
+  writeFileAtomic(recordPath, JSON.stringify(record));
+  runningTasks.set(bgId, { process: null, command, toolName, controller, recordPath });
   void (async () => {
-    let output: string;
-    let exitCode: number;
+    let result: ToolResult;
     try {
-      if (toolName === "run_bash") {
-        [output, exitCode] = await runBashWithExitCode(command, {
-          bgId,
-          toolUseId: toolCall.id ?? null,
-          recipient: options.recipient,
-        });
-      } else {
-        // 06：仅 run_bash 后台化（executeToolCall 导入避免循环依赖）
-        const { executeToolCall } = await import("./tool.ts");
-        output = await executeToolCall(toolCall, args);
-        exitCode = output.startsWith("Error") ? 1 : 0;
-      }
-    } finally {
-      runningTasks.delete(bgId);
-    }
-    await triggerHooks("PostToolUse", block, output);
-    const summary = buildCompletionSummary(toolName, command, exitCode);
-    enqueueCompletionNotification(bgId, summary, output, toolCall.id ?? null, {
-      recipient: options.recipient,
-    });
-    console.log(
-      `  \x1b[32m[background done] ${bgId}: ${command.slice(0, 40) || toolName} (exit code ${exitCode})\x1b[0m`,
-    );
+      result = toolName === "run_bash"
+        ? await runBackgroundProcess(command, { bgId, signal, toolUseId: toolCall.id, recipient: options.recipient, timeoutMs: typeof args.timeout_ms === "number" ? args.timeout_ms : undefined })
+        : { status: "error", output: "Error: only run_bash supports background execution", exitCode: 1 };
+      writeFileAtomic(recordPath, JSON.stringify({ ...record, status: result.status, finishedAt: Date.now(), result }));
+      await triggerHooks("PostToolUse", { name: toolName, input: args }, result.output);
+      enqueueCompletionNotification(bgId, buildCompletionSummary(toolName, command, result.exitCode ?? 1), result.output, toolCall.id ?? null, { recipient: options.recipient, status: result.status });
+    } catch (e) {
+      // Background rejections must never become an unhandled process-wide failure.
+      enqueueCompletionNotification(bgId, "Background task failed", `Error: ${String(e)}`, toolCall.id ?? null, { recipient: options.recipient, status: "error" });
+    } finally { runningTasks.delete(bgId); }
   })();
-
-  console.log(`  \x1b[33m[background] dispatched ${bgId}: ${command.slice(0, 40) || toolName}\x1b[0m`);
   return bgId;
 }
 
+export function getBackgroundJobs(): unknown[] {
+  const dir = path.join(getWorkdir(), ".agent", "jobs");
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir).filter(f => f.endsWith(".json")).map(file => {
+    try {
+      const record = JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"));
+      if (record.status === "running" && (record.ownerPid !== process.pid || !runningTasks.has(record.id))) {
+        // A different process may still own it; do not kill arbitrary PIDs after restart.
+        record.status = "unknown_after_restart";
+      }
+      return record;
+    } catch { return { status: "error", file }; }
+  });
+}

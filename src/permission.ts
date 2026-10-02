@@ -41,7 +41,7 @@ export const PERMISSION_RULES: PermissionRule[] = [
     tools: ["read_file"],
     check: (args) => {
       const p = typeof args["path"] === "string" ? args["path"] : "";
-      return [".env", "credentials", "secret", "token"].some((s) => p.includes(s));
+      return [".env", "auth.json", "credentials", "secret", "token", ".ssh/", ".aws/"].some((s) => p.includes(s));
     },
     message: "Reading potentially sensitive file",
   },

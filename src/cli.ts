@@ -11,7 +11,8 @@ import path from "node:path";
 import readline from "node:readline/promises";
 import { PROJECT_ROOT, initRuntime } from "./config.ts";
 import { installFatalHandlers } from "./fatal.ts";
-import { runQuery } from "./query-pipeline.ts";
+import { runQuery, runQueryDetailed } from "./query-pipeline.ts";
+import type { RunResult } from "./results.ts";
 import { triggerHooks } from "./hook.ts";
 import type { ChatMessage } from "./client.ts";
 import { UiEventSink } from "./ui-events.ts";
@@ -81,7 +82,7 @@ function cliExtensionPaths(args: string[]): string[] {
 function createExtensionManager(sessionRef: { current: SessionManager | null }) {
   return new ExtensionManager({
     registerTool: (t) => {
-      registerExtensionTool(
+      return registerExtensionTool(
         buildTool({
           name: t.name,
           description: t.description,
@@ -91,7 +92,7 @@ function createExtensionManager(sessionRef: { current: SessionManager | null }) 
       );
     },
     registerCommand: (n, h) => {
-      registerSlashCommand({ name: n, description: "", handler: (args) => h(args, {}) });
+      return registerSlashCommand({ name: n, description: "", handler: (args) => h(args, {}) });
     },
     appendEntry: (t, d) => sessionRef.current?.appendCustom(t, d) ?? "",
     beforeLoad: () => {
@@ -212,29 +213,40 @@ async function runSingleTurn(args: string[], mode: "print" | "json"): Promise<vo
   const query = stdin.trim() || positionals(args).join(" ") || "";
   if (!query) {
     console.error("Error: no input. Pipe stdin or pass a prompt argument.");
-    process.exit(1);
-  }
-  const session = pickSession(args);
-
-  if (session) {
-    await runQuery(query, { session, quietOutput: true, runHooks: false });
-    const messages = session.buildSessionContext().messages;
-    emitSingleTurn(messages, mode);
+    if (mode === "json") process.stdout.write(JSON.stringify({ turns: [], final: null, status: "error", error: "No input. Pipe stdin or pass a prompt argument." }) + "\n");
+    process.exitCode = 1;
     return;
   }
+  const controller = new AbortController();
+  const interrupt = () => controller.abort(new DOMException("Interrupted by user", "AbortError"));
+  // Keep listeners installed while the signal is dispatched: signal-exit style
+  // dependencies may re-raise it when a once-listener has already disappeared.
+  process.on("SIGINT", interrupt); process.on("SIGTERM", interrupt);
+  try {
+    const session = pickSession(args);
 
-  // 无会话（--no-session）：调用方持有消息数组，agentLoop 原地追加后取回
-  const messages: ChatMessage[] = [];
-  await runQuery(query, { quietOutput: true, runHooks: false, outMessages: messages });
-  emitSingleTurn(messages, mode);
+    if (session) {
+      const result = await runQueryDetailed(query, { session, signal: controller.signal, quietOutput: true, runHooks: false });
+      const messages = session.buildSessionContext().messages;
+      emitSingleTurn(messages, mode, result);
+      return;
+    }
+
+    // 无会话（--no-session）：调用方持有消息数组，agentLoop 原地追加后取回
+    const messages: ChatMessage[] = [];
+    const result = await runQueryDetailed(query, { signal: controller.signal, quietOutput: true, runHooks: false, outMessages: messages });
+    emitSingleTurn(messages, mode, result);
+  } finally { process.removeListener("SIGINT", interrupt); process.removeListener("SIGTERM", interrupt); }
 }
 
-function emitSingleTurn(messages: ChatMessage[], mode: "print" | "json"): void {
-  const final = finalContent(messages);
+function emitSingleTurn(messages: ChatMessage[], mode: "print" | "json", result: RunResult): void {
+  const final = result.status === "success" ? result.final ?? finalContent(messages) : result.final;
+  process.exitCode = result.status === "success" ? 0 : result.status === "cancelled" ? 130 : result.status === "budget_exceeded" ? 2 : 1;
   if (mode === "print") {
-    process.stdout.write((final ?? "(no output)") + "\n");
+    process.stdout.write((final ?? result.reason ?? "(no output)") + "\n");
+    if (result.status !== "success" && result.reason) process.stderr.write(result.reason + "\n");
   } else {
-    process.stdout.write(JSON.stringify({ turns: messages, final }, null, 2) + "\n");
+    process.stdout.write(JSON.stringify({ turns: messages, final, status: result.status, budget: result.budget, ...(result.reason ? { error: result.reason } : {}) }, null, 2) + "\n");
   }
 }
 
@@ -318,6 +330,7 @@ async function runTui(
       totals.cacheWrite += fleet.usage.cacheWrite;
       totals.cost += fleet.usage.cost;
       return {
+        priceUnknown: Boolean(model && model.cost.input === 0 && model.cost.output === 0),
         totals,
         latestCacheHitRate: latestCacheHitRate(entries),
         ...(model ? { context: computeContextUsage(entries, messages, model.contextWindow) } : {}),
@@ -436,6 +449,19 @@ async function main(): Promise<void> {
   }
 
   initRuntime();
+  if (args.includes("--doctor")) {
+    const { runDoctor } = await import("./doctor.ts");
+    const report = await runDoctor({ checkApi: args.includes("--check-api") });
+    process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+    process.exitCode = report.status === "ok" ? 0 : 1;
+    return;
+  }
+  if (args.includes("--trust-project-code")) {
+    const { trustProjectCode } = await import("./workspace-trust.ts");
+    trustProjectCode(process.cwd());
+    process.stdout.write("Current project extensions and MCP configuration trusted. Changes require renewed trust.\n");
+    return;
+  }
 
   if (args.includes("--team-mode")) {
     const idx = args.indexOf("--team-mode");
@@ -511,4 +537,9 @@ async function main(): Promise<void> {
   await getMCPHub().shutdown();
 }
 
-void main();
+void main().catch(error => {
+  const args = process.argv.slice(2);
+  const message = String((error as Error)?.message ?? error);
+  if (args.includes("--mode") && args[args.indexOf("--mode") + 1] === "json") process.stdout.write(JSON.stringify({ turns: [], final: null, status: "error", error: message }) + "\n");
+  process.stderr.write(`Error: ${message}\n`); process.exitCode = 1;
+});

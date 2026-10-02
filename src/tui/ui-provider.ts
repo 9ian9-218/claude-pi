@@ -67,8 +67,10 @@ export const ui = {
 
 const entryRenderers = new Map<string, (data: unknown) => string>();
 
-export function registerEntryRenderer(customType: string, renderer: (data: unknown) => string): void {
+export function registerEntryRenderer(customType: string, renderer: (data: unknown) => string): () => void {
+  const previous = entryRenderers.get(customType);
   entryRenderers.set(customType, renderer);
+  return () => { if (entryRenderers.get(customType) === renderer) { if (previous) entryRenderers.set(customType, previous); else entryRenderers.delete(customType); } };
 }
 
 export function renderCustomEntry(customType: string, data: unknown): string | null {

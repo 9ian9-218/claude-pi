@@ -14,6 +14,9 @@ import { peekMemorySnapshot } from "./memory-scope.ts";
 import { getSkillCatalog } from "./skill-load.ts";
 import { getMCPHub } from "./mcp/hub.ts";
 import { getTeamMode } from "./settings.ts";
+import { instructionText, instructionHash } from "./repository-context.ts";
+import { currentBudget } from "./task-budget.ts";
+import { getWorkdir } from "./workdir.ts";
 
 const TASKS_DIR = resolveAgentDirs(AGENT_ROOT).tasksDir;
 const MEMORY_DIR = resolveAgentDirs(AGENT_ROOT).memoryDir;
@@ -434,6 +437,7 @@ export interface PromptContext {
   mcp_tool_count?: number;
   /** 协同模式：pipeline 走角色流水线指令，free 走自由组队指令 */
   team_mode?: "pipeline" | "free";
+  repository_instructions?: string;
 }
 
 export function assembleSystemPrompt(
@@ -445,7 +449,10 @@ export function assembleSystemPrompt(
   const identity = options.role && options.role !== "lead" && options.role !== "teammate"
     ? getRoleIdentity(options.role, workspace)
     : (options.isSubagent ? SUBAGENT_IDENTITY.replace("{workspace}", workspace) : AGENT_IDENTITY.replace("{workspace}", workspace));
-  const parts = [identity];
+  const guidance = "\n\nInspect repository_info for test entry points; confirm symbol_search candidates in context. Preserve test expectations from user specifications. File edits save checkpoints. complete_task may return ready_for_review: review saved artifacts and integrate_task before claiming dependent tasks.\n";
+  const verification = ["scout", "reviewer", "planner"].includes(options.role ?? "lead") ? "" : "For tests/build/typechecks use run_verification with an observable acceptance criterion. It preserves the actual exit code. Do not append echo, pipelines or '|| true' to verification commands.\n";
+  const parts = [identity, guidance + verification];
+  if (context.repository_instructions) parts.push(context.repository_instructions);
   if (!isSpecialist) {
     // 预设：pipeline 给角色流水线指令，free 给自由组队指令（二选一，不叠加）
     parts.push(
@@ -480,7 +487,7 @@ const PROMPT_CACHE_MAX = 32;
 const _promptCache = new Map<string, string>();
 
 function contextCacheKey(context: PromptContext, isSubagent: boolean, role?: AgentRole): string {
-  return JSON.stringify({ ...context, _isSubagent: isSubagent, _role: role }, Object.keys(context).sort());
+  return JSON.stringify(Object.fromEntries(Object.entries({ ...context, _isSubagent: isSubagent, _role: role }).sort(([a], [b]) => a.localeCompare(b))));
 }
 
 export function getSystemPrompt(
@@ -516,6 +523,8 @@ function buildFrozenMemoryText(): string {
 }
 
 export function updateContext(_context: PromptContext, _messages: unknown[]): PromptContext {
+  const instructions = instructionText();
+  currentBudget()?.seenInstructions.add(instructionHash(instructions));
   let mcpServers: string[] = [];
   let mcpToolCount = 0;
   try {
@@ -527,7 +536,8 @@ export function updateContext(_context: PromptContext, _messages: unknown[]): Pr
   }
   return {
     skill_catalog: getSkillCatalog(),
-    workspace: process.cwd(),
+    workspace: getWorkdir(),
+    repository_instructions: instructions,
     memories: buildFrozenMemoryText(),
     enabled_tools: [],
     mcp_servers: mcpServers,

@@ -11,6 +11,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { AGENT_ROOT, resolveAgentDirs } from "../config.ts";
 import { createExtensionApi, type ExtensionAPI } from "./api.ts";
+import { isProjectCodeTrusted } from "../workspace-trust.ts";
 
 export interface LoadedExtension {
   path: string;
@@ -42,7 +43,8 @@ export function discoverExtensionFiles(cliPaths: string[] = []): string[] {
     }
   };
   collect(userExtensionsDir());
-  collect(projectExtensionsDir());
+  if (isProjectCodeTrusted(AGENT_ROOT)) collect(projectExtensionsDir());
+  else if (fs.existsSync(projectExtensionsDir()) && fs.readdirSync(projectExtensionsDir()).length) console.error("[ext] Project extensions require cpi --trust-project-code; changed code requires renewed trust.");
   for (const p of cliPaths) {
     if (fs.existsSync(p)) files.push(path.resolve(p));
   }
@@ -52,8 +54,8 @@ export function discoverExtensionFiles(cliPaths: string[] = []): string[] {
 export class ExtensionManager {
   private loaded: LoadedExtension[] = [];
   private deps: {
-    registerTool: (t: import("./api.ts").ExtensionToolDef) => void;
-    registerCommand: (n: string, h: import("./api.ts").ExtensionCommandHandler) => void;
+    registerTool: (t: import("./api.ts").ExtensionToolDef) => void | (() => void);
+    registerCommand: (n: string, h: import("./api.ts").ExtensionCommandHandler) => void | (() => void);
     appendEntry: (t: string, d?: unknown) => string;
     beforeLoad?: () => void;
   };
@@ -68,6 +70,7 @@ export class ExtensionManager {
     this.deps.beforeLoad?.();
     const files = discoverExtensionFiles(cliPaths);
     for (const file of files) {
+      let api: ExtensionAPI | undefined;
       try {
         const url =
           pathToFileURL(file).href + `?t=${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
@@ -77,15 +80,16 @@ export class ExtensionManager {
           console.log(`  \x1b[33m[ext] skip ${file}: no default export function\x1b[0m`);
           continue;
         }
-        const api = createExtensionApi({
+        api = createExtensionApi({
           registerTool: this.deps.registerTool,
           registerCommand: this.deps.registerCommand,
           appendEntry: this.deps.appendEntry,
         });
-        factory(api);
+        await factory(api);
         this.loaded.push({ path: file, api });
         console.log(`  \x1b[32m[ext] loaded ${file}\x1b[0m`);
       } catch (e) {
+        api?.dispose();
         console.log(`  \x1b[31m[ext] failed to load ${file}: ${String((e as Error).message)}\x1b[0m`);
       }
     }
@@ -98,6 +102,7 @@ export class ExtensionManager {
   }
 
   unload(): void {
+    for (const ext of this.loaded.slice().reverse()) ext.api.dispose();
     this.loaded = [];
   }
 

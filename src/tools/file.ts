@@ -2,6 +2,7 @@
  * file.ts — 文件工具 read_file / write_file / edit_file / glob / grep（从 tool.ts 拆出）
  */
 import fs from "node:fs";
+import path from "node:path";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import { globSync } from "glob";
@@ -10,6 +11,11 @@ import { buildTool } from "./core.ts";
 import { runGrepSearch } from "../grep.ts";
 import { ensureRipgrep } from "../ripgrep.ts";
 import { checkPath, safePath } from "./path.ts";
+import { writeFileAtomic } from "../atomic-write.ts";
+import { fileHash, saveFileCheckpoint, restoreFileCheckpoint } from "../checkpoints.ts";
+import type { ToolExecContext } from "./core.ts";
+import { instructionText, instructionHash } from "../repository-context.ts";
+import { currentBudget } from "../task-budget.ts";
 
 // ── read_file ─────────────────────────────────────────────────────────────
 
@@ -92,7 +98,10 @@ async function execReadFile(args: Record<string, unknown>): Promise<string> {
     if (outcome.lines.length === 0 && !isEmptyFile) {
       return `Error: offset ${offset} is beyond end of file (${outcome.totalLines} lines total)`;
     }
-    return formatReadOutput(p, outcome);
+    const hash = fs.statSync(filePath).size <= 4 * 1024 * 1024 ? `\n<sha256>${fileHash(fs.readFileSync(filePath))}</sha256>` : "";
+    const instructions = instructionText(filePath);
+    currentBudget()?.seenInstructions.add(instructionHash(instructions));
+    return formatReadOutput(p, outcome) + hash + instructions;
   } catch (e) {
     return `Error: ${String(e)}`;
   }
@@ -127,13 +136,17 @@ export const READ_FILE_TOOL = buildTool({
 
 // ── write_file ────────────────────────────────────────────────────────────
 
-function execWriteFile(args: Record<string, unknown>): string {
+function execWriteFile(args: Record<string, unknown>, ctx?: ToolExecContext): string {
   const p = String(args["path"]);
   const content = String(args["content"]);
   try {
     const filePath = safePath(p);
-    fs.writeFileSync(filePath, content);
-    return `Wrote ${Buffer.byteLength(content)} bytes to ${p}`;
+    checkExpectedHash(filePath, args.expected_hash);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const id = saveFileCheckpoint(filePath, content);
+    writeFileAtomic(filePath, content);
+    ctx?.session?.appendCustom("file_checkpoint", { id, path: p });
+    return `Wrote ${Buffer.byteLength(content)} bytes to ${p}\nCheckpoint: ${id}`;
   } catch (e) {
     return `Error: ${String(e)}`;
   }
@@ -144,6 +157,7 @@ const WRITE_SCHEMA = {
   properties: {
     path: { type: "string", description: "The path of the file to write" },
     content: { type: "string", description: "The content to write into the file" },
+    expected_hash: { type: "string", description: "Expected SHA-256 from read_file; conflict if changed. Use 'missing' for a new file." },
   },
   required: ["path", "content"],
   additionalProperties: false,
@@ -159,18 +173,34 @@ export const WRITE_FILE_TOOL = buildTool({
 
 // ── edit_file ─────────────────────────────────────────────────────────────
 
-function execEditFile(args: Record<string, unknown>): string {
+function checkExpectedHash(p: string, expected: unknown): void {
+  if (fs.existsSync(p) && fs.lstatSync(p).isSymbolicLink()) throw new Error("Editing symbolic links is not allowed");
+  if (typeof expected !== "string") return;
+  const actual = fs.existsSync(p) ? fileHash(fs.readFileSync(p)) : "missing";
+  if (expected !== actual) throw new Error("Edit conflict: file changed since read_file");
+}
+
+function replaceUnique(text: string, oldText: string, newText: string): string {
+  if (!oldText) throw new Error("old_text must not be empty");
+  const first = text.indexOf(oldText);
+  if (first === -1) throw new Error("text not found");
+  if (text.indexOf(oldText, first + 1) !== -1) throw new Error("Ambiguous edit: old_text matches more than once; include more context");
+  return text.slice(0, first) + newText + text.slice(first + oldText.length);
+}
+
+function execEditFile(args: Record<string, unknown>, ctx?: ToolExecContext): string {
   const p = String(args["path"]);
   const oldText = String(args["old_text"]);
   const newText = String(args["new_text"]);
   try {
     const filePath = safePath(p);
+    checkExpectedHash(filePath, args.expected_hash);
     const text = fs.readFileSync(filePath, "utf8");
-    if (!text.includes(oldText)) {
-      return "Error: text not found";
-    }
-    fs.writeFileSync(filePath, text.replace(oldText, newText)); // 只替换第一处
-    return `Edited ${p}`;
+    const next = replaceUnique(text, oldText, newText);
+    const id = saveFileCheckpoint(filePath, next);
+    writeFileAtomic(filePath, next);
+    ctx?.session?.appendCustom("file_checkpoint", { id, path: p });
+    return `Edited ${p}\nCheckpoint: ${id}`;
   } catch (e) {
     return `Error: ${String(e)}`;
   }
@@ -182,6 +212,7 @@ const EDIT_SCHEMA = {
     path: { type: "string", description: "The path of the file to edit" },
     old_text: { type: "string", description: "Exact text to replace" },
     new_text: { type: "string", description: "Replacement text" },
+    expected_hash: { type: "string", description: "Expected SHA-256 from read_file; refuses stale edits." },
   },
   required: ["path", "old_text", "new_text"],
   additionalProperties: false,
@@ -193,6 +224,52 @@ export const EDIT_FILE_TOOL = buildTool({
   parameters: EDIT_SCHEMA,
   execute: execEditFile,
   isReadOnly: false,
+});
+
+export const APPLY_PATCH_TOOL = buildTool({
+  name: "apply_patch",
+  description: "Apply multiple unique contextual replacements. Validate all files before writing; save checkpoints and roll back on failure.",
+  parameters: {
+    type: "object", properties: { edits: { type: "array", minItems: 1, items: {
+      type: "object", properties: { path: { type: "string" }, old_text: { type: "string" }, new_text: { type: "string" }, expected_hash: { type: "string" } },
+      required: ["path", "old_text", "new_text"], additionalProperties: false,
+    } } }, required: ["edits"], additionalProperties: false,
+  },
+  execute: (args, ctx) => {
+    const applied: string[] = [];
+    try {
+      const edits = args.edits as Array<Record<string, unknown>>;
+      const staged = new Map<string, { before: string; after: string }>();
+      for (const edit of edits) {
+        const p = safePath(String(edit.path));
+        checkExpectedHash(p, edit.expected_hash);
+        const before = fs.readFileSync(p, "utf8");
+        const previous = staged.get(p)?.after ?? before;
+        staged.set(p, { before, after: replaceUnique(previous, String(edit.old_text), String(edit.new_text)) });
+      }
+      for (const [p, data] of staged) {
+        if (fs.readFileSync(p, "utf8") !== data.before) throw new Error("Edit conflict: file changed while preparing patch");
+        const id = saveFileCheckpoint(p, data.after);
+        writeFileAtomic(p, data.after);
+        applied.push(id);
+        ctx?.session?.appendCustom("file_checkpoint", { id, path: p });
+      }
+      return `Patched ${staged.size} files; checkpoints: ${applied.join(", ")}`;
+    } catch (e) {
+      const conflicts: string[] = [];
+      for (const id of applied.reverse()) {
+        try { restoreFileCheckpoint(id); } catch (restoreError) { conflicts.push(String(restoreError)); }
+      }
+      return `Error: ${String(e)}${conflicts.length ? `; rollback conflicts: ${conflicts.join("; ")}` : ""}`;
+    }
+  },
+});
+
+export const RESTORE_CHECKPOINT_TOOL = buildTool({
+  name: "restore_checkpoint",
+  description: "Restore an agent file checkpoint. Refuses to overwrite subsequent user edits.",
+  parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
+  execute: (args) => { try { return restoreFileCheckpoint(String(args.id)); } catch (e) { return `Error: ${String(e)}`; } },
 });
 
 // ── glob ──────────────────────────────────────────────────────────────────

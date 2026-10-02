@@ -30,6 +30,7 @@ export interface ExtensionUi {
 }
 
 export interface ExtensionAPI {
+  dispose(): void;
   on(event: string, handler: HookCallback): void;
   registerTool(tool: ExtensionToolDef): void;
   registerCommand(name: string, handler: ExtensionCommandHandler): void;
@@ -40,20 +41,23 @@ export interface ExtensionAPI {
 }
 
 export function createExtensionApi(deps: {
-  registerTool: (t: ExtensionToolDef) => void;
-  registerCommand: (n: string, h: ExtensionCommandHandler) => void;
+  registerTool: (t: ExtensionToolDef) => void | (() => void);
+  registerCommand: (n: string, h: ExtensionCommandHandler) => void | (() => void);
   appendEntry: (t: string, d?: unknown) => string;
 }): ExtensionAPI {
+  const disposers: Array<() => void> = [];
+  const remember = (disposer: void | (() => void)) => { if (disposer) disposers.push(disposer); };
   return {
+    dispose() { for (const dispose of disposers.splice(0).reverse()) { try { dispose(); } catch { /* Continue disposal. */ } } },
     on(event: string, handler: HookCallback): void {
-      registerHook(event, handler);
+      remember(registerHook(event, handler));
     },
-    registerTool: deps.registerTool,
-    registerCommand: deps.registerCommand,
+    registerTool: tool => remember(deps.registerTool(tool)),
+    registerCommand: (name, handler) => remember(deps.registerCommand(name, handler)),
     appendEntry: deps.appendEntry,
     ui: uiProvider,
     registerEntryRenderer: (customType, renderer) => {
-      registerEntryRenderer(customType, renderer);
+      remember(registerEntryRenderer(customType, renderer));
     },
   };
 }

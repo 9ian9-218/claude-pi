@@ -79,7 +79,7 @@ export async function spawnSubagent(
   description: string,
   options: SpawnSubagentOptions = {},
 ): Promise<string> {
-  const { agentLoop } = await import("../agent-loop.ts");
+  const { agentLoopDetailed } = await import("../agent-loop.ts");
   const role: AgentRole = options.role ?? "subagent";
   const subId = `${role}-${randomBytes(4).toString("hex")}`;
   const goal = description.trim();
@@ -220,7 +220,7 @@ export async function spawnSubagent(
 
   try {
     const result = await runWithAgentContext(profileToContext(profile), async () =>
-      agentLoop(messages, {
+      agentLoopDetailed(messages, {
         maxTurn: maxTurns,
         maxTokens: 6000,
         ...(childSession ? { session: childSession } : {}),
@@ -228,22 +228,22 @@ export async function spawnSubagent(
       }),
     );
 
-    if (result) {
+    if (result.status === "success" && result.final) {
       refreshUsage();
-      finishAgentRun(subId, { status: "done", result });
+      finishAgentRun(subId, { status: "done", result: result.final });
       parentSession?.appendCustom("subagent_end", {
         agentId: subId,
         status: "done",
-        result: result.slice(0, 500),
+        result: result.final.slice(0, 500),
       });
       logIfNoUi(options.parentUiEvents, ` \x1b[35m[${role} done] ${subId}\x1b[0m`);
-      return result;
+      return result.final;
     }
 
     refreshUsage();
-    finishAgentRun(subId, { status: "failed", error: SUBAGENT_STOPPED_MESSAGE });
+    finishAgentRun(subId, { status: "failed", error: result.reason ?? SUBAGENT_STOPPED_MESSAGE });
     parentSession?.appendCustom("subagent_end", { agentId: subId, status: "failed" });
-    return SUBAGENT_STOPPED_MESSAGE;
+    return `Error: subagent ${result.status}: ${result.reason ?? SUBAGENT_STOPPED_MESSAGE}`;
   } catch (err) {
     refreshUsage();
     finishAgentRun(subId, { status: "failed", error: String(err) });

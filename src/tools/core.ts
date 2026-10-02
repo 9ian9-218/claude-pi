@@ -14,6 +14,8 @@ import type { UiEventSink } from "../ui-events.ts";
 export interface ToolExecContext {
   session?: SessionManager | null;
   uiEvents?: UiEventSink;
+  signal?: AbortSignal;
+  allowBackground?: boolean;
 }
 
 export type ExecuteFn = (
@@ -65,4 +67,3 @@ export function buildTool(init: ConstructorParameters<typeof Tool>[0]): Tool {
 
 // ── 路径校验 ──────────────────────────────────────────────────────────────
 // ── 注册表与对外 API ──────────────────────────────────────────────────────
-

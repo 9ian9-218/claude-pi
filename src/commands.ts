@@ -30,9 +30,16 @@ const entries = new Map<string, SlashCommandDef>();
 const aliasIndex = new Map<string, string>();
 
 /** 注册命令（内置/会话/扩展统一入口） */
-export function registerCommand<C = unknown>(def: SlashCommandDef<C>): void {
+export function registerCommand<C = unknown>(def: SlashCommandDef<C>): () => void {
+  const previous = entries.get(def.name);
   entries.set(def.name, def as SlashCommandDef<unknown>);
   for (const a of def.aliases ?? []) aliasIndex.set(a, def.name);
+  return () => {
+    if (entries.get(def.name) !== def) return;
+    if (previous) entries.set(def.name, previous); else entries.delete(def.name);
+    for (const a of def.aliases ?? []) if (aliasIndex.get(a) === def.name) aliasIndex.delete(a);
+    for (const a of previous?.aliases ?? []) aliasIndex.set(a, previous!.name);
+  };
 }
 
 /** 按名字或别名查命令 */
@@ -57,8 +64,8 @@ export interface SlashCommand {
   handler: (args: string) => Promise<string> | string;
 }
 
-export function registerSlashCommand(cmd: SlashCommand): void {
-  registerCommand({
+export function registerSlashCommand(cmd: SlashCommand): () => void {
+  return registerCommand({
     name: cmd.name,
     description: cmd.description,
     kind: "extension",

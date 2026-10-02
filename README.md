@@ -3,9 +3,10 @@
 类 Claude Code 架构的 TypeScript Agent 运行时（独立项目，见 ADR-0010）——pi 风格树形会话管理（含断线恢复）、pi-tui 终端界面与可扩展接口体系。
 
 > ⚠️ **安全警示（请先读这条）**：本工具**不是沙箱**，它按你的本机权限运行。
-> - **扩展**（`.agent/extensions/`、`~/.claude-pi/extensions/`、`-e`）执行任意代码，仅加载你信任的扩展。
+> - **扩展**执行任意代码。项目扩展与自动启动的 MCP 需先执行 `cpi --trust-project-code`；项目代码或配置变更会使信任失效。用户目录扩展及显式 `-e` 路径视为用户授权。
 > - **`run_bash` 是全信任通道**：只有极少数关键词（`rm `、`> /etc/`、`chmod 777`）和 7 条黑名单会触发确认，其余命令（含联网下载并执行、读取 `~/.ssh` 等）默认直接执行；黑名单是字符串匹配，属**减速带而非安全边界**。
-> - 文件工具的路径检查会拦截工作区外的读写（含软链接解析），但 bash 不受此限。
+> - 文件工具检查工作区路径；scout/reviewer 的 bash 只允许受控的直接 Git 查询。verifier 使用 Linux bubblewrap 隔离，禁止联网、保护源码，仅 `/tmp` 和 `.agent/verifier-output` 可写；不可隔离时拒绝执行。lead/worker 默认仍使用可信 shell。
+> - `CLAUDE_PI_SANDBOX=readonly` 可将可信角色的 shell 切到同一受限模式。执行任意可信扩展仍拥有宿主进程权限。
 > - 因此：**不要把来路不明的文件内容或 MCP 返回内容直接喂给 agent**（提示注入可驱动上述通道）。
 
 ## 特性
@@ -16,7 +17,7 @@
 - **工具体系**——`run_bash` / `read_file` / `write_file` / `edit_file` / `glob` / `todo_write` / `load_skill`，外加任务看板、Subagent、Teammates、MCP 等内置工具
 - **Hook 事件机制**——`UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `Stop` 等事件挂载点，用于拦截与扩展运行时行为
 - **三级权限门控**——bash 黑名单（7 条字符串）→ 规则匹配（工作区外写入 / 三类危险命令 / 敏感文件）→ 按身份确认（lead 弹窗、subagent 同步冒泡、teammate 邮箱冒泡）。**命中才询问，未命中默认放行**，见顶部安全警示
-- **错误恢复**——429/529 退避重试、fallback 模型、`max_tokens` 升级与续写
+- **错误恢复**——429/529 退避重试、`max_tokens` 升级与续写；错误、超时、中断和预算耗尽返回明确状态
 - **上下文压缩**——L3 出口（超大工具结果落盘 + 预览引用）、L4 摘要（自动超阈值 / 手动 `/compact`，写 compaction entry，保留固定 20K 原文尾巴）；L1 Snip / L2 Micro 已移除（CC 无对应物，且就地改写会破坏缓存前缀）
 
 ### 树形会话
@@ -180,3 +181,19 @@ npm test               # vitest 全量测试
 ```
 
 运行时数据（会话/团队/记忆/任务/Skill/worktree/扩展）存于项目内 `.agent/`（gitignored）。
+
+## 可靠性改进与验证
+
+详见 [运行说明与验收证据](docs/reliability-validation.md)。主要入口：
+
+```sh
+cpi --doctor                 # 离线诊断配置、依赖、预算和沙箱能力
+cpi --doctor --check-api     # 查询提供商模型目录，不打印凭据
+npm run check                # 类型检查与全部测试
+npm run eval:reliability     # 三次独立故障回归，保留全部结果
+npm run test:pack            # tarball + 仅生产依赖安装 + CLI HTTP 往返
+```
+
+`--mode json` 保留 `turns/final`，新增 `status/error/budget`；成功退出 0、失败或超时退出 1、预算耗尽退出 2、取消退出 130。`status=success` 表示 agent 正常完成，业务正确性仍需独立验收。验证测试使用 `run_verification`，按原始程序退码报告，禁止以 `; echo` 或 `|| true` 掩盖失败。
+
+文件工具支持预期 SHA-256、唯一上下文匹配、原子写入和检查点；`apply_patch` 先验证多个文件，再应用。`restore_checkpoint` 不覆盖修改之后的用户改动。`complete_task` 保存产物后可能返回 `ready_for_review`；审查后用 `integrate_task` 检查主工作区冲突并整合，再解除依赖。未提交或未合并的 worktree/分支会保留，不自动强制删除。

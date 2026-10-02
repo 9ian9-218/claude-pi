@@ -37,6 +37,7 @@ export interface AgentFleetStats {
 /** footer 统计数据源：渲染时现算（由 cli 层注入，null = 无会话） */
 export interface FooterStats {
   totals: UsageTotals;
+  priceUnknown?: boolean;
   /** 最新一条 assistant 的缓存命中率（0-100） */
   latestCacheHitRate?: number;
   context?: ContextUsage;

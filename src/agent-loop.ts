@@ -11,13 +11,13 @@
 import { randomUUID } from "node:crypto";
 import { triggerHooks } from "./hook.ts";
 import { LoopOptions } from "./loop-options.ts";
-import { executeToolCall, getOpenaiTools, type ToolCallLike } from "./tool.ts";
+import { executeToolCallResult, getOpenaiTools, type ToolCallLike } from "./tool.ts";
+import type { RunResult, ToolResult } from "./results.ts";
 import { RecoveryState, sendMessagesWithRecovery, ERROR_PREFIX } from "./error-recovery.ts";
 import { snapshotMessages } from "./memory.ts";
 import { primeMemorySnapshot } from "./memory-scope.ts";
 import { SUBAGENT_STOPPED_MESSAGE } from "./prompt.ts";
 import { consumePendingNotifications } from "./message-queue.ts";
-import { shouldRunBackground, startBackgroundTask } from "./background-task.ts";
 import { getWorkdir, runWithWorkdir } from "./workdir.ts";
 import { getAgentContext } from "./teammates/context.ts";
 import { maybeCompact } from "./compact.ts";
@@ -28,6 +28,9 @@ import { detectCacheMiss, CACHE_TTL_MS } from "./cache-stats.ts";
 import { emitNoticeOrLog, type TurnEndEvent } from "./ui-events.ts";
 import { processPendingLeadPermissions } from "./permission-sync.ts";
 import { formatIdleNotificationInjection } from "./teammates/protocol.ts";
+import { TaskBudget, BudgetExceeded, currentBudget, runWithBudget, budgetLimitsFromEnv } from "./task-budget.ts";
+import type { BudgetLimits } from "./task-budget.ts";
+import { RequestTimeout } from "./request-deadline.ts";
 
 /** 耗时补记：把模型请求耗时挂到 assistant 裸消息上（S4 轨迹分析用，0ms 也记录） */
 function attachDuration(msg: ChatMessage, startedAt: number): ChatMessage {
@@ -41,6 +44,16 @@ export interface AgentLoopOptions {
   loopOptions?: LoopOptions;
   /** 树形会话（工单 12）：消息同步落盘，L4 写 compaction entry */
   session?: SessionManager;
+  onResult?: (result: RunResult) => void;
+  budget?: BudgetLimits;
+}
+
+export async function agentLoopDetailed(messages: ChatMessage[], options: AgentLoopOptions = {}): Promise<RunResult> {
+  let result: RunResult = { status: "error", final: null, reason: "Agent stopped without a result" };
+  try {
+    await agentLoop(messages, { ...options, onResult: r => { result = r; options.onResult?.(r); } });
+  } catch (e) { result = { ...result, status: e instanceof BudgetExceeded ? "budget_exceeded" : e instanceof RequestTimeout ? "timeout" : (e as Error)?.name === "AbortError" ? "cancelled" : "error", final: null, reason: String((e as Error)?.message ?? e) }; }
+  return result;
 }
 
 export async function agentLoop(
@@ -48,7 +61,26 @@ export async function agentLoop(
   options: AgentLoopOptions = {},
 ): Promise<string | null> {
   // 为整个 loop 上下文建立 workdir（claim/complete 的 setWorktreeOverride 在此生效）
-  return runWithWorkdir(getWorkdir(), () => agentLoopInner(messages, options));
+  const inherited = currentBudget();
+  const budget = inherited ?? new TaskBudget(options.budget ?? budgetLimitsFromEnv());
+  const original = options.loopOptions ?? LoopOptions.fromLegacyIsSubagent(options.isSubagent ?? false);
+  const cancelRoot = () => budget.controller.abort(original.signal?.reason instanceof BudgetExceeded ? original.signal.reason : new DOMException("Interrupted by user", "AbortError"));
+  if (!inherited && original.signal) {
+    original.signal.addEventListener("abort", cancelRoot, { once: true });
+    if (original.signal.aborted) cancelRoot();
+  }
+  const signal = original.signal ? AbortSignal.any([original.signal, budget.controller.signal]) : budget.controller.signal;
+  try {
+    return await runWithBudget(budget, () => runWithWorkdir(getWorkdir(), () => agentLoopInner(messages, { ...options, onResult: result => {
+      const outcome = { ...result, budget: { usage: { ...budget.usage }, limits: budget.limits } };
+      options.session?.appendCustom("run_end", outcome);
+      options.onResult?.(outcome);
+    }, loopOptions: new LoopOptions({ ...original, signal }) })));
+  } catch (e) {
+    const result: RunResult = { status: e instanceof BudgetExceeded ? "budget_exceeded" : e instanceof RequestTimeout ? "timeout" : (e as Error)?.name === "AbortError" ? "cancelled" : "error", final: null, reason: String((e as Error)?.message ?? e), budget: { usage: { ...budget.usage }, limits: budget.limits } };
+    options.session?.appendCustom("run_end", result); options.onResult?.(result);
+    throw e;
+  } finally { if (!inherited) { original.signal?.removeEventListener("abort", cancelRoot); budget.dispose(); } }
 }
 
 /**
@@ -74,32 +106,17 @@ async function runToolCall(
   args: Record<string, unknown>,
   opts: LoopOptions,
   session: SessionManager | undefined,
-): Promise<{ result: string; isError: boolean }> {
+): Promise<{ result: string; isError: boolean; status: ToolResult["status"]; execution?: ChatMessage["execution"] }> {
   const name = toolCall.function.name;
   try {
-    const block = { name, input: args, id: toolCall.id };
-    const blocked = await triggerHooks("PreToolUse", block);
-    if (blocked !== null && blocked !== undefined) {
-      return { result: JSON.stringify({ status: "error", message: String(blocked) }), isError: true };
-    }
-    if (opts.enableBackground && shouldRunBackground(name, args)) {
-      const bgId = startBackgroundTask(toolCall, args);
-      const command = String(args["command"] ?? "");
-      return {
-        result:
-          `[Background task ${bgId} started] ` +
-          `Command: ${command}. ` +
-          `Output will arrive as a <task_notification> user message ` +
-          `when the task completes or stalls.`,
-        isError: false,
-      };
-    }
-    const result = await executeToolCall(toolCall, args, {
+    const outcome = await executeToolCallResult(toolCall, args, {
       session,
+      signal: opts.signal,
+      allowBackground: opts.enableBackground,
       ...(opts.uiEvents ? { uiEvents: opts.uiEvents } : {}),
     });
-    await triggerHooks("PostToolUse", block, result);
-    return { result, isError: false };
+    const { exitCode, signal, durationMs, truncated, artifactRefs } = outcome;
+    return { result: outcome.output, isError: outcome.status !== "success", status: outcome.status, execution: { exitCode, signal, durationMs, truncated, artifactRefs } };
   } catch (err) {
     return {
       result: JSON.stringify({
@@ -107,6 +124,7 @@ async function runToolCall(
         message: `Tool '${name}' failed: ${String((err as Error)?.message ?? err)}`,
       }),
       isError: true,
+      status: "error",
     };
   }
 }
@@ -117,6 +135,10 @@ async function agentLoopInner(
 ): Promise<string | null> {
   const { maxTurn = 100, maxTokens = 8000, isSubagent = false, loopOptions, session } = options;
   const opts = loopOptions ?? LoopOptions.fromLegacyIsSubagent(isSubagent);
+  const finish = (status: RunResult["status"], final: string | null = null, reason?: string) => {
+    options.onResult?.({ status, final, ...(reason ? { reason } : {}) });
+    return final;
+  };
   const recoveryState = new RecoveryState();
   let effectiveMaxTokens = maxTokens;
   const preCompress = snapshotMessages(messages);
@@ -126,6 +148,12 @@ async function agentLoopInner(
   const bgRecipient = undefined;
 
   for (let turn = 0; turn < maxTurn; turn++) {
+    if (opts.signal?.aborted) {
+      opts.uiEvents?.emit("turnEnd", { stopReason: "aborted" });
+      if (opts.signal.reason instanceof BudgetExceeded) return finish("budget_exceeded", null, opts.signal.reason.message);
+      return finish("cancelled", null, "Interrupted by user");
+    }
+    currentBudget()?.check();
     // teammate/通知注入
     if (opts.injectLeadNotifications) {
       // 仅 Lead 消费队友权限队列；subagent 走同步冒泡（bubbleSubagentPermission），
@@ -159,8 +187,6 @@ async function agentLoopInner(
     // 不再改写 messages：记忆已在 system 段（冻结），消息前缀保持逐字节稳定
     const requestMessages = messages;
 
-    // 本次 LLM 调用前的最新落盘点：中断回滚目标（ADR-0008：不落脏数据）
-    const llmStartLeaf = session?.getLeafId() ?? null;
     const llmStartedAt = performance.now();
     const llmResult = await sendMessagesWithRecovery({
       requestMessages,
@@ -185,10 +211,11 @@ async function agentLoopInner(
       continue;
     }
     if (llmResult.action === "abort") {
+      if (opts.signal?.reason instanceof BudgetExceeded) return finish("budget_exceeded", null, opts.signal.reason.message);
       if (session) {
         if (llmResult.reason === "interrupted") {
           // ADR-0008：用户中断不落脏数据——回滚本次未完成的落盘（无落盘时 no-op）
-          session.truncateTo(llmStartLeaf);
+          // No completed side effects are removed from the execution history.
         } else {
           // 不可恢复错误：把 error-recovery 追加的 [Error] 收尾消息落盘，
           // 断连恢复后用户能看到回合失败原因（而非无痕中断）
@@ -208,7 +235,7 @@ async function agentLoopInner(
         stopReason: llmResult.reason === "interrupted" ? "aborted" : "error",
         errorMessage: llmResult.errorMessage,
       });
-      return null;
+      return finish(llmResult.reason === "interrupted" ? "cancelled" : llmResult.reason === "timeout" ? "timeout" : "error", null, llmResult.errorMessage);
     }
     const message = llmResult.message;
     // 缓存诊断（对齐 pi）：回合结束前扫描分支（未含本消息），检测应命中却重计费
@@ -253,14 +280,20 @@ async function agentLoopInner(
       const assistantMsg = attachDuration(message.modelDump() as unknown as ChatMessage, llmStartedAt);
       messages.push(assistantMsg);
       session?.appendMessage(assistantMsg);
-      for (const toolCall of message.toolCalls) {
+      for (let toolIndex = 0; toolIndex < message.toolCalls.length; toolIndex++) {
+        const toolCall = message.toolCalls[toolIndex];
         // ADR-0008：中断后不再执行/落盘剩余工具——回滚本轮已落盘内容并结束回合
         if (opts.signal?.aborted) {
-          session?.truncateTo(llmStartLeaf);
+          const status = opts.signal.reason instanceof BudgetExceeded ? "budget_exceeded" : "cancelled";
+          for (const pending of message.toolCalls.slice(toolIndex)) {
+            const cancelled: ChatMessage = { role: "tool", tool_call_id: pending.id, content: `Error: tool ${status} before execution`, toolError: true, toolStatus: status };
+            messages.push(cancelled); session?.appendMessage(cancelled);
+          }
           opts.uiEvents?.emit("turnEnd", { stopReason: "aborted", errorMessage: undefined });
-          return null;
+          return finish(status, null, status === "budget_exceeded" ? String(opts.signal.reason.message) : "Interrupted by user");
         }
         const toolStartedAt = performance.now();
+        session?.appendCustom("tool_started", { id: toolCall.id, name: toolCall.function.name, timestamp: Date.now() });
         let args: unknown;
         let parseError = "";
         try {
@@ -278,6 +311,8 @@ async function agentLoopInner(
         });
         let toolResult: string;
         let toolError = false;
+        let toolStatus: ToolResult["status"] = "error";
+        let execution: ChatMessage["execution"];
         if (args === null) {
           toolResult = JSON.stringify({
             status: "error",
@@ -294,6 +329,8 @@ async function agentLoopInner(
           const outcome = await runToolCall(toolCall, args as Record<string, unknown>, opts, session);
           toolResult = outcome.result;
           toolError = outcome.isError;
+          toolStatus = outcome.status;
+          execution = outcome.execution;
         }
         opts.uiEvents?.emit("tool", {
           phase: "result",
@@ -314,10 +351,13 @@ async function agentLoopInner(
           tool_call_id: toolCall.id,
           content: toolResult,
           durationMs: toolDurationMs,
+          toolStatus,
+          ...(execution ? { execution } : {}),
           ...(toolError ? { toolError: true as const } : {}),
         };
         messages.push(toolMsg);
         session?.appendMessage(toolMsg);
+        session?.appendCustom("tool_completed", { id: toolCall.id, name: toolCall.function.name, status: toolStatus, durationMs: toolDurationMs, timestamp: Date.now() });
       }
       continue;
     }
@@ -327,21 +367,23 @@ async function agentLoopInner(
       messages.push(assistantMsg);
       session?.appendMessage(assistantMsg);
       if (opts.exitOnFinalContent) {
-        return message.content;
+        return finish("success", message.content);
       }
     }
     if (opts.exitOnFinalContent) {
-      return SUBAGENT_STOPPED_MESSAGE;
+      return finish("error", SUBAGENT_STOPPED_MESSAGE, "Model returned no final content");
     }
 
     // 自然结束 → Stop hook（memory 提取）
     const force = await triggerHooks("Stop", messages, preCompress, opts.skipMemoryStopHook);
+    currentBudget()?.check();
     if (force) {
       const msg: ChatMessage = { role: "user", content: String(force) };
       messages.push(msg);
       session?.appendMessage(msg);
       continue;
     }
+    finish("success", message.content);
     return null;
   }
   // 轮数上限耗尽：此前是静默 return null，用户分不清「干完了」还是「撞上限」
@@ -354,6 +396,7 @@ async function agentLoopInner(
     session?.appendMessage(msg);
     emitNoticeOrLog(opts.uiEvents, `  \x1b[33m[turn] ${notice}\x1b[0m`);
   }
+  finish("budget_exceeded", null, `${opts.exitOnFinalContent ? "Subagent stopped. " : ""}Turn limit ${maxTurn} exhausted`);
   return null;
 }
 

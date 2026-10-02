@@ -22,6 +22,7 @@ import type { AgentRole } from "./teammates/context.ts";
 import { readPiSettings, setSettingsOverrideForTest } from "./settings.ts";
 import { emitNoticeOrLog, type UiEventSink } from "./ui-events.ts";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { RequestTimeout } from "./request-deadline.ts";
 
 export { DEFAULT_MAX_TOKENS };
 
@@ -75,7 +76,7 @@ function appendErrorMessage(messages: ChatMessage[], text: string): void {
 export type LLMInvokeResult =
   | { action: "success"; message: AssistantMessage }
   | { action: "retry"; maxTokens?: number }
-  | { action: "abort"; reason?: "interrupted" | "error"; errorMessage?: string };
+  | { action: "abort"; reason?: "interrupted" | "error" | "timeout"; errorMessage?: string };
 
 export interface RecoveryOptions {
   requestMessages: ChatMessage[];
@@ -165,10 +166,15 @@ export async function sendMessagesWithRecovery(
     // ADR-0008：用户中断不落脏数据；仅真实错误才 appendErrorMessage
     if (!signal?.aborted) {
       appendErrorMessage(messages, errText.slice(0, 200));
+      if (e instanceof RequestTimeout && e.partialText) {
+        const partial = messages[messages.length - 1];
+        partial.content += `\n[Partial model output; request did not complete]\n${e.partialText}`;
+        partial.partial = true;
+      }
     }
     return signal?.aborted
       ? { action: "abort", reason: "interrupted" as const }
-      : { action: "abort", reason: "error" as const, errorMessage: errText.slice(0, 200) };
+      : { action: "abort", reason: e instanceof RequestTimeout ? "timeout" as const : "error" as const, errorMessage: errText.slice(0, 200) };
   }
 
   // 传输错误（重试耗尽后仍失败）

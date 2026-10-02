@@ -32,7 +32,7 @@ export function syncTodoFromTasks(): void {
   if (tasks.length === 0) return;
   CURRENT_TODOS = tasks.map((t) => ({
     content: `[${t.id}] ${t.subject}`,
-    status: t.status,
+    status: t.status === "ready_for_review" ? "in_progress" : t.status,
   }));
   formatTodoBoard();
 }
@@ -53,7 +53,7 @@ function execTodoWrite(args: Record<string, unknown>): string {
       return `Error: todos[${i}] has invalid status '${t.status}'`;
     }
   }
-  CURRENT_TODOS = todos as TodoItem[];
+  CURRENT_TODOS = structuredClone(todos) as TodoItem[];
   return formatTodoBoard(true);
 }
 

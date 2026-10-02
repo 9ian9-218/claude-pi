@@ -134,7 +134,7 @@ describe("分发与崩溃兜底（隐患 04/05）", () => {
     fs.writeFileSync(
       script,
       [
-        'import { installFatalHandlers } from "/home/z9ian9/myproject/claude-pi/src/fatal.ts";',
+        `import { installFatalHandlers } from ${JSON.stringify(path.join(PROJECT_ROOT, "src/fatal.ts"))};`,
         "installFatalHandlers();",
         'setTimeout(() => { throw new Error("boom-test"); }, 20);',
       ].join("\n"),

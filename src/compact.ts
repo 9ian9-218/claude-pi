@@ -160,7 +160,7 @@ export function estimateContextTokensByUsage(messages: ChatMessage[]): number | 
     const m = messages[i];
     if (m.role === "assistant" && m.usage) {
       const t = m.usage.input + m.usage.cacheRead + m.usage.cacheWrite;
-      if (t > 0) return t;
+      if (t > 0) return t + (m.usage.output ?? 0) + estimateMessagesTokens(messages.slice(i + 1));
     }
   }
   return null;
@@ -298,15 +298,19 @@ function buildSummaryPrompt(messages: ChatMessage[], options: SummaryOptions = {
   const totalEst = estimateMessagesTokens(messages);
   const inputCap = summarizeInputCap();
   if (totalEst > inputCap) {
+    // Keep the initial user specification even when a large tool history evicts it.
+    const initial = messages.find(m => m.role === "user");
+    const pinned = initial ? { ...initial, content: truncateToTokens(String(initial.content ?? ""), Math.floor(inputCap / 3)) } : null;
     const truncated: ChatMessage[] = [];
-    let running = 0;
+    let running = pinned ? estimateMessageTokens(pinned) : 0;
     for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i] === initial) continue;
       const sz = estimateMessageTokens(messages[i]);
       if (running + sz > inputCap) break;
       truncated.unshift(messages[i]);
       running += sz;
     }
-    messagesToSummarize = truncated;
+    messagesToSummarize = pinned ? [pinned, ...truncated] : truncated;
   }
   const conversation = JSON.stringify(messagesToSummarize);
   // pi 式模板：<conversation> 包装 + （有旧摘要时）<previous-summary> 更新式

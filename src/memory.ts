@@ -264,21 +264,19 @@ export async function consolidateMemories(): Promise<void> {
  * Stop hook：模型自然结束时异步提取记忆（fire-and-forget，不阻塞主循环）。
  * 对齐 Python memory_stop_hook：subagent 或 pre_compress 为空时跳过。
  */
-export function memoryStopHook(
+export async function memoryStopHook(
   _messages: ChatMessage[],
   preCompress: ChatMessage[] | null | undefined,
   isSubagent: boolean,
-): void {
+): Promise<void> {
   if (isSubagent || !preCompress) return;
   if (!isMemoryEnabled()) return;
-  void (async () => {
-    try {
-      await extractMemories(preCompress);
-      await consolidateMemories();
-    } catch {
-      // 静默失败
-    }
-  })();
+  try {
+    await extractMemories(preCompress);
+    await consolidateMemories();
+  } catch {
+    // Memory is optional. Budget and deadlines still apply to every request.
+  }
 }
 
 export { parseFrontmatter };

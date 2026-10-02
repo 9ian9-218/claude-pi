@@ -9,6 +9,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 interface WorkdirContext {
   workdir: string;
+  baseWorkdir: string;
 }
 
 const workdirStore = new AsyncLocalStorage<WorkdirContext>();
@@ -20,13 +21,13 @@ export function getWorkdir(): string {
 
 /** 在指定目录上下文中运行 fn（同步或异步，随 AsyncLocalStorage 传播） */
 export function runWithWorkdir<T>(dir: string, fn: () => T): T {
-  return workdirStore.run({ workdir: dir }, fn);
+  return workdirStore.run({ workdir: dir, baseWorkdir: dir }, fn);
 }
 
 /** 更新当前上下文的 worktree 覆盖（置 null 恢复默认目录） */
 export function setWorktreeOverride(path: string | null): void {
   const ctx = workdirStore.getStore();
   if (ctx) {
-    ctx.workdir = path ?? process.cwd();
+    ctx.workdir = path ?? ctx.baseWorkdir;
   }
 }

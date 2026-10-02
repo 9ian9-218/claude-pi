@@ -98,7 +98,7 @@ describe("内置工具执行（S1）", () => {
       const e = await executeToolCall(
         mkCall("edit_file", { path: "a.txt", old_text: "world", new_text: "TS" }),
       );
-      expect(e).toBe("Edited a.txt");
+      expect(e).toContain("Edited a.txt\nCheckpoint:");
       expect(fs.readFileSync(path.join(ws, "a.txt"), "utf8")).toBe("hello\nTS");
     });
   });
@@ -199,11 +199,11 @@ describe("内置工具执行（S1）", () => {
       const bad = await executeToolCall(
         mkCall("todo_write", { todos: [{ content: "x" }] }),
       );
-      expect(bad).toContain("missing 'content' or 'status'");
+      expect(bad).toContain("Missing required parameter: status");
       const badStatus = await executeToolCall(
         mkCall("todo_write", { todos: [{ content: "x", status: "weird" }] }),
       );
-      expect(badStatus).toContain("invalid status");
+      expect(badStatus).toContain("value is not in enum");
       const ok = await executeToolCall(
         mkCall("todo_write", {
           todos: [

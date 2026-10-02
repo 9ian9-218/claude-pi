@@ -67,11 +67,24 @@ export async function triggerHooks(event: string, ...args: unknown[]): Promise<u
       console.log(
         `  \x1b[31m[hook] ${event} 抛出异常，已跳过：${String((e as Error)?.message ?? e)}\x1b[0m`,
       );
+      if (event === "PreToolUse") return `Hook policy failed: ${String((e as Error)?.message ?? e)}`;
       continue;
     }
     if (result !== null && result !== undefined) {
       return result;
     }
+  }
+  return undefined;
+}
+
+/** Mandatory validation/authorization live in ToolRuntime, not removable hooks. */
+export async function triggerToolHooks(block: ToolBlock): Promise<unknown> {
+  for (const callback of HOOKS.PreToolUse ?? []) {
+    if (callback === validateHook || callback === permissionHookWithBubble) continue;
+    try {
+      const result = await callHook(callback, [block], hookTimeoutMs());
+      if (result !== undefined && result !== null) return result;
+    } catch (e) { return `Hook policy failed: ${String((e as Error)?.message ?? e)}`; }
   }
   return undefined;
 }

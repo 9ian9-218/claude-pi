@@ -27,6 +27,8 @@ import { getAgentContext, type AgentRole } from "./teammates/context.ts";
 import { parseModelSpec, resolveCurrentModel, resetAiRuntime } from "./ai-runtime.ts";
 import { resetSettingsCache } from "./settings.ts";
 import type { UiEventSink } from "./ui-events.ts";
+import { currentBudget } from "./task-budget.ts";
+import { requestDeadline, RequestTimeout } from "./request-deadline.ts";
 
 export type ChatRole = "system" | "user" | "assistant" | "tool";
 
@@ -41,6 +43,9 @@ export interface ChatMessage {
   durationMs?: number;
   /** 运行时补记：工具调用失败标记（仅 role=tool 消息） */
   toolError?: boolean;
+  toolStatus?: import("./results.ts").ExecutionStatus;
+  execution?: Pick<import("./results.ts").ToolResult, "exitCode" | "signal" | "durationMs" | "truncated" | "artifactRefs">;
+  partial?: boolean;
 }
 
 export interface ToolCallData {
@@ -104,6 +109,15 @@ const ZERO_USAGE = {
 };
 
 let _modelsOverride: Models | null = null;
+
+/** Conservative byte-token reservation includes system text, tools and output. */
+function reserveModelRequest(model: Model<Api>, context: Context, outputTokens: number) {
+  const inputTokens = Buffer.byteLength(JSON.stringify(context), "utf8") + 256;
+  const costs = model.cost;
+  const priceKnown = costs.input > 0 || costs.output > 0;
+  const cost = priceKnown ? (inputTokens * Math.max(costs.input, costs.cacheRead, costs.cacheWrite) + outputTokens * costs.output) / 1_000_000 : null;
+  return currentBudget()?.reserveRequest(inputTokens + outputTokens, cost) ?? (() => {});
+}
 
 /** 测试隔离：注入自定义 Models 集合（mock/对拍通道） */
 export function setClientModels(models: Models | null): void {
@@ -347,34 +361,41 @@ export async function sendMessages(
   const piTools = tools ? toPiTools(tools) : undefined;
   const context = toPiContext(messages, piTools);
 
-  const stream = models.stream(withSessionRouting(model, sessionId), context, {
-    maxTokens,
-    ...(piTools ? { toolChoice: "auto" as const } : {}),
-    ...(thinkingLevel && thinkingLevel !== "off" ? { reasoningEffort: thinkingLevel } : {}),
-    ...(signal ? { signal } : {}),
-    ...(sessionId ? { sessionId } : {}),
-  });
-
-  if (!quiet) {
-    process.stdout.write("Model >\t ");
-  }
-
-  for await (const event of stream) {
-    if (event.type === "text_delta") {
-      if (!quiet) process.stdout.write(event.delta);
-      uiEvents?.emit("stream", { kind: "text", delta: event.delta });
-    } else if (event.type === "thinking_delta") {
-      uiEvents?.emit("stream", { kind: "thinking", delta: event.delta });
+  const budget = currentBudget();
+  const combinedSignal = budget ? (signal ? AbortSignal.any([signal, budget.controller.signal]) : budget.controller.signal) : signal;
+  const settle = reserveModelRequest(model, context, maxTokens);
+  const deadline = requestDeadline(combinedSignal);
+  let partialText = "";
+  try {
+    const stream = models.stream(withSessionRouting(model, sessionId), context, {
+      maxTokens,
+      ...(piTools ? { toolChoice: "auto" as const } : {}),
+      ...(thinkingLevel && thinkingLevel !== "off" ? { reasoningEffort: thinkingLevel } : {}),
+      signal: deadline.signal,
+      ...(sessionId ? { sessionId } : {}),
+    });
+    if (!quiet) process.stdout.write("Model >\t ");
+    const iterator = stream[Symbol.asyncIterator]();
+    while (true) {
+      const next = await deadline.wait(iterator.next());
+      if (next.done) break;
+      const event = next.value;
+      if (event.type === "text_delta" || event.type === "thinking_delta" || event.type === "toolcall_delta") deadline.activity();
+      if (event.type === "text_delta") {
+        partialText = (partialText + event.delta).slice(0, 16_384);
+        if (!quiet) process.stdout.write(event.delta);
+        uiEvents?.emit("stream", { kind: "text", delta: event.delta });
+      } else if (event.type === "thinking_delta") uiEvents?.emit("stream", { kind: "thinking", delta: event.delta });
     }
-  }
-
-  const final = await stream.result();
-
-  if (!quiet) {
-    process.stdout.write("\n");
-  }
-
-  return fromPiMessage(final);
+    const final = await deadline.wait(stream.result());
+    settle(final.usage.totalTokens > 0 ? final.usage : undefined);
+    if (deadline.signal.aborted) throw deadline.signal.reason;
+    if (!quiet) process.stdout.write("\n");
+    return fromPiMessage(final);
+  } catch (e) {
+    if (e instanceof RequestTimeout && partialText) e.partialText = partialText;
+    throw e;
+  } finally { settle(); deadline.dispose(); }
 }
 
 /**
@@ -395,22 +416,19 @@ export async function completeTextWithUsage(
 ): Promise<{ text: string; usage?: Usage }> {
   const models = await getModels();
   const model = await resolveEffectiveModel();
-  const m = await models.completeSimple(
-    model,
-    { messages: [{ role: "user", content: prompt, timestamp: Date.now() }] },
-    { maxTokens: options.maxTokens ?? 200 },
-  );
-  if (m.stopReason === "error" || m.stopReason === "aborted") {
-    throw new Error(m.errorMessage ?? `LLM request failed (${m.stopReason})`);
-  }
-  return {
-    text:
-      m.content
-        .filter((b): b is { type: "text"; text: string } => b.type === "text")
-        .map((b) => b.text)
-        .join("") || "",
-    ...(m.usage && m.usage.totalTokens > 0 ? { usage: m.usage } : {}),
-  };
+  const context: Context = { messages: [{ role: "user", content: prompt, timestamp: Date.now() }] };
+  const maxTokens = options.maxTokens ?? 200;
+  const settle = reserveModelRequest(model, context, maxTokens);
+  const deadline = requestDeadline(currentBudget()?.controller.signal);
+  try {
+    const m = await deadline.wait(models.completeSimple(model, context, { maxTokens, signal: deadline.signal }));
+    settle(m.usage.totalTokens > 0 ? m.usage : undefined);
+    if (m.stopReason === "error" || m.stopReason === "aborted") throw new Error(m.errorMessage ?? `LLM request failed (${m.stopReason})`);
+    return {
+      text: m.content.filter((b): b is { type: "text"; text: string } => b.type === "text").map(b => b.text).join("") || "",
+      ...(m.usage && m.usage.totalTokens > 0 ? { usage: m.usage } : {}),
+    };
+  } finally { settle(); deadline.dispose(); }
 }
 
 /** 测试隔离：清除全部缓存（client 覆盖 / ModelRuntime / 设置 / 当前模型） */
