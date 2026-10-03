@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { MCPHub, getMCPHub, resetMCPHub } from "./hub.ts";
 import { buildPrefixedName, isMcpTool, parsePrefixedName, underlyingToolName } from "./names.ts";
 import { loadMcpConfig } from "./config.ts";
@@ -49,9 +51,10 @@ afterEach(async () => {
 let serverFiles: string[] = [];
 
 function writeMockServer(): string {
-  // 仓库根：子进程的 tsx 需从文件位置解析 @modelcontextprotocol/sdk
-  const p = path.join(process.cwd(), `.mock-mcp-${process.pid}-${serverFiles.length}.ts`);
-  fs.writeFileSync(p, MOCK_SERVER_TS);
+  const p = path.join(dir, `mock-${serverFiles.length}.mts`);
+  const require = createRequire(import.meta.url);
+  const source = MOCK_SERVER_TS.replace(/"(@modelcontextprotocol\/sdk\/[^\"]+)"/g, (_match, specifier: string) => JSON.stringify(pathToFileURL(require.resolve(specifier)).href));
+  fs.writeFileSync(p, source);
   serverFiles.push(p);
   return p;
 }

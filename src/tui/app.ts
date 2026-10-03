@@ -321,6 +321,7 @@ export class TuiApp {
   }
 
   stop(): void {
+    this.running = false;
     this.agentPanel.dispose();
     this.tui.stop();
   }

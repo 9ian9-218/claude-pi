@@ -8,8 +8,27 @@
 import path from "node:path";
 import fs from "node:fs";
 import properLockfile from "proper-lockfile";
+import { spawn } from "node:child_process";
 
-export const LOCK_RETRIES = 10;
+/** Linux kernel locks are released on crash; no stale-directory timeout is needed. */
+async function withKernelLock<T>(lockPath: string, fn: () => T | Promise<T>): Promise<T> {
+  const executable = ["/usr/bin/flock", "/bin/flock"].find(p => fs.existsSync(p));
+  if (!executable) throw new Error("Concurrent writes require system flock on Linux");
+  const child = spawn(executable, ["--exclusive", "--timeout", "60", "--close", lockPath, "/bin/sh", "-c", "printf 'LOCKED\\n'; cat >/dev/null"], { stdio: ["pipe", "pipe", "pipe"], env: { PATH: "/usr/bin:/bin" } });
+  child.stdin.on("error", () => { /* Acquisition failure is reported by close/error below. */ });
+  const closed = new Promise<void>(resolve => { child.once("close", () => resolve()); child.once("error", () => resolve()); });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      let output = "";
+      child.stdout.on("data", b => { output += b; if (output.includes("LOCKED\n")) resolve(); });
+      child.once("error", reject);
+      child.once("close", code => reject(new Error(`Could not acquire kernel lock (${code})`)));
+    });
+    return await fn();
+  } finally { child.stdin.end(); await closed; }
+}
+
+export const LOCK_RETRIES = 80;
 export const LOCK_MIN_TIMEOUT_MS = 5;
 export const LOCK_MAX_TIMEOUT_MS = 100;
 
@@ -37,6 +56,7 @@ export async function withFileLock<T>(
     await fs.promises.mkdir(dir, { recursive: true });
     // proper-lockfile 要求目标文件存在（mtime stale 检测）
     await fs.promises.writeFile(lockPath, "", { flag: "a" });
+    if (process.platform === "linux") return await withKernelLock(lockPath, fn);
     const release = await properLockfile.lock(lockPath, {
       retries: {
         retries: LOCK_RETRIES,
@@ -45,7 +65,9 @@ export async function withFileLock<T>(
         maxTimeout: LOCK_MAX_TIMEOUT_MS,
         randomize: true,
       },
-      stale: 30_000,
+      // Git snapshot creation can briefly block the event loop. Do not expire a
+      // live writer while its heartbeat is delayed by a synchronous Git call.
+      stale: 120_000,
     });
     try {
       return await fn();

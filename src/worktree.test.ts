@@ -124,12 +124,12 @@ describe("worktree override 集成（S8-4）", () => {
 });
 
 describe("git 不可用降级（S8-2）", () => {
-  it("非 git 目录下 createTaskWorktree 返回 null 不抛错", () => {
+  it("非 git 目录下拒绝创建，不降级到主目录", () => {
     const plain = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-nogit-"));
     setGitRoot(plain);
     try {
       expect(isGitAvailable()).toBe(false);
-      expect(createTaskWorktree("task_1")).toBeNull();
+      expect(() => createTaskWorktree("task_1")).toThrow("requires a Git repository");
       removeTaskWorktree("task_1"); // 不抛
       expect(listTaskWorktrees()).toEqual([]);
     } finally {

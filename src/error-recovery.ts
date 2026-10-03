@@ -23,6 +23,7 @@ import { readPiSettings, setSettingsOverrideForTest } from "./settings.ts";
 import { emitNoticeOrLog, type UiEventSink } from "./ui-events.ts";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { RequestTimeout } from "./request-deadline.ts";
+import type { SessionManager } from "./session-manager.ts";
 
 export { DEFAULT_MAX_TOKENS };
 
@@ -101,6 +102,8 @@ export interface RecoveryOptions {
   promptIdentity?: { role: AgentRole; isSubagent: boolean };
   /** fork 子 agent：缓存路由会话 id（用父会话 id 命中同一缓存副本） */
   routingSessionId?: string;
+  /** 超限摘要也写树形会话检查点，保证重启恢复同一上下文。 */
+  session?: SessionManager;
 }
 
 export async function sendMessagesWithRecovery(
@@ -190,8 +193,15 @@ export async function sendMessagesWithRecovery(
     if (isContextOverflow(message as unknown as PiAssistantMessage)) {
       if (!state.hasAttemptedReactiveCompact) {
         emitNoticeOrLog(uiEvents, "  \x1b[31m[reactive compact]\x1b[0m");
-        messages.splice(0, messages.length, ...(await reactiveCompact(messages)));
         state.hasAttemptedReactiveCompact = true;
+        try {
+          messages.splice(0, messages.length, ...(await reactiveCompact(messages, { session: options.session, signal })));
+        } catch (e) {
+          if (signal?.aborted) return { action: "abort", reason: "interrupted" };
+          const errorMessage = `Context compaction failed: ${e instanceof Error ? e.message : String(e)}`;
+          appendErrorMessage(messages, errorMessage);
+          return { action: "abort", reason: e instanceof RequestTimeout ? "timeout" : "error", errorMessage };
+        }
         return { action: "retry" };
       }
       emitNoticeOrLog(uiEvents, "  \x1b[31m[unrecoverable] still too long after compact\x1b[0m");

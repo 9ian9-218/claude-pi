@@ -132,12 +132,12 @@ describe("edits and recoverable artifacts", () => {
   it("restores a checkpoint but refuses to overwrite a later user edit", () => runWithWorkdir(ws, async () => {
     fs.writeFileSync(path.join(ws, "a"), "before");
     const result = await call("write_file", { path: "a", content: "after" }); const id = result.output.match(/Checkpoint: ([\da-f-]+)/)![1];
-    expect(restoreFileCheckpoint(id)).toContain("Restored"); expect(fs.readFileSync(path.join(ws, "a"), "utf8")).toBe("before");
+    expect(await restoreFileCheckpoint(id)).toContain("Restored"); expect(fs.readFileSync(path.join(ws, "a"), "utf8")).toBe("before");
     const next = await call("write_file", { path: "a", content: "agent" }); fs.writeFileSync(path.join(ws, "a"), "user");
-    expect(() => restoreFileCheckpoint(next.output.match(/Checkpoint: ([\da-f-]+)/)![1])).toThrow("conflict");
+    await expect(restoreFileCheckpoint(next.output.match(/Checkpoint: ([\da-f-]+)/)![1])).rejects.toThrow("conflict");
   }));
   it("retains dirty work and new files, exports artifacts, integrates and unblocks", () => runWithWorkdir(ws, async () => {
-    initRepo(); const task = createTask("implementation"); const downstream = createTask("verification", "", [task.id]); await claimTask(task.id);
+    initRepo(); const task = await createTask("implementation"); const downstream = await createTask("verification", "", [task.id]); await claimTask(task.id);
     const wt = taskWorktreePath(task.id); fs.writeFileSync(path.join(wt, "code.txt"), "implementation\n"); fs.writeFileSync(path.join(wt, "new.bin"), Buffer.from([0, 255, 1]));
     expect(removeTaskWorktree(task.id)).toBe(false); await completeTask(task.id);
     const stored = JSON.parse(getTask(task.id)); expect(stored.status).toBe("ready_for_review"); expect(canStart(downstream.id)).toBe(false); expect(fs.existsSync(wt)).toBe(true);
@@ -146,7 +146,7 @@ describe("edits and recoverable artifacts", () => {
     expect(fs.readFileSync(path.join(ws, "new.bin"))).toEqual(Buffer.from([0, 255, 1])); expect(fs.existsSync(wt)).toBe(true);
   }));
   it("preserves committed unmerged branches and rejects integration conflicts", () => runWithWorkdir(ws, async () => {
-    const git = initRepo(); const task = createTask("commit"); await claimTask(task.id); const wt = taskWorktreePath(task.id);
+    const git = initRepo(); const task = await createTask("commit"); await claimTask(task.id); const wt = taskWorktreePath(task.id);
     fs.writeFileSync(path.join(wt, "code.txt"), "task\n"); execFileSync("git", ["add", "code.txt"], { cwd: wt }); execFileSync("git", ["commit", "-qm", "task"], { cwd: wt });
     expect(removeTaskWorktree(task.id)).toBe(false); expect(git("branch", "--list", "agent/task-task_1")).toContain("agent/task-task_1");
     expect(preserveTaskArtifact(task.id)?.files).toHaveLength(1); await completeTask(task.id); fs.writeFileSync(path.join(ws, "code.txt"), "user\n");

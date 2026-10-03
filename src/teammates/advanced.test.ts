@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
+import { setGitRoot } from "../worktree.ts";
 import os from "node:os";
 import path from "node:path";
 import { setTeamsDir, TEAM_LEAD_NAME } from "./constants.ts";
@@ -30,7 +32,14 @@ beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-p11-"));
   taskDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-p11t-"));
   setTeamsDir(dir);
-  setTasksDir(taskDir);
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: taskDir });
+  execFileSync("git", ["config", "user.name", "test"], { cwd: taskDir });
+  execFileSync("git", ["config", "user.email", "test@example.invalid"], { cwd: taskDir });
+  fs.writeFileSync(path.join(taskDir, ".gitignore"), ".agent/\n.task_outputs/\n");
+  execFileSync("git", ["add", "."], { cwd: taskDir });
+  execFileSync("git", ["commit", "-qm", "test baseline"], { cwd: taskDir });
+  setGitRoot(taskDir);
+  setTasksDir(path.join(taskDir, ".agent", "tasks"));
   clearPollerQueues();
   clearProtocolRequests();
   resetAskUserImpl();
@@ -164,7 +173,7 @@ describe("权限冒泡（S11）", () => {
 describe("autonomous idlePoll（S11）", () => {
   it("看板有可 claim 任务 → auto-claimed + work", async () => {
     createTeam("idle1", TEAM_LEAD_NAME);
-    createTask("自动化任务");
+    await createTask("自动化任务");
     const messages: ChatMessage[] = [];
     const result = await idlePoll({
       agentName: "worker-a",

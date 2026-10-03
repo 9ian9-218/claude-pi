@@ -112,20 +112,22 @@ describe("LLM 摘要压缩（S4）", () => {
   it("compactHistory 生成 [Compacted] user 消息（mock 摘要）", async () => {
     mock.always(() => ({ kind: "sse", chunks: [{ content: "总结内容", finishReason: "stop" }] }));
     const out = await compactHistory([userMsg(1), ...round(1)]);
-    expect(out).toHaveLength(1);
+    expect(out).toHaveLength(3);
+    expect(out.slice(1)).toEqual(round(1)); // 工具调用和结果完整保留
     expect(out[0].role).toBe("user");
     expect(String(out[0].content)).toContain("compacted into the following summary");
     expect(String(out[0].content)).toContain("<summary>");
     expect(String(out[0].content)).toContain("总结内容");
   });
 
-  it("reactiveCompact 保留最近 5 条消息", async () => {
+  it("reactiveCompact 使用安全切分，保留最新用户回合", async () => {
     mock.always(() => ({ kind: "sse", chunks: [{ content: "摘要", finishReason: "stop" }] }));
     const msgs = Array.from({ length: 10 }, (_, i) => userMsg(i));
     const out = await reactiveCompact(msgs);
     expect(out[0].role).toBe("user");
     expect(String(out[0].content)).toContain("compacted into the following summary");
-    expect(out).toHaveLength(1 + 5);
+    expect(out).toHaveLength(2);
+    expect(out[1]).toEqual(msgs[9]);
   });
 });
 
@@ -251,7 +253,7 @@ describe("pickRetainedTail（keepRecentTokens 预算）", () => {
       { role: "assistant", content: "b".repeat(50) },
       { role: "user", content: "c".repeat(50) },
     ] as ChatMessage[];
-    const budget = estimateMessageTokens(msgs[1]) + estimateMessageTokens(msgs[2]) + 1;
+    const budget = estimateMessageTokens(msgs[1]) + estimateMessageTokens(msgs[2]);
     const tail = pickRetainedTail(msgs, budget);
     expect(tail).toHaveLength(2);
     expect(tail[0].content).toBe("b".repeat(50));
@@ -335,12 +337,13 @@ describe("compactContext（手动 /compact 与自动压缩共用的执行体）"
     expect(prompt).toContain("Additional focus: 只保留 bug 线索");
   });
 
-  it("非会话路径：上下文替换为摘要消息（无 compaction entry）", async () => {
+  it("非会话路径：摘要加保留尾巴（无 compaction entry）", async () => {
     mock.always(() => ({ kind: "sse", chunks: [{ content: "摘要内容", finishReason: "stop" }] }));
     const messages: ChatMessage[] = [m("user", "a"), m("user", "b")];
     const out = await runWithWorkdir(ws, () => compactContext(messages, {}));
     expect(out.tokensBefore).toBeGreaterThan(0);
-    expect(messages).toHaveLength(1);
+    expect(messages).toHaveLength(2);
+    expect(messages[1].content).toBe("b");
     expect(String(messages[0].content)).toContain("<summary>");
     expect(String(messages[0].content)).toContain("摘要内容");
   });
@@ -389,9 +392,13 @@ describe("compactContext（手动 /compact 与自动压缩共用的执行体）"
     const forkPoint = session.getLeafId() as string;
 
     session.appendMessage({ role: "user", content: "A 的问题" });
+    session.appendMessage({ role: "assistant", content: "A 的已执行进度" });
+    session.appendMessage({ role: "user", content: "继续" });
     await compactContext(session.buildSessionContext().messages, { session });
     session.branch(forkPoint);
     session.appendMessage({ role: "user", content: "B 的问题" });
+    session.appendMessage({ role: "assistant", content: "B 的已执行进度" });
+    session.appendMessage({ role: "user", content: "继续" });
     await compactContext(session.buildSessionContext().messages, { session });
 
     expect(mock.requests).toHaveLength(2);

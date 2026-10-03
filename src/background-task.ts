@@ -12,6 +12,9 @@ import { shellInvocation } from "./sandbox.ts";
 import { writeFileAtomic } from "./atomic-write.ts";
 import type { ToolResult } from "./results.ts";
 import { getWorkdir } from "./workdir.ts";
+import { getWorkspaceBinding } from "./workdir.ts";
+import { withRepositoryLock } from "./repository-lock.ts";
+import { recoverFileTransactions } from "./file-transactions.ts";
 import { enqueuePendingNotification } from "./message-queue.ts";
 import { triggerHooks } from "./hook.ts";
 
@@ -193,12 +196,13 @@ async function runBackgroundProcess(command: string, options: {
   }, STALL_CHECK_INTERVAL_S * 1000);
   try {
     const invocation = shellInvocation(command, getWorkdir());
-    return await runProcess(invocation.executable, invocation.args, {
+    const run = () => runProcess(invocation.executable, invocation.args, {
       cwd: getWorkdir(), env: invocation.env, signal: options.signal,
       timeoutMs: options.timeoutMs ?? 120_000, outputLimitBytes: 50_000,
       onOutput: chunk => { tail = (tail + chunk).slice(-STALL_TAIL_BYTES); lastGrowth = Date.now(); },
       onSpawn: process => { const task = runningTasks.get(options.bgId ?? ""); if (task) task.process = process; },
     });
+    return await (getWorkspaceBinding() ? run() : withRepositoryLock(getWorkdir(), () => { recoverFileTransactions(); return run(); }));
   } catch (e) { return { status: "error", output: `Error: ${String(e)}`, exitCode: null }; }
   finally { clearInterval(watchdog); }
 }

@@ -404,7 +404,7 @@ export async function sendMessages(
  */
 export async function completeText(
   prompt: string,
-  options: { maxTokens?: number } = {},
+  options: { maxTokens?: number; signal?: AbortSignal } = {},
 ): Promise<string> {
   return (await completeTextWithUsage(prompt, options)).text;
 }
@@ -412,14 +412,17 @@ export async function completeText(
 /** 同 completeText，但返回本次响应的计费信息（compaction 累计用） */
 export async function completeTextWithUsage(
   prompt: string,
-  options: { maxTokens?: number } = {},
+  options: { maxTokens?: number; signal?: AbortSignal } = {},
 ): Promise<{ text: string; usage?: Usage }> {
+  options.signal?.throwIfAborted();
   const models = await getModels();
   const model = await resolveEffectiveModel();
   const context: Context = { messages: [{ role: "user", content: prompt, timestamp: Date.now() }] };
   const maxTokens = options.maxTokens ?? 200;
   const settle = reserveModelRequest(model, context, maxTokens);
-  const deadline = requestDeadline(currentBudget()?.controller.signal);
+  const budgetSignal = currentBudget()?.controller.signal;
+  const signal = options.signal && budgetSignal ? AbortSignal.any([options.signal, budgetSignal]) : options.signal ?? budgetSignal;
+  const deadline = requestDeadline(signal);
   try {
     const m = await deadline.wait(models.completeSimple(model, context, { maxTokens, signal: deadline.signal }));
     settle(m.usage.totalTokens > 0 ? m.usage : undefined);

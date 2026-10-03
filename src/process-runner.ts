@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ToolResult, ExecutionStatus } from "./results.ts";
+import { registerWorkspaceProcess, updateWorkspaceProcess } from "./workspaces.ts";
 
 export interface ProcessOptions {
   cwd: string;
@@ -13,6 +14,13 @@ export interface ProcessOptions {
   onOutput?: (chunk: string) => void;
   onSpawn?: (child: ChildProcess) => void;
   artifactDir?: string;
+}
+const activeProcesses = new Map<string, { root: string; controller: AbortController; done: Promise<void>; resolve: () => void }>();
+
+export async function cancelWorkspaceProcesses(root: string): Promise<void> {
+  const entries = [...activeProcesses.values()].filter(p => p.root === root);
+  for (const entry of entries) entry.controller.abort();
+  await Promise.all(entries.map(entry => entry.done));
 }
 
 export function killProcessTree(child: ChildProcess, signal: NodeJS.Signals = "SIGTERM"): void {
@@ -32,6 +40,16 @@ export async function runProcess(executable: string, args: string[], options: Pr
   fs.mkdirSync(dir, { recursive: true });
   const artifact = path.join(dir, `${randomUUID()}.log`);
   const fd = fs.openSync(artifact, "wx", 0o600);
+  let workspaceProcess: string | undefined;
+  try { workspaceProcess = await registerWorkspaceProcess(options.cwd); }
+  catch (error) { fs.closeSync(fd); throw error; }
+  const localController = new AbortController();
+  options = { ...options, signal: options.signal ? AbortSignal.any([options.signal, localController.signal]) : localController.signal };
+  if (workspaceProcess) {
+    let resolve!: () => void;
+    const done = new Promise<void>(r => { resolve = r; });
+    activeProcesses.set(workspaceProcess, { root: options.cwd, controller: localController, done, resolve });
+  }
   const maxArtifactBytes = 16 * 1024 * 1024;
   let artifactBytes = 0;
   let stdout = "", stderr = "", retained = 0, truncated = false;
@@ -58,10 +76,14 @@ export async function runProcess(executable: string, args: string[], options: Pr
       clearTimeout(timer);
       if (escalation) clearTimeout(escalation);
       // A shell can exit before its grandchildren. Terminate the complete group on cancellation.
-      if (stopped) killProcessTree(child, "SIGKILL");
+      // Commands may not leave detached writers in their process group.
+      killProcessTree(child, "SIGKILL");
       options.signal?.removeEventListener("abort", abort);
       fs.closeSync(fd);
-      const status = stopped ?? (error || code !== 0 ? "error" : "success");
+      let status: ExecutionStatus = stopped ?? (error || code !== 0 ? "error" : "success");
+      try { updateWorkspaceProcess(workspaceProcess, "finished"); }
+      catch (recordError) { error ??= recordError as Error; status = "error"; }
+      finally { if (workspaceProcess) { activeProcesses.get(workspaceProcess)?.resolve(); activeProcesses.delete(workspaceProcess); } }
       let output = `${stdout}${stderr}`.trim() || "(no output)";
       if (error) output = `Error: ${error.message}`;
       else if (status !== "success") output = `Error: command ${status} (exit code ${code ?? "none"})\n${output}`;
@@ -88,7 +110,7 @@ export async function runProcess(executable: string, args: string[], options: Pr
     child.stderr?.on("data", (b: Buffer) => consume(b, "stderr"));
     child.once("error", e => finish(null, null, e));
     child.once("close", (code, signal) => finish(code, signal));
-    try { options.onSpawn?.(child); } catch (e) { killProcessTree(child, "SIGKILL"); finish(null, null, e as Error); }
+    try { updateWorkspaceProcess(workspaceProcess, "running", child.pid); options.onSpawn?.(child); } catch (e) { stderr += `\nProcess registration failed: ${String(e)}`; stop("error"); }
     if (options.signal?.aborted) abort();
   });
 }

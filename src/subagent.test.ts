@@ -2,10 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { MockOpenAI } from "../tests/helpers/mock-openai.ts";
 import { installMockModels } from "../tests/helpers/test-client.ts";
 import { resetClient, type ChatMessage } from "./client.ts";
-import { agentLoop } from "./agent-loop.ts";
-import { runQuery } from "./query-pipeline.ts";
+import { agentLoop as agentLoopImpl } from "./agent-loop.ts";
+import { runQuery as runQueryImpl } from "./query-pipeline.ts";
 import { LoopOptions } from "./loop-options.ts";
-import { getOpenaiTools, spawnSubagent, executeToolCall } from "./tool.ts";
+import { getOpenaiTools, spawnSubagent as spawnSubagentImpl, executeToolCall as executeToolCallImpl } from "./tool.ts";
 import { getAgentContext, isSubagent, runWithAgentContext, resetAgentContext } from "./teammates/context.ts";
 import { AgentProfile, profileToContext } from "./agent-profile.ts";
 import { resetAskUserImpl } from "./permission-sync.ts";import fs from "node:fs";
@@ -13,10 +13,27 @@ import os from "node:os";
 import path from "node:path";
 import { SessionManager, setSessionRoot } from "./session-manager.ts";
 import { clearAgentRuns, listAgentRuns } from "./agent-registry.ts";
+import { execFileSync } from "node:child_process";
+import { runWithWorkdir } from "./workdir.ts";
 
 let mock: MockOpenAI;
+let workspace: string;
+// Writable children need a real Git baseline, but must not snapshot the user's
+// repository or race with other suites' temporary files and verification jobs.
+const spawnSubagent: typeof spawnSubagentImpl = (...args) => runWithWorkdir(workspace, () => spawnSubagentImpl(...args));
+const executeToolCall: typeof executeToolCallImpl = (...args) => runWithWorkdir(workspace, () => executeToolCallImpl(...args));
+const agentLoop: typeof agentLoopImpl = (...args) => runWithWorkdir(workspace, () => agentLoopImpl(...args));
+const runQuery: typeof runQueryImpl = (...args) => runWithWorkdir(workspace, () => runQueryImpl(...args));
 
 beforeEach(async () => {
+  workspace = fs.mkdtempSync(path.join(os.tmpdir(), "cpi-subagent-workspace-"));
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: workspace, stdio: "ignore" });
+  git("init", "-q", "-b", "main"); git("config", "user.name", "test"); git("config", "user.email", "test@example.invalid");
+  fs.writeFileSync(path.join(workspace, ".gitignore"), ".agent/\n.task_outputs/\n");
+  fs.writeFileSync(path.join(workspace, "README.md"), "# Test project\n");
+  git("add", "."); git("commit", "-qm", "baseline");
+  setSessionRoot(path.join(workspace, ".agent", "sessions"));
+  clearAgentRuns(); resetAgentContext();
   resetClient();
   mock = await MockOpenAI.create();
   installMockModels(mock.baseUrl);
@@ -25,6 +42,7 @@ beforeEach(async () => {
 afterEach(async () => {
   resetClient();
   await mock.close();
+  setSessionRoot(""); fs.rmSync(workspace, { recursive: true, force: true });
 });
 
 describe("subagent 工具集限制（S9）", () => {
@@ -153,7 +171,7 @@ describe("子 agent 子会话落盘与血缘（可观测性）", () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-subagent-"));
     setSessionRoot(root);
     clearAgentRuns();
-    parent = SessionManager.create(process.cwd());
+    parent = SessionManager.create(workspace);
   });
 
   afterEach(() => {
@@ -294,7 +312,7 @@ describe("fork 前缀一致性（prompt cache 复用）", () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "claude-pi-prefix-"));
     setSessionRoot(root);
     clearAgentRuns();
-    parent = SessionManager.create(process.cwd());
+    parent = SessionManager.create(workspace);
   });
 
   afterEach(() => {

@@ -68,6 +68,13 @@ export function getAgentContext(): AgentContext {
 /** 设置进程级 Lead 上下文（无 store 的所有读取者可见；worker 仍被 run() 隔离） */
 export function setAgentContext(ctx: AgentContext): void {
   leadContext = ctx;
+  // Team creation can happen during a lead turn. Project the new team fields
+  // into its scoped context without replacing the stable session identity.
+  const current = ctxStore.getStore();
+  if (current?.role === "lead") {
+    const agentId = current.agentId;
+    Object.assign(current, ctx, { agentId: agentId ?? ctx.agentId });
+  }
 }
 
 /** 测试/进程清理：清除 Lead 默认上下文 */

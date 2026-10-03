@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getAgentContext } from "./teammates/context.ts";
+import { getWorkspaceBinding } from "./workdir.ts";
+import { requireWritableWorkspace } from "./workspaces.ts";
+import { repositoryInfo } from "./repository-lock.ts";
 
 export interface Invocation { executable: string; args: string[]; env: NodeJS.ProcessEnv }
 
@@ -58,14 +61,26 @@ export function readOnlyInvocation(command: string, cwd: string): Invocation {
 export function shellInvocation(command: string, cwd: string): Invocation {
   const role = getAgentContext().role;
   if (role === "scout" || role === "reviewer" || role === "planner") return readOnlyInvocation(command, cwd);
+  if (role !== "verifier") requireWritableWorkspace();
+  const owned = Boolean(getWorkspaceBinding());
   const restricted = role === "verifier" || process.env.CLAUDE_PI_SANDBOX === "readonly";
-  if (restricted) {
+  if (restricted || owned) {
     if (process.platform !== "linux") throw new Error("Restricted execution requires Linux bubblewrap; no unsafe fallback is enabled");
-    const args = ["--die-with-parent", "--new-session", "--unshare-net", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"];
+    const args = ["--die-with-parent", "--new-session", "--unshare-net", "--unshare-pid", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"];
     // Start with an empty filesystem. Runtime files and the workspace are read-only;
     // home directories, other projects and credential stores are absent.
     for (const dir of ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"]) if (fs.existsSync(dir)) args.push("--ro-bind", dir, dir);
-    args.push("--ro-bind", cwd, cwd);
+    args.push(restricted ? "--ro-bind" : "--bind", cwd, cwd);
+    if (owned) {
+      const info = repositoryInfo(cwd);
+      if (!info.git) throw new Error("Isolated shell requires Git workspace metadata");
+      args.push("--ro-bind", info.commonDir, info.commonDir);
+      if (fs.existsSync(path.join(cwd, ".git"))) args.push("--ro-bind", path.join(cwd, ".git"), path.join(cwd, ".git"));
+      // Reuse installed dependencies as read-only data; installation stays in the coordinator.
+      const binding = getWorkspaceBinding()!;
+      const dependencies = [binding.parentPath, binding.repositoryRoot].filter((p): p is string => Boolean(p)).map(p => path.join(p, "node_modules")).find(p => fs.existsSync(p));
+      if (dependencies) args.push("--ro-bind", fs.realpathSync(dependencies), path.join(cwd, "node_modules"));
+    }
     // Hide session credentials and extensions from test programs.
     const privateDir = path.join(cwd, ".agent");
     const outputDir = path.join(privateDir, "verifier-output");

@@ -11,8 +11,8 @@ import { buildTool } from "./core.ts";
 import { runGrepSearch } from "../grep.ts";
 import { ensureRipgrep } from "../ripgrep.ts";
 import { checkPath, safePath } from "./path.ts";
-import { writeFileAtomic } from "../atomic-write.ts";
-import { fileHash, saveFileCheckpoint, restoreFileCheckpoint } from "../checkpoints.ts";
+import { fileHash, restoreFileCheckpoint } from "../checkpoints.ts";
+import { applyFileTransaction } from "../file-transactions.ts";
 import type { ToolExecContext } from "./core.ts";
 import { instructionText, instructionHash } from "../repository-context.ts";
 import { currentBudget } from "../task-budget.ts";
@@ -136,15 +136,14 @@ export const READ_FILE_TOOL = buildTool({
 
 // ── write_file ────────────────────────────────────────────────────────────
 
-function execWriteFile(args: Record<string, unknown>, ctx?: ToolExecContext): string {
+async function execWriteFile(args: Record<string, unknown>, ctx?: ToolExecContext): Promise<string> {
   const p = String(args["path"]);
   const content = String(args["content"]);
   try {
     const filePath = safePath(p);
     checkExpectedHash(filePath, args.expected_hash);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    const id = saveFileCheckpoint(filePath, content);
-    writeFileAtomic(filePath, content);
+    const [id] = await applyFileTransaction([{ path: p, data: content, ...(typeof args.expected_hash === "string" ? { expectedHash: args.expected_hash } : {}) }]);
     ctx?.session?.appendCustom("file_checkpoint", { id, path: p });
     return `Wrote ${Buffer.byteLength(content)} bytes to ${p}\nCheckpoint: ${id}`;
   } catch (e) {
@@ -188,7 +187,7 @@ function replaceUnique(text: string, oldText: string, newText: string): string {
   return text.slice(0, first) + newText + text.slice(first + oldText.length);
 }
 
-function execEditFile(args: Record<string, unknown>, ctx?: ToolExecContext): string {
+async function execEditFile(args: Record<string, unknown>, ctx?: ToolExecContext): Promise<string> {
   const p = String(args["path"]);
   const oldText = String(args["old_text"]);
   const newText = String(args["new_text"]);
@@ -197,8 +196,7 @@ function execEditFile(args: Record<string, unknown>, ctx?: ToolExecContext): str
     checkExpectedHash(filePath, args.expected_hash);
     const text = fs.readFileSync(filePath, "utf8");
     const next = replaceUnique(text, oldText, newText);
-    const id = saveFileCheckpoint(filePath, next);
-    writeFileAtomic(filePath, next);
+    const [id] = await applyFileTransaction([{ path: p, data: next, expectedHash: fileHash(text) }]);
     ctx?.session?.appendCustom("file_checkpoint", { id, path: p });
     return `Edited ${p}\nCheckpoint: ${id}`;
   } catch (e) {
@@ -235,8 +233,7 @@ export const APPLY_PATCH_TOOL = buildTool({
       required: ["path", "old_text", "new_text"], additionalProperties: false,
     } } }, required: ["edits"], additionalProperties: false,
   },
-  execute: (args, ctx) => {
-    const applied: string[] = [];
+  execute: async (args, ctx) => {
     try {
       const edits = args.edits as Array<Record<string, unknown>>;
       const staged = new Map<string, { before: string; after: string }>();
@@ -247,21 +244,10 @@ export const APPLY_PATCH_TOOL = buildTool({
         const previous = staged.get(p)?.after ?? before;
         staged.set(p, { before, after: replaceUnique(previous, String(edit.old_text), String(edit.new_text)) });
       }
-      for (const [p, data] of staged) {
-        if (fs.readFileSync(p, "utf8") !== data.before) throw new Error("Edit conflict: file changed while preparing patch");
-        const id = saveFileCheckpoint(p, data.after);
-        writeFileAtomic(p, data.after);
-        applied.push(id);
-        ctx?.session?.appendCustom("file_checkpoint", { id, path: p });
-      }
+      const applied = await applyFileTransaction([...staged].map(([p, data]) => ({ path: p, data: data.after, expectedHash: fileHash(data.before) })));
+      [...staged.keys()].forEach((p, i) => ctx?.session?.appendCustom("file_checkpoint", { id: applied[i], path: p }));
       return `Patched ${staged.size} files; checkpoints: ${applied.join(", ")}`;
-    } catch (e) {
-      const conflicts: string[] = [];
-      for (const id of applied.reverse()) {
-        try { restoreFileCheckpoint(id); } catch (restoreError) { conflicts.push(String(restoreError)); }
-      }
-      return `Error: ${String(e)}${conflicts.length ? `; rollback conflicts: ${conflicts.join("; ")}` : ""}`;
-    }
+    } catch (e) { return `Error: ${String(e)}`; }
   },
 });
 
@@ -269,7 +255,7 @@ export const RESTORE_CHECKPOINT_TOOL = buildTool({
   name: "restore_checkpoint",
   description: "Restore an agent file checkpoint. Refuses to overwrite subsequent user edits.",
   parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
-  execute: (args) => { try { return restoreFileCheckpoint(String(args.id)); } catch (e) { return `Error: ${String(e)}`; } },
+  execute: async (args) => { try { return await restoreFileCheckpoint(String(args.id)); } catch (e) { return `Error: ${String(e)}`; } },
 });
 
 // ── glob ──────────────────────────────────────────────────────────────────

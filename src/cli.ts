@@ -21,6 +21,7 @@ import { TuiApp } from "./tui/app.ts";
 import { handleSessionCommand } from "./tui/session-commands.ts";
 import { setTuiApp } from "./tui/ui-provider.ts";
 import { getMCPHub } from "./mcp/hub.ts";
+import { withMcpLifecycle } from "./mcp/lifecycle.ts";
 import { ExtensionManager } from "./extensions/loader.ts";
 import { currentModelLabel, getCurrentModel, getThinkingLevel } from "./ai-runtime.ts";
 import { computeUsageTotals, latestCacheHitRate, computeContextUsage } from "./usage-stats.ts";
@@ -108,14 +109,15 @@ function readVersion(): string {
   return pkg.version;
 }
 
-async function runRepl(initialSession: SessionManager | null): Promise<void> {
+async function runRepl(initialSession: SessionManager | null, signal: AbortSignal): Promise<void> {
   let session = initialSession;
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
     terminal: false,
   });
-  process.on("SIGINT", () => rl.close());
+  const interrupt = () => rl.close();
+  signal.addEventListener("abort", interrupt, { once: true });
 
   // 与 TUI 一致：后台预热重模块，并顺带触发模型目录自动更新（best-effort）。
   // 仅交互式会话需要：管道输入的一次性 REPL 里，预热的重模块加载反而会拖长
@@ -127,7 +129,7 @@ async function runRepl(initialSession: SessionManager | null): Promise<void> {
     t.unref?.();
   }
   process.stdout.write(USER_PROMPT);
-  for await (const line of rl) {
+  try { for await (const line of rl) {
     let query = line;
     if (["/new", "/n"].includes(query.trim().toLowerCase())) {
       // 开新会话文件（对齐 /new 语义变化：ADR-0003）
@@ -138,14 +140,13 @@ async function runRepl(initialSession: SessionManager | null): Promise<void> {
     }
     if (["q", "exit", ""].includes(query.trim().toLowerCase())) break;
     try {
-      await runQuery(query, { session });
+      await runQuery(query, { session, signal });
     } catch (e) {
       // 单轮异常不该带走进程：报错后继续接受下一条输入
       console.error(`\n\x1b[31m[error] ${String((e as Error)?.message ?? e)}\x1b[0m`);
     }
     process.stdout.write(USER_PROMPT);
-  }
-  rl.close();
+  } } finally { signal.removeEventListener("abort", interrupt); rl.close(); }
 }
 
 const DEFAULT_TEAM = "default";
@@ -167,14 +168,16 @@ function initLeadTeam(): void {
 }
 
 /** 读取 stdin 全量（print/json 模式的管道输入） */
-function readAllStdin(): Promise<string> {
+function readAllStdin(signal?: AbortSignal): Promise<string> {
   return new Promise((resolve) => {
     let data = "";
+    const finish = () => { process.stdin.removeListener("data", receive); process.stdin.removeListener("end", finish); signal?.removeEventListener("abort", finish); if (signal?.aborted) process.stdin.pause(); resolve(data); };
+    const receive = (chunk: string) => { data += chunk; };
     process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk) => {
-      data += chunk;
-    });
-    process.stdin.on("end", () => resolve(data));
+    process.stdin.on("data", receive);
+    process.stdin.on("end", finish);
+    signal?.addEventListener("abort", finish, { once: true });
+    if (signal?.aborted || process.stdin.readableEnded) finish();
   });
 }
 
@@ -208,8 +211,9 @@ function positionals(args: string[]): string[] {
 }
 
 /** 单次对话模式（-p 打印 / --mode json）：管道 stdin 合并进首轮提示（对齐 pi print 模式） */
-async function runSingleTurn(args: string[], mode: "print" | "json"): Promise<void> {
-  const stdin = await readAllStdin();
+async function runSingleTurn(args: string[], mode: "print" | "json", lifetimeSignal: AbortSignal): Promise<void> {
+  const stdin = await readAllStdin(lifetimeSignal);
+  if (lifetimeSignal.aborted) return;
   const query = stdin.trim() || positionals(args).join(" ") || "";
   if (!query) {
     console.error("Error: no input. Pipe stdin or pass a prompt argument.");
@@ -217,16 +221,11 @@ async function runSingleTurn(args: string[], mode: "print" | "json"): Promise<vo
     process.exitCode = 1;
     return;
   }
-  const controller = new AbortController();
-  const interrupt = () => controller.abort(new DOMException("Interrupted by user", "AbortError"));
-  // Keep listeners installed while the signal is dispatched: signal-exit style
-  // dependencies may re-raise it when a once-listener has already disappeared.
-  process.on("SIGINT", interrupt); process.on("SIGTERM", interrupt);
-  try {
+  {
     const session = pickSession(args);
 
     if (session) {
-      const result = await runQueryDetailed(query, { session, signal: controller.signal, quietOutput: true, runHooks: false });
+      const result = await runQueryDetailed(query, { session, signal: lifetimeSignal, quietOutput: true, runHooks: false });
       const messages = session.buildSessionContext().messages;
       emitSingleTurn(messages, mode, result);
       return;
@@ -234,9 +233,9 @@ async function runSingleTurn(args: string[], mode: "print" | "json"): Promise<vo
 
     // 无会话（--no-session）：调用方持有消息数组，agentLoop 原地追加后取回
     const messages: ChatMessage[] = [];
-    const result = await runQueryDetailed(query, { signal: controller.signal, quietOutput: true, runHooks: false, outMessages: messages });
+    const result = await runQueryDetailed(query, { signal: lifetimeSignal, quietOutput: true, runHooks: false, outMessages: messages });
     emitSingleTurn(messages, mode, result);
-  } finally { process.removeListener("SIGINT", interrupt); process.removeListener("SIGTERM", interrupt); }
+  }
 }
 
 function emitSingleTurn(messages: ChatMessage[], mode: "print" | "json", result: RunResult): void {
@@ -270,13 +269,13 @@ function pickSession(args: string[]): SessionManager | null {
       return args.includes("--fork") ? SessionManager.forkFrom(match.path, cwd) : SessionManager.open(match.path);
     }
     console.error(`Error: session not found: ${sessionArg}`);
-    process.exit(1);
+    throw new Error(`Session not found: ${sessionArg}`);
   }
   if (args.includes("-r")) {
     const list = SessionManager.list(cwd);
     if (list.length === 0) {
       console.log("No sessions.");
-      process.exit(0);
+      return null;
     }
     list.forEach((s, i) => console.log(`  ${i + 1}. ${s.id.slice(0, 8)}  ${s.path}`));
     console.error("选择会话编号：");
@@ -292,6 +291,7 @@ async function runTui(
   initialSession: SessionManager | null,
   extManager: ExtensionManager,
   cliPaths: string[],
+  lifetimeSignal: AbortSignal,
 ): Promise<void> {
   const sessionRef: { current: SessionManager | null } = { current: initialSession };
   const { ProcessTerminal } = await import("@earendil-works/pi-tui");
@@ -344,7 +344,8 @@ async function runTui(
       await triggerHooks("UserPromptSubmit", query);
       const session = sessionRef.current;
       // 08：Esc 可中断回合（controller 由 handleSubmit 创建）
-      const signal = app.getTurnSignal() ?? undefined;
+      const turnSignal = app.getTurnSignal();
+      const signal = turnSignal ? AbortSignal.any([turnSignal, lifetimeSignal]) : lifetimeSignal;
       // 架构 C：UI 事件经 UiEventSink 订阅（stream/tool/turnEnd）
       const sink = new UiEventSink();
       sink.on("stream", (d) => {
@@ -384,6 +385,8 @@ async function runTui(
   setAskUserImpl((req, label) => app.askPermission(req, label));
 
   app.start();
+  const interrupt = () => app.stop();
+  lifetimeSignal.addEventListener("abort", interrupt, { once: true });
   // 模型/思考强度记忆：会话恢复时还原（不阻塞启动）
   if (sessionRef.current) {
     const ctx = sessionRef.current.buildSessionContext();
@@ -419,14 +422,12 @@ async function runTui(
       }
     }, 100);
   });
-  // TTY raw-mode stdin 的读请求会永久保持事件循环存活（Node 行为）；
-  // 对齐 pi：显式退出。
-  process.exit(0);
+  lifetimeSignal.removeEventListener("abort", interrupt);
 }
 
 async function main(): Promise<void> {
   // 顶层崩溃兜底（04）：未捕获异常不静默退出，记录原因 + 退出码 1
-  installFatalHandlers();
+  installFatalHandlers(() => getMCPHub().shutdown());
   const args = process.argv.slice(2);
 
   // 配置独立：注入 ~/.claude-pi 全局目录（须在一切配置读取前）
@@ -490,51 +491,55 @@ async function main(): Promise<void> {
     process.exit(r.errors.length ? 1 : 0);
   }
 
-  // 模式分派（ADR-0003：显式模式，无自动回退）；print/json 不初始化团队/轮询器
-  if (args.includes("-p") || args.includes("--print")) {
-    // 诊断日志重定向 stderr，保持 stdout 纯净（对拍接口）
-    const origLog = console.log;
-    console.log = (...a: unknown[]) => process.stderr.write(a.join(" ") + "\n");
-    try {
-      await runSingleTurn(args, "print");
-    } finally {
-      console.log = origLog;
+  // All operational modes share MCP startup, interruption and final cleanup.
+  await withMcpLifecycle(async lifetimeSignal => {
+    // 模式分派（ADR-0003：显式模式，无自动回退）；print/json 不初始化团队/轮询器
+    if (args.includes("-p") || args.includes("--print")) {
+      // 诊断日志重定向 stderr，保持 stdout 纯净（对拍接口）
+      const origLog = console.log;
+      console.log = (...a: unknown[]) => process.stderr.write(a.join(" ") + "\n");
+      try {
+        await runSingleTurn(args, "print", lifetimeSignal);
+      } finally {
+        console.log = origLog;
+      }
+      return;
     }
-    return;
-  }
-  if (args.includes("--mode") && args[args.indexOf("--mode") + 1] === "json") {
-    const origLog = console.log;
-    console.log = (...a: unknown[]) => process.stderr.write(a.join(" ") + "\n");
-    try {
-      await runSingleTurn(args, "json");
-    } finally {
-      console.log = origLog;
+    if (args.includes("--mode") && args[args.indexOf("--mode") + 1] === "json") {
+      const origLog = console.log;
+      console.log = (...a: unknown[]) => process.stderr.write(a.join(" ") + "\n");
+      try {
+        await runSingleTurn(args, "json", lifetimeSignal);
+      } finally {
+        console.log = origLog;
+      }
+      return;
     }
-    return;
-  }
 
-  initLeadTeam();
+    initLeadTeam();
 
-  const session = pickSession(args);
-  const sessionRef: { current: SessionManager | null } = { current: session };
-  const extManager = createExtensionManager(sessionRef);
-  void extManager.load(cliExtensionPaths(args));
-  if (session?.isPersisted()) {
-    const file = session.getSessionFile();
-    process.stdout.write(`会话 ${session.getSessionId().slice(0, 8)}（${file}）已恢复\n`);
-  }
+    const session = pickSession(args);
+    const sessionRef: { current: SessionManager | null } = { current: session };
+    const extManager = createExtensionManager(sessionRef);
+    void extManager.load(cliExtensionPaths(args));
+    if (session?.isPersisted()) {
+      const file = session.getSessionFile();
+      process.stdout.write(`会话 ${session.getSessionId().slice(0, 8)}（${file}）已恢复\n`);
+    }
 
-  // 交互呈现层：TTY → TUI；管道/非 TTY → 行式 REPL（ADR-0003：显式模式不变）
-  if (process.stdout.isTTY && process.stdin.isTTY && !args.includes("--repl")) {
-    await runTui(session, extManager, cliExtensionPaths(args));
+    // 交互呈现层：TTY → TUI；管道/非 TTY → 行式 REPL（ADR-0003：显式模式不变）
+    if (process.stdout.isTTY && process.stdin.isTTY && !args.includes("--repl")) {
+      await runTui(session, extManager, cliExtensionPaths(args), lifetimeSignal);
+      void triggerHooks("session_end", {});
+      return;
+    }
+    process.stdout.write(`claude-pi ${readVersion()} — 类 Claude Code 架构的 TS Agent 运行时\n`);
+    process.stdout.write("输入 /new 开新会话，q/exit 退出。\n");
+    await runRepl(session, lifetimeSignal);
     void triggerHooks("session_end", {});
-    return;
-  }
-  process.stdout.write(`claude-pi ${readVersion()} — 类 Claude Code 架构的 TS Agent 运行时\n`);
-  process.stdout.write("输入 /new 开新会话，q/exit 退出。\n");
-  await runRepl(session);
-  void triggerHooks("session_end", {});
-  await getMCPHub().shutdown();
+  });
+  // TTY stdin can keep the loop alive; explicit exit happens only after MCP cleanup.
+  if (process.stdout.isTTY && process.stdin.isTTY && !args.includes("--repl")) process.exit(process.exitCode ?? 0);
 }
 
 void main().catch(error => {

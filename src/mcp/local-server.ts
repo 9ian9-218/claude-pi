@@ -9,6 +9,9 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { BUILTIN_TOOLS, executeToolCall } from "../tool.ts";
 
 export async function startLocalMcpServer(): Promise<void> {
+  // This is a stdio server process: stdout belongs exclusively to JSON-RPC,
+  // including while built-in tools and their hooks emit diagnostics.
+  console.log = (...args: unknown[]) => console.error(...args);
   const server = new Server(
     { name: "claude-pi-local", version: "0.1.0" },
     { capabilities: { tools: {} } },
@@ -43,5 +46,5 @@ export async function startLocalMcpServer(): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.log("[mcp] local server started (stdio)");
+  console.error("[mcp] local server started (stdio)");
 }

@@ -1,9 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { writeFileAtomic } from "./atomic-write.ts";
 import { safePath } from "./tools/path.ts";
 import { getWorkdir } from "./workdir.ts";
+import { withRepositoryLock } from "./repository-lock.ts";
+import { applyFileTransaction, recoverFileTransactions } from "./file-transactions.ts";
 
 export function fileHash(content: string | Buffer): string {
   return createHash("sha256").update(content).digest("hex");
@@ -28,13 +29,15 @@ export function saveFileCheckpoint(filePath: string, after: string | Buffer | nu
 }
 
 /** Refuse to overwrite a user's change made after the agent's edit. */
-export function restoreFileCheckpoint(id: string): string {
+export async function restoreFileCheckpoint(id: string): Promise<string> {
+  return withRepositoryLock(getWorkdir(), async () => {
+  recoverFileTransactions();
   if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error("Invalid checkpoint id");
   const p = path.join(getWorkdir(), ".agent", "checkpoints", `${id}.json`);
   const cp = JSON.parse(fs.readFileSync(p, "utf8")) as FileCheckpoint;
   const target = safePath(cp.path);
   if ((fs.existsSync(target) ? fileHash(fs.readFileSync(target)) : "missing") !== cp.afterHash) throw new Error("Checkpoint conflict: file changed after the agent edit");
-  if (cp.before === null) fs.unlinkSync(target);
-  else { writeFileAtomic(target, cp.encoding === "base64" ? Buffer.from(cp.before, "base64") : cp.before); fs.chmodSync(target, cp.mode); }
+  await applyFileTransaction([{ path: cp.path, data: cp.before === null ? null : cp.encoding === "base64" ? Buffer.from(cp.before, "base64") : cp.before, mode: cp.mode, expectedHash: cp.afterHash }]);
   return `Restored ${cp.path}`;
+  });
 }

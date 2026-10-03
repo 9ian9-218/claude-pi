@@ -5,6 +5,9 @@ import { getWorkdir } from "../workdir.ts";
 import { buildTool, type ToolExecContext } from "./core.ts";
 import { runProcess } from "../process-runner.ts";
 import { shellInvocation } from "../sandbox.ts";
+import { withRepositoryLock } from "../repository-lock.ts";
+import { getWorkspaceBinding } from "../workdir.ts";
+import { recoverFileTransactions } from "../file-transactions.ts";
 
 // ── run_bash ──────────────────────────────────────────────────────────────
 
@@ -13,10 +16,12 @@ const BASH_TIMEOUT_MS = 120_000;
 async function execRunBash(args: Record<string, unknown>, ctx?: ToolExecContext) {
   const command = String(args["command"]);
   const invocation = shellInvocation(command, getWorkdir());
-  return runProcess(invocation.executable, invocation.args, {
+  const run = () => runProcess(invocation.executable, invocation.args, {
     cwd: getWorkdir(), signal: ctx?.signal, env: invocation.env,
     timeoutMs: typeof args.timeout_ms === "number" ? args.timeout_ms : BASH_TIMEOUT_MS,
   });
+  // A trusted lead's non-isolated shell is serialized with main-workspace edits.
+  return getWorkspaceBinding() ? run() : withRepositoryLock(getWorkdir(), () => { recoverFileTransactions(); return run(); });
 }
 
 const BASH_SCHEMA = {

@@ -27,6 +27,7 @@ import { LoopOptions } from "../loop-options.ts";
 import { AgentProfile, profileToContext } from "../agent-profile.ts";
 import { lockedPrint } from "../output-queue.ts";
 import { UiEventSink } from "../ui-events.ts";
+import { getWorkdir, runWithWorkdir } from "../workdir.ts";
 import {
   appendAgentText,
   emptyAgentUsage,
@@ -119,7 +120,7 @@ async function runTeammateLoop(options: {
   const idleMinutes = Math.max(1, Math.round(idleTimeoutMs / 60000));
 
   try {
-    const endReason = await runWithAgentContext(ctx, async (): Promise<string> => {
+    const endReason = await runWithAgentContext(ctx, () => runWithWorkdir(getWorkdir(), async (): Promise<string> => {
       const system =
         teammateIdentity(name, role, teamName) +
         "\n\n" +
@@ -179,7 +180,7 @@ async function runTeammateLoop(options: {
         }
       }
       return "已结束";
-    });
+    }));
 
     const run = getAgentRun(runKey);
     finishAgentRun(runKey, {

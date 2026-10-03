@@ -14,9 +14,9 @@ import { buildTool } from "./core.ts";
 
 // ── 任务看板工具（08） ────────────────────────────────────────────────────
 
-function execCreateTask(args: Record<string, unknown>): string {
+async function execCreateTask(args: Record<string, unknown>): Promise<string> {
   const blocked = Array.isArray(args["blockedBy"]) ? (args["blockedBy"] as string[]) : [];
-  const result = runCreateTask(
+  const result = await runCreateTask(
     String(args["subject"]),
     String(args["description"] ?? ""),
     blocked,
@@ -68,7 +68,7 @@ const LIST_TASKS_SCHEMA = {
   properties: {
     status_filter: {
       type: "string",
-      enum: ["all", "pending", "in_progress", "ready_for_review", "completed"],
+      enum: ["all", "pending", "preparing", "in_progress", "ready_for_review", "completed"],
       description: "Filter by status, or 'all' for every task",
     },
   },

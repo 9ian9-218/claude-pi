@@ -6,7 +6,8 @@
  */
 import { finalizeToolOutput } from "../compact.ts";
 import { sanitizeOpenaiTool, type OpenaiTool } from "../schema-strict.ts";
-import { getMCPHub } from "../mcp/hub.ts";
+import { getMCPHub, McpCallError } from "../mcp/hub.ts";
+import { finalizeMcpToolOutput } from "../mcp/output.ts";
 import { isMcpTool } from "../mcp/names.ts";
 import { checkPath } from "./path.ts";
 import { getAgentContext, type AgentRole } from "../teammates/context.ts";
@@ -20,6 +21,7 @@ import { instructionText, instructionHash } from "../repository-context.ts";
 export { Tool, buildTool, type ExecuteFn } from "./core.ts";
 export type { ToolExecContext } from "./core.ts";
 import { RUN_BASH_TOOL } from "./bash.ts";
+import { CONNECT_MCP_TOOL, DISCONNECT_MCP_TOOL, RESTART_MCP_TOOL, LIST_MCP_SERVERS_TOOL } from "./mcp.ts";
 import { REPOSITORY_INFO_TOOL, SYMBOL_SEARCH_TOOL } from "./repository.ts";
 import { BACKGROUND_JOB_TOOL } from "./jobs.ts";
 import { RUN_VERIFICATION_TOOL } from "./verification.ts";
@@ -82,6 +84,10 @@ export const BUILTIN_TOOLS: Tool[] = [
   SEND_MESSAGE_TOOL,
   LIST_TEAMMATES_TOOL,
   SHUTDOWN_TEAMMATE_TOOL,
+  CONNECT_MCP_TOOL,
+  DISCONNECT_MCP_TOOL,
+  RESTART_MCP_TOOL,
+  LIST_MCP_SERVERS_TOOL,
 ];
 
 export const TOOL_MAP: Map<string, Tool> = new Map(BUILTIN_TOOLS.map((t) => [t.name, t]));
@@ -176,6 +182,7 @@ export function presetBlockedMessage(toolName: string): string {
 }
 
 export function isToolAllowedForRole(role: AgentRole, toolName: string): boolean {
+  if (["connect_mcp", "disconnect_mcp", "restart_mcp", "list_mcp_servers"].includes(toolName)) return role === "lead";
   if (role === "lead" || role === "teammate") return true;
   if (isMcpTool(toolName) && !toolName.startsWith("mcp__local__")) return false;
   if (role === "subagent") return !SUBAGENT_EXCLUDED.has(toolName);
@@ -306,6 +313,10 @@ export async function executeToolCallResult(
       }
     }
     if (execCtx?.signal?.aborted) return { status: "cancelled", output: "Error: tool cancelled before execution" };
+    if (["write_file", "edit_file", "apply_patch", "restore_checkpoint", "run_bash", "run_verification"].includes(name) && ctx.role !== "verifier") {
+      const { requireWritableWorkspace } = await import("../workspaces.ts");
+      requireWritableWorkspace();
+    }
     if (execCtx?.allowBackground && name === "run_bash") {
       const { shouldRunBackground, startBackgroundTask } = await import("../background-task.ts");
       if (shouldRunBackground(name, args)) {
@@ -316,8 +327,12 @@ export async function executeToolCallResult(
     const value = isMcpTool(name) ? await getMCPHub().callPrefixedTool(name, args, execCtx?.signal) : await TOOL_MAP.get(name)!.run(args, execCtx);
     const result = toolResult(value);
     await triggerHooks("PostToolUse", block, result.output);
-    return { ...result, output: finalizeToolOutput(name, toolCall.id, result.output) };
-  } catch (e) { if (e instanceof BudgetExceeded) return { status: "budget_exceeded", output: `Error: ${e.message}` }; return errorResult(`Tool '${name}' failed: ${String((e as Error)?.message ?? e)}`); }
+    return { ...result, output: isMcpTool(name) ? await finalizeMcpToolOutput(result.output) : finalizeToolOutput(name, toolCall.id, result.output) };
+  } catch (e) {
+    if (e instanceof BudgetExceeded) return { status: "budget_exceeded", output: `Error: ${e.message}` };
+    if (e instanceof McpCallError) return { status: e.status, output: JSON.stringify({ status: e.status, message: e.message }) };
+    return errorResult(`Tool '${name}' failed: ${String((e as Error)?.message ?? e)}`);
+  }
 }
 
 function freezeInput<T>(value: T): T {

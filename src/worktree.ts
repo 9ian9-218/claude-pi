@@ -8,17 +8,22 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { AGENT_ROOT } from "./config.ts";
-import { getWorkdir, runWithWorkdir } from "./workdir.ts";
+import { getWorkdir, getWorkspaceBinding, runWithWorkdir } from "./workdir.ts";
 import { safePath } from "./tools/path.ts";
-import { fileHash, saveFileCheckpoint, restoreFileCheckpoint } from "./checkpoints.ts";
+import { fileHash } from "./checkpoints.ts";
 import { createHash } from "node:crypto";
 import { writeFileAtomic } from "./atomic-write.ts";
+import { repositoryInfo, repositoryGit, withRepositoryLock } from "./repository-lock.ts";
+import { applyFileTransaction, recoverFileTransactions } from "./file-transactions.ts";
+import { assertWorkspaceQuiescent, validateWorkspace } from "./workspaces.ts";
+import { getAgentContext } from "./teammates/context.ts";
 
-let gitRoot: string = AGENT_ROOT;
+let gitRoot: string = repositoryInfo(AGENT_ROOT).root;
 
 export function setGitRoot(root: string): void {
   gitRoot = root;
 }
+export function getGitRoot(): string { return gitRoot; }
 
 function worktreesDir(): string {
   // 随 gitRoot 派生（测试注入临时仓库时 worktree 落在仓库内）
@@ -30,13 +35,7 @@ export function ensureWorktreesDir(): void {
 }
 
 function git(...args: string[]): string {
-  const result = execFileSync("git", args, {
-    cwd: gitRoot,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    timeout: 30_000,
-  });
-  return result.trim();
+  return repositoryGit(gitRoot, args);
 }
 
 export function isGitAvailable(): boolean {
@@ -62,18 +61,22 @@ export function taskWorktreePath(taskId: string): string {
 /** 创建任务 worktree；失败返回 null（非致命） */
 export function createTaskWorktree(taskId: string): string | null {
   if (!/^task_\d+$/.test(taskId)) throw new Error("Invalid task id");
-  if (!isGitAvailable()) return null;
+  if (!isGitAvailable()) throw new Error("Task isolation requires a Git repository");
 
   ensureWorktreesDir();
   const wtPath = taskWorktreePath(taskId);
-  if (fs.existsSync(wtPath)) return wtPath;
+  if (fs.existsSync(wtPath)) {
+    const info = repositoryInfo(wtPath);
+    if (!info.git || info.id !== repositoryInfo(gitRoot).id || repositoryGit(wtPath, ["symbolic-ref", "--short", "HEAD"]) !== taskBranchName(taskId) || fs.realpathSync(repositoryGit(wtPath, ["rev-parse", "--show-toplevel"])) !== fs.realpathSync(wtPath)) throw new Error("Existing worktree does not match task");
+    return wtPath;
+  }
 
   const branch = taskBranchName(taskId);
   let createdBranch = false;
 
   // 1. 从 HEAD 创建跟踪分支（best-effort）
   try {
-    git("branch", "--track", branch, "HEAD");
+    git("branch", branch, "HEAD");
     createdBranch = true;
   } catch {
     // 分支可能已存在
@@ -91,7 +94,7 @@ export function createTaskWorktree(taskId: string): string | null {
     console.log(
       `  \x1b[33m[worktree] warning: could not create worktree for ${taskId}: ${String(e)}\x1b[0m`,
     );
-    return null;
+    throw new Error(`Cannot create task worktree: ${String(e)}`);
   }
 
   console.log(`  \x1b[36m[worktree] created at ${wtPath} (branch: ${branch})\x1b[0m`);
@@ -103,20 +106,25 @@ export interface TaskArtifact {
   worktree: string;
   baseSha: string;
   headSha: string;
+  targetRoot?: string;
   files: Array<{ path: string; hash: string | null; baseHash: string | null; mode?: number; executable?: boolean; baseExecutable?: boolean }>;
 }
 
-export function preserveTaskArtifact(taskId: string): TaskArtifact | null {
+export function preserveTaskArtifact(taskId: string, base?: string): TaskArtifact | null {
   if (!isGitAvailable()) return null;
   const worktree = taskWorktreePath(taskId);
   if (!fs.existsSync(worktree)) return null;
-  const run = (...args: string[]) => execFileSync("git", args, { cwd: worktree, encoding: "utf8" });
-  const baseSha = git("merge-base", "HEAD", taskBranchName(taskId));
+  return preserveWorkspaceArtifact(worktree, taskId, base ?? git("merge-base", "HEAD", taskBranchName(taskId)), gitRoot);
+}
+
+export function preserveWorkspaceArtifact(worktree: string, taskId: string, baseSha: string, targetRoot: string): TaskArtifact {
+  assertWorkspaceQuiescent(worktree);
+  const run = (...args: string[]) => repositoryGit(worktree, args);
   const headSha = run("rev-parse", "HEAD").trim();
-  const changed = run("diff", "--name-only", "-z", baseSha).split("\0").filter(Boolean);
+  const changed = run("diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", baseSha).split("\0").filter(Boolean);
   const untracked = run("ls-files", "--others", "--exclude-standard", "-z").split("\0").filter(p => p && !p.startsWith(".agent/") && !p.startsWith(".task_outputs/"));
   const paths = [...new Set([...changed, ...untracked])];
-  const directory = path.join(gitRoot, ".agent", "artifacts", taskId);
+  const directory = path.join(repositoryInfo(worktree).root, ".agent", "artifacts", taskId);
   fs.mkdirSync(directory, { recursive: true });
   const files = paths.map(p => {
     let baseHash: string | null = null;
@@ -132,15 +140,23 @@ export function preserveTaskArtifact(taskId: string): TaskArtifact | null {
     writeFileAtomic(dest, data);
     return { path: p, hash: fileHash(data), baseHash, mode: fs.statSync(full).mode & 0o777, executable: Boolean(fs.statSync(full).mode & 0o111), baseExecutable };
   });
-  writeFileAtomic(path.join(directory, "changes.patch"), run("diff", "--binary", baseSha));
-  const artifact = { directory, worktree, baseSha, headSha, files };
+  writeFileAtomic(path.join(directory, "changes.patch"), run("diff", "--no-ext-diff", "--no-textconv", "--binary", baseSha));
+  const artifact = { directory, worktree, baseSha, headSha, files, targetRoot: fs.realpathSync(targetRoot) };
   writeFileAtomic(path.join(directory, "manifest.json"), JSON.stringify(artifact, null, 2));
   return artifact;
 }
 
 /** Explicit review/integration step. Refuse overwriting main-workspace changes. */
-export function integrateTaskArtifact(artifact: TaskArtifact): void {
-  runWithWorkdir(gitRoot, () => {
+export async function integrateTaskArtifact(artifact: TaskArtifact): Promise<void> {
+  const root = artifact.targetRoot ?? gitRoot;
+  if (getAgentContext().role !== "lead") {
+    const binding = getWorkspaceBinding();
+    if (!binding || binding.worktreePath !== fs.realpathSync(root)) throw new Error("Only the coordinator can integrate into the main workspace");
+    validateWorkspace(binding);
+  }
+  await withRepositoryLock(root, async () => runWithWorkdir(root, async () => {
+    assertWorkspaceQuiescent(root);
+    recoverFileTransactions(root);
     const staged = artifact.files.map(file => {
       const target = safePath(file.path);
       if (fs.existsSync(target) && !fs.lstatSync(target).isFile()) throw new Error(`Integration conflict: ${file.path} is not a regular file`);
@@ -153,27 +169,13 @@ export function integrateTaskArtifact(artifact: TaskArtifact): void {
       if (data && fileHash(data) !== file.hash) throw new Error(`Artifact integrity check failed: ${file.path}`);
       return { file, target, current, data, integrated };
     });
-    const checkpoints: string[] = [];
-    try {
-      for (const { file, target, current, data, integrated } of staged) {
-        if (integrated) continue;
-        if ((fs.existsSync(target) ? fileHash(fs.readFileSync(target)) : null) !== current) throw new Error(`Integration conflict: ${file.path} changed during integration`);
-        fs.mkdirSync(path.dirname(target), { recursive: true });
-        const id = saveFileCheckpoint(target, data);
-        if (data === null) fs.unlinkSync(target); else { writeFileAtomic(target, data); if (file.mode !== undefined) fs.chmodSync(target, file.mode); }
-        checkpoints.push(id);
-      }
-    } catch (e) {
-      const conflicts: string[] = [];
-      for (const id of checkpoints.reverse()) try { restoreFileCheckpoint(id); } catch (rollback) { conflicts.push(String(rollback)); }
-      throw new Error(`${String(e)}${conflicts.length ? `; rollback conflicts: ${conflicts.join("; ")}` : ""}`);
-    }
-  });
+    await applyFileTransaction(staged.filter(f => !f.integrated).map(({ file, current, data }) => ({ path: file.path, data, mode: file.mode, expectedHash: current, expectedExecutable: file.baseExecutable })), { coordinator: true });
+  }));
 }
 
 export function artifactIntegrated(artifact: TaskArtifact): boolean {
   return artifact.files.every(file => {
-    const p = path.join(gitRoot, file.path);
+    const p = path.join(artifact.targetRoot ?? gitRoot, file.path);
     if (file.hash === null) return !fs.existsSync(p);
     return fs.existsSync(p) && fs.lstatSync(p).isFile() && createHash("sha256").update(fs.readFileSync(p)).digest("hex") === file.hash && (file.executable === undefined || Boolean(fs.statSync(p).mode & 0o111) === file.executable);
   });
@@ -187,6 +189,7 @@ export function removeTaskWorktree(taskId: string): boolean {
   const branch = taskBranchName(taskId);
 
   if (fs.existsSync(wtPath)) {
+    assertWorkspaceQuiescent(wtPath);
     const status = execFileSync("git", ["status", "--porcelain"], { cwd: wtPath, encoding: "utf8" });
     if (status.trim()) return false;
     try { git("merge-base", "--is-ancestor", branch, "HEAD"); } catch { return false; }

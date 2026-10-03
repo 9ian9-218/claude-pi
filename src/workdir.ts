@@ -6,10 +6,12 @@
  * claim 任务时 setWorktreeOverride(path) 切换，complete 时置 null 恢复。
  */
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { WorkspaceBinding } from "./workspaces.ts";
 
 interface WorkdirContext {
   workdir: string;
   baseWorkdir: string;
+  binding?: WorkspaceBinding;
 }
 
 const workdirStore = new AsyncLocalStorage<WorkdirContext>();
@@ -30,4 +32,21 @@ export function setWorktreeOverride(path: string | null): void {
   if (ctx) {
     ctx.workdir = path ?? ctx.baseWorkdir;
   }
+}
+
+export function getWorkspaceBinding(): WorkspaceBinding | undefined {
+  return workdirStore.getStore()?.binding;
+}
+
+export function setWorkspaceBinding(binding?: WorkspaceBinding): void {
+  const ctx = workdirStore.getStore();
+  if (ctx) {
+    ctx.binding = binding;
+    ctx.workdir = binding?.worktreePath ?? ctx.baseWorkdir;
+  }
+}
+
+/** Keep a teammate's binding through successive WORK and IDLE rounds. */
+export function runWithCurrentWorkdir<T>(fn: () => T): T {
+  return workdirStore.getStore() ? fn() : runWithWorkdir(process.cwd(), fn);
 }

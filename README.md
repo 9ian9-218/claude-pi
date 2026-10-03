@@ -18,7 +18,7 @@
 - **Hook 事件机制**——`UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `Stop` 等事件挂载点，用于拦截与扩展运行时行为
 - **三级权限门控**——bash 黑名单（7 条字符串）→ 规则匹配（工作区外写入 / 三类危险命令 / 敏感文件）→ 按身份确认（lead 弹窗、subagent 同步冒泡、teammate 邮箱冒泡）。**命中才询问，未命中默认放行**，见顶部安全警示
 - **错误恢复**——429/529 退避重试、`max_tokens` 升级与续写；错误、超时、中断和预算耗尽返回明确状态
-- **上下文压缩**——L3 出口（超大工具结果落盘 + 预览引用）、L4 摘要（自动超阈值 / 手动 `/compact`，写 compaction entry，保留固定 20K 原文尾巴）；L1 Snip / L2 Micro 已移除（CC 无对应物，且就地改写会破坏缓存前缀）
+- **上下文压缩**——L3 出口（超过 2000 个估算 Token 的工具结果落盘，返回约 500 Token 预览）、L4 摘要（自动超阈值 / 手动 `/compact` / 超限恢复统一写检查点，按约 20K Token 保留完整工具回合）；支持 pi 的 **split turn**：分开摘要旧历史与当前回合前缀，再保留安全后缀。L1 Snip / L2 Micro 已移除，以保持旧消息缓存前缀稳定。详见[切分与恢复说明](docs/split-turn-compaction.md)。
 
 ### 树形会话
 
@@ -63,7 +63,7 @@
 - **`/memory-refresh`**——显式刷新当前会话的记忆快照：立即用最新记忆库重算并生效，**代价是开启新的 prompt 前缀**（此前缓存的 system/消息前缀从下一次请求起不再复用，首轮重新 cache write，之后按新前缀继续累积）。命令会明确提示这一点。
 - **记忆开关**——`~/.claude-pi/settings.json` 的 `memory.enabled`（默认 `true`）；设为 `false` 后完全不注入记忆、也不做 Stop hook 提取（TUI 里可用 `/settings` 切换）。开关变更对新会话生效。
 - **任务看板**——JSON 持久化任务列表，含依赖图与 claim/complete 生命周期
-- **Git worktree 隔离**——认领任务时创建独立 worktree，操作局限其中，完成时自动清理
+- **Git worktree 隔离**——任务认领失败不降级；Worker 自动从父目录快照建立独立 worktree，持久绑定跨轮恢复，整合使用仓库写锁与崩溃恢复日志；未合并产物保留。见 [隔离与恢复](docs/workspace-isolation.md)
 - **Skill**——`.agent/skills/` 下的 SKILL.md 按需加载注入系统提示
 
 ### 可扩展体系
@@ -71,7 +71,7 @@
 - **扩展（Extension）**——TS 模块注册事件、工具、斜杠命令与 UI 交互；从三位置加载（`.agent/extensions/`、`~/.claude-pi/extensions/`、`-e`），支持 `/reload` 热重载
 - **ctx.ui**——扩展可用的用户交互 API：confirm / select / input / notify / custom 组件，并可注册 entry 渲染器定制会话条目展示
 - **appendEntry**——扩展向会话树追加自定义 entry，实现跨重启的状态持久化
-- **MCP 集成**——标准 MCP client hub，工具以 `mcp__{server}__{tool}` 命名暴露；本地 server 将内置工具以 `mcp__local__{tool}` 呈现
+- **MCP 集成**——stdio 进程组回收、超时与错误熔断、流量／解析限制及结果配额；受信任配置自动加载，支持连接、状态和有限重启。[生命周期与防护](docs/mcp-resilience.md)
 
 ### 模型与配置
 

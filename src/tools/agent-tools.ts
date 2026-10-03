@@ -32,7 +32,11 @@ import {
 import { UiEventSink } from "../ui-events.ts";
 import { computeUsageTotals } from "../usage-stats.ts";
 import { describeRoleRestrictions } from "./runtime.ts";
-import { getWorkdir } from "../workdir.ts";
+import { getWorkdir, getWorkspaceBinding, runWithWorkdir, setWorkspaceBinding } from "../workdir.ts";
+import { createWorkerWorkspace, finishWorkspace, readWorkspaceRecord, validateWorkspace, type WorkspaceBinding } from "../workspaces.ts";
+import { withRepositoryLock } from "../repository-lock.ts";
+import { preserveWorkspaceArtifact, integrateTaskArtifact } from "../worktree.ts";
+import { cancelWorkspaceProcesses } from "../process-runner.ts";
 
 // ── subagent（09） ─────────────────────────────────────────────────────────
 
@@ -52,6 +56,7 @@ export const SUBAGENT_EXCLUDED: Set<string> = new Set([
   "review_plan",
   "connect_mcp",
   "disconnect_mcp",
+  "restart_mcp",
   "list_mcp_servers",
   "kill_bg_task",
 ]);
@@ -85,7 +90,15 @@ export async function spawnSubagent(
   const goal = description.trim();
   const parentSession = options.parentSession ?? null;
   const parentFile = parentSession?.getSessionFile() ?? null;
-  const workspace = getWorkdir();
+  const parentPath = getWorkdir();
+  const parentBinding = getWorkspaceBinding();
+  let owned: WorkspaceBinding | undefined;
+  if (role === "worker" || role === "subagent") {
+    try { owned = await createWorkerWorkspace(parentPath, subId); }
+    catch (e) { return `Error: cannot isolate ${role}: ${String(e)}`; }
+  }
+  const workspace = owned?.worktreePath ?? parentPath;
+  try {
 
   // 子会话落盘：
   //  - 有父会话 → fork 父分支（system / 工具面 / 历史前缀与父一致 → prompt cache 命中）
@@ -136,6 +149,7 @@ export async function spawnSubagent(
   });
 
   const roleBrief = getRoleIdentity(role, workspace);
+  description += `\nWorking directory: ${workspace}. Use paths relative to this directory.`;
 
   let initialUserPrompt = description;
   if (options.contextPackage && options.contextPackage.trim()) {
@@ -219,15 +233,29 @@ export async function spawnSubagent(
   });
 
   try {
-    const result = await runWithAgentContext(profileToContext(profile), async () =>
-      agentLoopDetailed(messages, {
+    const result = await runWithAgentContext(profileToContext(profile), () => runWithWorkdir(workspace, async () => {
+      if (owned) setWorkspaceBinding(owned);
+      return agentLoopDetailed(messages, {
         maxTurn: maxTurns,
         maxTokens: 6000,
         ...(childSession ? { session: childSession } : {}),
         loopOptions,
-      }),
-    );
+      });
+    }));
 
+    if (owned) {
+      await cancelWorkspaceProcesses(owned.worktreePath);
+      await withRepositoryLock(parentPath, async () => {
+        const artifact = preserveWorkspaceArtifact(owned!.worktreePath, owned!.taskId, owned!.baseSha, parentPath);
+        finishWorkspace(owned!, "review");
+        if (result.status === "success" && result.final) {
+          if (parentBinding) validateWorkspace(parentBinding);
+          await integrateTaskArtifact(artifact);
+          finishWorkspace(owned!, "closed");
+        }
+        parentSession?.appendCustom("worker_artifact", { agentId: subId, artifact, integrated: result.status === "success" });
+      });
+    }
     if (result.status === "success" && result.final) {
       refreshUsage();
       finishAgentRun(subId, { status: "done", result: result.final });
@@ -252,7 +280,17 @@ export async function spawnSubagent(
       status: "failed",
       error: String(err),
     });
-    throw err;
+    throw owned ? new Error(`${String(err)}; worker worktree retained at ${owned.worktreePath}`) : err;
+  }
+  } finally {
+    if (owned && readWorkspaceRecord(owned.recordPath)?.status === "active") {
+      await cancelWorkspaceProcesses(owned.worktreePath);
+      await withRepositoryLock(parentPath, () => {
+        const artifact = preserveWorkspaceArtifact(owned!.worktreePath, owned!.taskId, owned!.baseSha, parentPath);
+        finishWorkspace(owned!, "review");
+        parentSession?.appendCustom("worker_artifact", { agentId: subId, artifact, integrated: false });
+      });
+    }
   }
 }
 

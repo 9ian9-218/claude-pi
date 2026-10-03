@@ -9,11 +9,12 @@ import { writeFileAtomic } from "./atomic-write.ts";
 import path from "node:path";
 import { AGENT_ROOT, resolveAgentDirs } from "./config.ts";
 import { withFileLock } from "./file-lock.ts";
-import { createTaskWorktree, removeTaskWorktree, preserveTaskArtifact, artifactIntegrated, integrateTaskArtifact, type TaskArtifact } from "./worktree.ts";
-import { setWorktreeOverride } from "./workdir.ts";
+import { createTaskWorktree, removeTaskWorktree, preserveTaskArtifact, artifactIntegrated, integrateTaskArtifact, getGitRoot, taskBranchName, taskWorktreePath, type TaskArtifact } from "./worktree.ts";
+import { withRepositoryLock, repositoryGit, repositoryInfo } from "./repository-lock.ts";
+import { registerWorkspace, attachWorkspaceTask, finishWorkspace, readWorkspaceRecord, findAgentWorkspace, assertWorkspaceQuiescent, assertWorkspaceDeliverable, validateWorkspace, workspaceActor, type WorkspaceBinding } from "./workspaces.ts";
 
 // 测试可注入；默认 .agent/tasks
-let tasksDir: string = resolveAgentDirs(AGENT_ROOT).tasksDir;
+let tasksDir: string = resolveAgentDirs(repositoryInfo(AGENT_ROOT).root).tasksDir;
 
 export function setTasksDir(dir: string): void {
   tasksDir = dir;
@@ -23,8 +24,11 @@ export interface Task {
   id: string;
   subject: string;
   description: string;
-  status: "pending" | "in_progress" | "ready_for_review" | "completed";
+  status: "pending" | "preparing" | "in_progress" | "ready_for_review" | "completed";
   artifact?: TaskArtifact;
+  binding?: WorkspaceBinding;
+  baseSha?: string;
+  preparingPid?: number;
   owner: string | null;
   blockedBy: string[];
   blocks: string[];
@@ -72,10 +76,12 @@ function maxIdFromTaskFiles(): number {
   return maxId;
 }
 
-export function allocateTaskId(): string {
-  const nextId = Math.max(readHighwatermark(), maxIdFromTaskFiles()) + 1;
-  writeHighwatermark(nextId);
-  return `task_${nextId}`;
+export async function allocateTaskId(): Promise<string> {
+  return withFileLock(path.join(tasksDir, ".lock"), () => {
+    const nextId = Math.max(readHighwatermark(), maxIdFromTaskFiles()) + 1;
+    writeHighwatermark(nextId);
+    return `task_${nextId}`;
+  });
 }
 
 // ── 依赖图 ──────────────────────────────────────────────────────────────
@@ -125,53 +131,21 @@ function taskFromDict(data: Record<string, unknown>): Task {
     blockedBy: Array.isArray(data["blockedBy"]) ? (data["blockedBy"] as string[]) : [],
     blocks: Array.isArray(data["blocks"]) ? (data["blocks"] as string[]) : [],
     ...(data.artifact ? { artifact: data.artifact as TaskArtifact } : {}),
+    ...(data.binding ? { binding: data.binding as WorkspaceBinding } : {}),
+    ...(data.baseSha ? { baseSha: String(data.baseSha) } : {}),
+    ...(data.preparingPid ? { preparingPid: Number(data.preparingPid) } : {}),
   };
 }
 
 // blocks 反向索引（每进程首次访问同步一次，对齐 Python _blocks_index_synced）
-let blocksIndexSynced = false;
+
 
 export function resetBlocksIndex(): void {
-  blocksIndexSynced = false;
+
 }
 
-export function ensureBlocksIndex(): void {
-  if (blocksIndexSynced) return;
-  const paths = fs.existsSync(tasksDir)
-    ? fs.readdirSync(tasksDir).filter((f) => f.startsWith("task_") && f.endsWith(".json"))
-    : [];
-  if (paths.length === 0) {
-    blocksIndexSynced = true;
-    return;
-  }
-  const tasks = paths.map((f) => taskFromDict(JSON.parse(fs.readFileSync(path.join(tasksDir, f), "utf8"))));
-  const blocksMap: Record<string, string[]> = Object.fromEntries(tasks.map((t) => [t.id, []]));
-  for (const t of tasks) {
-    for (const depId of t.blockedBy) {
-      if (depId in blocksMap && !blocksMap[depId].includes(t.id)) {
-        blocksMap[depId].push(t.id);
-      }
-    }
-  }
-  for (const t of tasks) {
-    const newBlocks = blocksMap[t.id].sort();
-    if (JSON.stringify(t.blocks) !== JSON.stringify(newBlocks)) {
-      t.blocks = newBlocks;
-      saveTask(t);
-    }
-  }
-  blocksIndexSynced = true;
-}
-
-export function addBlock(downstreamId: string, blockedBy: string[]): void {
-  for (const upstreamId of blockedBy) {
-    const upstream = loadTask(upstreamId);
-    if (!upstream.blocks.includes(downstreamId)) {
-      upstream.blocks.push(downstreamId);
-      saveTask(upstream);
-    }
-  }
-}
+// Reads never rewrite task records. Derive reverse dependencies from the graph.
+export function ensureBlocksIndex(): void {}
 
 export function validateCreateTaskDependencies(
   taskId: string,
@@ -193,11 +167,12 @@ export function validateCreateTaskDependencies(
   return null;
 }
 
-export function createTask(
+export async function createTask(
   subject: string,
   description = "",
   blockedBy: string[] = [],
-): Task {
+): Promise<Task> {
+  return withFileLock(path.join(tasksDir, ".lock"), () => {
   const nextNum = Math.max(readHighwatermark(), maxIdFromTaskFiles()) + 1;
   const taskId = `task_${nextNum}`;
   const err = validateCreateTaskDependencies(taskId, blockedBy);
@@ -214,8 +189,8 @@ export function createTask(
     blocks: [],
   };
   saveTask(task);
-  addBlock(taskId, blockedBy);
   return task;
+  });
 }
 
 export function saveTask(task: Task): void {
@@ -225,7 +200,9 @@ export function saveTask(task: Task): void {
 
 export function loadTask(taskId: string): Task {
   ensureBlocksIndex();
-  return taskFromDict(JSON.parse(fs.readFileSync(taskPath(taskId), "utf8")));
+  const task = taskFromDict(JSON.parse(fs.readFileSync(taskPath(taskId), "utf8")));
+  task.blocks = loadAllTasksRaw().filter(t => t.blockedBy.includes(taskId)).map(t => t.id);
+  return task;
 }
 
 export function listTasks(): Task[] {
@@ -236,6 +213,7 @@ export function listTasks(): Task[] {
     .filter((f) => f.startsWith("task_") && f.endsWith(".json"))
     .map((f) => taskFromDict(JSON.parse(fs.readFileSync(path.join(tasksDir, f), "utf8"))));
   tasks.sort((a, b) => (parseTaskNum(a.id) ?? 0) - (parseTaskNum(b.id) ?? 0));
+  for (const task of tasks) task.blocks = tasks.filter(t => t.blockedBy.includes(task.id)).map(t => t.id);
   return tasks;
 }
 
@@ -290,42 +268,25 @@ function agentBusyTask(tasks: Task[], owner: string): Task | null {
 // ── claim / complete ─────────────────────────────────────────────────────
 
 async function executeTaskClaim(taskId: string, owner: string): Promise<string> {
-  const p = taskPath(taskId);
-  if (!fs.existsSync(p)) throw new Error(`Task not found: ${taskId}`);
-
-  let subject = "";
-  let taskRef = "";
-  await withFileLock(taskLockPath(taskId), async () => {
-    const task = taskFromDict(JSON.parse(fs.readFileSync(p, "utf8")));
-    if (task.status !== "pending") {
-      throw new Error(`Task ${taskId} is ${task.status}, cannot claim`);
+  return withFileLock(taskLockPath(taskId), () => {
+    const task = loadTask(taskId);
+    if (task.status !== "pending" || task.owner) throw new Error(`Task ${taskId} cannot be claimed`);
+    task.status = "preparing"; task.owner = owner; task.preparingPid = process.pid;
+    task.baseSha = repositoryGit(fs.existsSync(taskWorktreePath(taskId)) ? taskWorktreePath(taskId) : getGitRoot(), ["rev-parse", "HEAD"]);
+    saveTask(task);
+    try {
+      const wt = createTaskWorktree(taskId);
+      if (!wt) throw new Error("Task worktree creation failed");
+      task.binding = registerWorkspace(getGitRoot(), wt, taskId, owner, task.baseSha, taskBranchName(taskId));
+      attachWorkspaceTask(task.binding, taskPath(taskId));
+      task.status = "in_progress"; delete task.preparingPid; saveTask(task);
+      return `Claimed ${task.id} (${task.subject})`;
+    } catch (error) {
+      if (task.binding) finishWorkspace(task.binding, "closed");
+      task.status = "pending"; task.owner = null; delete task.binding; delete task.preparingPid;
+      saveTask(task); throw error;
     }
-    if (task.owner) {
-      throw new Error(`Task ${taskId} already owned by ${task.owner}`);
-    }
-    const tasks = loadAllTasksRaw();
-    if (!depsSatisfied(task, unresolvedTaskIds(tasks))) {
-      const deps = task.blockedBy.filter(
-        (d) => !fs.existsSync(taskPath(d)) || unresolvedTaskIds(tasks).has(d),
-      );
-      throw new Error(`Blocked by: ${deps.join(", ")}`);
-    }
-    task.owner = owner;
-    task.status = "in_progress";
-    writeFileAtomic(p, JSON.stringify(task, null, 2));
-    subject = task.subject;
-    taskRef = task.id;
   });
-
-  // 创建 worktree 隔离（非致命）
-  const wt = createTaskWorktree(taskId);
-  if (wt !== null) {
-    setWorktreeOverride(wt);
-    console.log(`  \x1b[36m[worktree] switched to ${wt}\x1b[0m`);
-  }
-
-  console.log(`  \x1b[36m[claim] ${subject} → in_progress (owner: ${owner})\x1b[0m`);
-  return `Claimed ${taskRef} (${subject})`;
 }
 
 export async function claimTaskWithBusyCheck(
@@ -335,7 +296,26 @@ export async function claimTaskWithBusyCheck(
 ): Promise<string> {
   const enforceBusy = options.enforceBusy ?? true;
   ensureBlocksIndex();
-  return withFileLock(path.join(tasksDir, ".lock"), async () => {
+  return withRepositoryLock(getGitRoot(), () => withFileLock(path.join(tasksDir, ".lock"), async () => {
+    // A crash before publishing the lease must not leave an unrecoverable claim.
+    for (const task of loadAllTasksRaw().filter(t => t.status === "preparing")) {
+      if (!task.preparingPid) throw new Error(`Cannot verify interrupted preparation: ${task.id}`);
+      try { process.kill(task.preparingPid, 0); continue; } catch { /* Owner has exited. */ }
+      const binding = task.owner ? findAgentWorkspace(getGitRoot(), task.owner) : undefined;
+      if (binding?.status === "active" && binding.taskId === task.id) {
+        task.binding = validateWorkspace(binding); attachWorkspaceTask(task.binding, taskPath(task.id)); task.status = "in_progress";
+      } else {
+        const wt = taskWorktreePath(task.id);
+        if (fs.existsSync(wt)) {
+          createTaskWorktree(task.id); assertWorkspaceQuiescent(wt);
+          const changed = repositoryGit(wt, ["diff", "--name-only", "HEAD"]);
+          const untracked = repositoryGit(wt, ["ls-files", "--others", "--exclude-standard", "-z"]).split("\0").filter(p => p && !/^(?:\.agent|\.task_outputs|\.transcripts)(?:\/|$)/.test(p));
+          if (changed || untracked.length) throw new Error(`Interrupted preparation has changes to review: ${wt}`);
+        }
+        task.status = "pending"; task.owner = null;
+      }
+      delete task.preparingPid; saveTask(task);
+    }
     const tasks = loadAllTasksRaw();
 
     if (enforceBusy) {
@@ -373,7 +353,7 @@ export async function claimTaskWithBusyCheck(
     }
 
     return executeTaskClaim(chosenId, owner);
-  });
+  }));
 }
 
 export function tryClaimNextTask(owner: string): Promise<string> {
@@ -400,7 +380,7 @@ export async function completeTask(
   let subject = "";
   let taskRef = "";
   let blockIds: string[] = [];
-  await withFileLock(taskLockPath(taskId), async () => {
+  await withRepositoryLock(getGitRoot(), () => withFileLock(path.join(tasksDir, ".lock"), () => withFileLock(taskLockPath(taskId), async () => {
     const task = taskFromDict(JSON.parse(fs.readFileSync(p, "utf8")));
     if (task.status !== "in_progress" && task.status !== "ready_for_review") {
       throw new Error(`Task ${taskId} is ${task.status}, cannot complete`);
@@ -410,24 +390,28 @@ export async function completeTask(
         `Task ${taskId} is owned by ${task.owner}; only the owner can complete it`,
       );
     }
-    const artifact = preserveTaskArtifact(taskId) ?? task.artifact;
+    if (task.binding) {
+      const current = readWorkspaceRecord(task.binding.recordPath);
+      if (!current || current.id !== task.binding.id) throw new Error("Task workspace record changed");
+      task.binding = validateWorkspace(current, false); assertWorkspaceDeliverable(task.binding.worktreePath);
+    }
+    const artifact = preserveTaskArtifact(taskId, task.baseSha) ?? task.artifact;
     if (artifact) task.artifact = artifact;
     task.status = artifact && artifact.files.length > 0 && !artifactIntegrated(artifact) ? "ready_for_review" : "completed";
-    writeFileAtomic(p, JSON.stringify(task, null, 2));
     subject = task.subject;
     taskRef = task.id;
-    blockIds = [...task.blocks];
-  });
+    blockIds = loadAllTasksRaw().filter(t => t.blockedBy.includes(taskId)).map(t => t.id);
+    if (task.binding) finishWorkspace(task.binding, task.status === "completed" ? "closed" : "review");
+    writeFileAtomic(p, JSON.stringify(task, null, 2));
+  })));
 
   const delivered = loadTask(taskId);
   if (delivered.status === "ready_for_review") {
-    setWorktreeOverride(null);
     return `Ready for review ${taskRef} (${subject}). Worktree retained at ${delivered.artifact?.worktree}; artifacts: ${delivered.artifact?.directory}. Integrate the reviewed files, then call complete_task again. Dependencies remain blocked until integration.`;
   }
 
   // 移除 worktree（best-effort）并恢复工作目录
-  removeTaskWorktree(taskId);
-  setWorktreeOverride(null);
+  await withRepositoryLock(getGitRoot(), () => removeTaskWorktree(taskId));
 
   const unblocked: string[] = [];
   for (const downId of blockIds) {
@@ -447,19 +431,21 @@ export async function completeTask(
 }
 
 export async function integrateTask(taskId: string): Promise<string> {
-  await withFileLock(taskLockPath(taskId), async () => {
-    const task = loadTask(taskId);
-    if (task.status !== "ready_for_review" || !task.artifact) throw new Error("Task must be ready_for_review with saved artifacts");
-    integrateTaskArtifact(task.artifact);
+  return withRepositoryLock(getGitRoot(), async () => {
+    await withFileLock(path.join(tasksDir, ".lock"), () => withFileLock(taskLockPath(taskId), async () => {
+      const task = loadTask(taskId);
+      if (task.status !== "ready_for_review" || !task.artifact) throw new Error("Task must be ready_for_review with saved artifacts");
+      await integrateTaskArtifact(task.artifact);
+    }));
+    return completeTask(taskId);
   });
-  return completeTask(taskId);
 }
 
 // ── 工具入口（供 LLM 调用）───────────────────────────────────────────────
 
-export function runCreateTask(subject: string, description = "", blockedBy: string[] = []): string {
+export async function runCreateTask(subject: string, description = "", blockedBy: string[] = []): Promise<string> {
   try {
-    const task = createTask(subject, description, blockedBy);
+    const task = await createTask(subject, description, blockedBy);
     const deps = blockedBy.length > 0 ? ` (blockedBy: ${blockedBy.join(", ")})` : "";
     console.log(`  \x1b[34m[create] ${task.subject}${deps}\x1b[0m`);
     return `Created ${task.id}: ${task.subject}${deps}`;
@@ -473,7 +459,7 @@ export function runListTasks(statusFilter = "all"): string {
   const filtered = statusFilter !== "all" ? tasks.filter((t) => t.status === statusFilter) : tasks;
   if (filtered.length === 0) return "No tasks. Use create_task to add some.";
   const lines = filtered.map((t) => {
-    const icon = { pending: "○", in_progress: "●", ready_for_review: "◇", completed: "✓" }[t.status] ?? "?";
+    const icon = { pending: "○", preparing: "◌", in_progress: "●", ready_for_review: "◇", completed: "✓" }[t.status] ?? "?";
     const deps = t.blockedBy.length > 0 ? ` (blockedBy: ${t.blockedBy.join(", ")})` : "";
     const blocks = t.blocks.length > 0 ? ` (blocks: ${t.blocks.join(", ")})` : "";
     const owner = t.owner ? ` [${t.owner}]` : "";
@@ -491,10 +477,10 @@ export function runGetTask(taskId: string): string {
 }
 
 export function runClaimTask(taskId: string, owner?: string): Promise<string> {
-  const effOwner = owner ?? "agent";
+  const effOwner = owner ?? workspaceActor();
   return claimTask(taskId, effOwner);
 }
 
 export function runCompleteTask(taskId: string): Promise<string> {
-  return completeTask(taskId);
+  return completeTask(taskId, { owner: workspaceActor() });
 }

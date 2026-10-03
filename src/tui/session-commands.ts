@@ -242,6 +242,10 @@ export async function handleSessionCommand(
           session,
           ...(instructions ? { instructions } : {}),
         });
+        if (out.skipped) {
+          app.appendSystem("暂无新增对话需要压缩。");
+          return;
+        }
         app.appendSystem(
           `已压缩：${out.tokensBefore} → ≈${out.tokensAfter} tokens` +
             `（检查点已写入会话树${out.checkpointId ? ` ${out.checkpointId}` : ""}` +
@@ -312,4 +316,3 @@ export async function handleSessionCommand(
       app.appendMessage("system", `未知命令：/${name}（/help 查看）`);
   }
 }
-

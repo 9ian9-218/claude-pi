@@ -54,6 +54,9 @@ export interface CompactionEntry extends SessionEntryBase {
   inputHash?: string;
   /** 复用来源：本摘要抄自哪个 compaction entry（自己生成时缺省） */
   reusedFrom?: string;
+  /** pi split-turn：摘要含当前回合被移出的前缀，后缀保存在 retainedTail。 */
+  isSplitTurn?: boolean;
+  reason?: "auto" | "manual" | "reactive";
 }
 
 export interface BranchSummaryEntry extends SessionEntryBase {
@@ -488,7 +491,7 @@ export class SessionManager {
     tokensBefore: number,
     retainedTail?: ChatMessage[],
     usage?: Usage,
-    meta?: { inputHash?: string; reusedFrom?: string },
+    meta?: Pick<CompactionEntry, "inputHash" | "reusedFrom" | "isSplitTurn" | "reason">,
   ): string {
     const id = genId();
     this.appendRawEntry({
@@ -502,6 +505,8 @@ export class SessionManager {
       ...(usage ? { usage } : {}),
       ...(meta?.inputHash ? { inputHash: meta.inputHash } : {}),
       ...(meta?.reusedFrom ? { reusedFrom: meta.reusedFrom } : {}),
+      ...(meta?.isSplitTurn !== undefined ? { isSplitTurn: meta.isSplitTurn } : {}),
+      ...(meta?.reason ? { reason: meta.reason } : {}),
     });
     return id;
   }
@@ -699,6 +704,11 @@ export class SessionManager {
     const messages: ChatMessage[] = [];
     let model: string | null = null;
     let thinkingLevel: string | null = null;
+    // 模型/思考设置不属于被摘要的对话：压缩切掉旧消息时仍从完整分支恢复。
+    for (const entry of this.getBranch()) {
+      if (entry.type === "model_change") model = `${entry.provider}/${entry.modelId}`;
+      if (entry.type === "thinking_change") thinkingLevel = entry.level;
+    }
     for (const entry of entries) {
       switch (entry.type) {
         case "message":

@@ -32,7 +32,7 @@ export function syncTodoFromTasks(): void {
   if (tasks.length === 0) return;
   CURRENT_TODOS = tasks.map((t) => ({
     content: `[${t.id}] ${t.subject}`,
-    status: t.status === "ready_for_review" ? "in_progress" : t.status,
+    status: (t.status === "ready_for_review" || t.status === "preparing") ? "in_progress" : t.status,
   }));
   formatTodoBoard();
 }

@@ -130,9 +130,13 @@ describe("内置工具执行（S1）", () => {
       fs.writeFileSync(path.join(ws, "huge.txt"), lines.join("\n"));
       const r = await executeToolCall(mkCall("read_file", { path: "huge.txt" }));
       expect(r).toContain("1: l1");
-      expect(r).toContain("2000: l2000");
-      expect(r).not.toContain("l2001");
-      expect(r).toContain("(Showing lines 1-2000. Use offset=2001 to continue.)");
+      // 2000 Token 的 L3 阈值会落盘这段输出，行数边界应检查完整产物。
+      const outputPath = r.match(/^Full output: (.+)$/m)?.[1];
+      expect(outputPath).toBeDefined();
+      const fullOutput = fs.readFileSync(outputPath!, "utf8");
+      expect(fullOutput).toContain("2000: l2000");
+      expect(fullOutput).not.toContain("l2001");
+      expect(fullOutput).toContain("(Showing lines 1-2000. Use offset=2001 to continue.)");
     });
   });
 

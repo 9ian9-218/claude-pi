@@ -18,8 +18,9 @@ import { snapshotMessages } from "./memory.ts";
 import { primeMemorySnapshot } from "./memory-scope.ts";
 import { SUBAGENT_STOPPED_MESSAGE } from "./prompt.ts";
 import { consumePendingNotifications } from "./message-queue.ts";
-import { getWorkdir, runWithWorkdir } from "./workdir.ts";
-import { getAgentContext } from "./teammates/context.ts";
+import { runWithCurrentWorkdir } from "./workdir.ts";
+import { restoreAgentWorkspace } from "./workspaces.ts";
+import { getAgentContext, runWithAgentContext } from "./teammates/context.ts";
 import { maybeCompact } from "./compact.ts";
 import type { SessionManager } from "./session-manager.ts";
 import type { ChatMessage } from "./client.ts";
@@ -70,12 +71,14 @@ export async function agentLoop(
     if (original.signal.aborted) cancelRoot();
   }
   const signal = original.signal ? AbortSignal.any([original.signal, budget.controller.signal]) : budget.controller.signal;
+  const caller = getAgentContext();
+  const actor = caller.agentId ? caller : { ...caller, agentId: options.session ? `session:${options.session.sessionId}` : ephemeralWorkspaceAgentId };
   try {
-    return await runWithBudget(budget, () => runWithWorkdir(getWorkdir(), () => agentLoopInner(messages, { ...options, onResult: result => {
+    return await runWithAgentContext(actor, () => runWithBudget(budget, () => runWithCurrentWorkdir(async () => { await restoreAgentWorkspace(); return agentLoopInner(messages, { ...options, onResult: result => {
       const outcome = { ...result, budget: { usage: { ...budget.usage }, limits: budget.limits } };
       options.session?.appendCustom("run_end", outcome);
       options.onResult?.(outcome);
-    }, loopOptions: new LoopOptions({ ...original, signal }) })));
+    }, loopOptions: new LoopOptions({ ...original, signal }) }); })));
   } catch (e) {
     const result: RunResult = { status: e instanceof BudgetExceeded ? "budget_exceeded" : e instanceof RequestTimeout ? "timeout" : (e as Error)?.name === "AbortError" ? "cancelled" : "error", final: null, reason: String((e as Error)?.message ?? e), budget: { usage: { ...budget.usage }, limits: budget.limits } };
     options.session?.appendCustom("run_end", result); options.onResult?.(result);
@@ -89,6 +92,7 @@ export async function agentLoop(
  * 无持久会话时退化为进程级临时 id —— 不落盘、不参与会话恢复，仅保证同进程内前缀稳定。
  */
 let ephemeralRoutingId: string | null = null;
+const ephemeralWorkspaceAgentId = `process:${randomUUID()}`;
 function resolveRoutingSessionId(
   opts: LoopOptions,
   session: SessionManager | null | undefined,
@@ -183,7 +187,7 @@ async function agentLoopInner(
       }
     }
     // L4：自动压缩（#7 加深：门控/会话 entry/失败语义内吞，公共面一个调用）
-    await maybeCompact(messages, { session, sink: opts.uiEvents });
+    await maybeCompact(messages, { session, sink: opts.uiEvents, signal: opts.signal });
     // 不再改写 messages：记忆已在 system 段（冻结），消息前缀保持逐字节稳定
     const requestMessages = messages;
 
@@ -192,6 +196,7 @@ async function agentLoopInner(
       requestMessages,
       messages,
       state: recoveryState,
+      session,
       maxTokens: effectiveMaxTokens,
       isSubagent: opts.isSubagentRole,
       preserveSystem: opts.preserveSystem,

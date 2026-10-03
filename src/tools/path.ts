@@ -12,7 +12,7 @@ import { getWorkdir } from "../workdir.ts";
  * 解析软链接后的绝对路径。
  * 目标可能尚不存在（新建文件），故逐级向上找最近的存在祖先做 realpath，再拼回剩余段。
  */
-function realpathDeep(target: string): string {
+export function realpathDeep(target: string): string {
   const rest: string[] = [];
   let cur = target;
   for (;;) {

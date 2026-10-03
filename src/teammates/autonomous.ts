@@ -8,6 +8,8 @@ import { dispatchInboxBatch } from "./inbox-dispatch.ts";
 import { tryClaimNextTask, loadTask } from "../tasks.ts";
 import { lockedPrint } from "../output-queue.ts";
 import type { ChatMessage } from "../client.ts";
+import { workspaceActor } from "../workspaces.ts";
+import { getAgentContext } from "./context.ts";
 
 export type IdleResult = "work" | "shutdown" | "timeout";
 
@@ -62,7 +64,7 @@ export async function idlePoll(options: IdlePollOptions): Promise<IdleResult> {
       return "work";
     }
 
-    const result = await tryClaimNextTask(agentName);
+    const result = await tryClaimNextTask(getAgentContext().role === "teammate" ? workspaceActor() : agentName);
     if (result.startsWith("Claimed")) {
       const taskId = result.split(" ")[1];
       const task = loadTask(taskId);
