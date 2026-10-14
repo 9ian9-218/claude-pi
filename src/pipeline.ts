@@ -52,7 +52,7 @@ async function recoverWorker(record: PipelineRecord): Promise<void> {
   });
 }
 async function verify(record: PipelineRecord, root: string, options: PipelineOptions): Promise<NonNullable<PipelineRecord["verification"]>> {
-  const { executeToolCallResult } = await import("./tools/runtime.ts");
+  const { executeToolCallResult } = await import("./tool.ts");
   const receipts: NonNullable<PipelineRecord["verification"]> = [];
   const parent = getAgentContext();
   for (const command of record.commands) {
@@ -70,7 +70,7 @@ function verificationPassed(record: PipelineRecord, receipts: NonNullable<Pipeli
 }
 
 export async function runCodingPipeline(goal: string, options: PipelineOptions = {}): Promise<string> {
-  const { spawnSubagent } = await import("./tools/agent-tools.ts");
+  const { spawnSubagent } = await import("./tool.ts");
   const root = getWorkdir();
   const record = options.pipelineId ? loadPipeline(root, options.pipelineId) : newPipeline(root, goal);
   if (record.status === "completed") return response(record);
