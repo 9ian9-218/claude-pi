@@ -76,7 +76,8 @@ export async function agentLoop(
   const actor = caller.agentId ? caller : { ...caller, agentId: options.session ? `session:${options.session.sessionId}` : ephemeralWorkspaceAgentId };
   try {
     return await runWithAgentContext(actor, () => runWithBudget(budget, () => runWithSessionWorkspace(options.session, () => runWithCurrentWorkdir(async () => { await restoreAgentWorkspace(); return agentLoopInner(messages, { ...options, onResult: result => {
-      const outcome = { ...result, budget: { usage: { ...budget.usage }, limits: budget.limits } };
+      const blocked = [...budget.pipelineOutcomes].filter(([, value]) => value.status !== "completed");
+      const outcome = { ...result, ...(caller.role === "lead" && result.status === "success" && blocked.length ? { status: "error" as const, reason: "Pipeline delivery blocked: " + blocked.map(([id, value]) => id + " (" + (value.reason ?? value.status) + ")").join("; ") } : {}), budget: { usage: { ...budget.usage }, limits: budget.limits } };
       options.session?.appendCustom("run_end", outcome);
       options.onResult?.(outcome);
     }, loopOptions: new LoopOptions({ ...original, signal }) }); }))));
