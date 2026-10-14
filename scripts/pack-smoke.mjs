@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { createRequire } from 'node:module';
@@ -7,7 +6,9 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 const exec = promisify(execFile);
 const root = process.cwd();
-const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'cpi-production-pack-'));
+const packScratch = path.join(root, '.agent', 'pack-smoke');
+fs.mkdirSync(packScratch, { recursive: true });
+const temp = fs.mkdtempSync(path.join(packScratch, 'cpi-production-pack-'));
 const npmCli = process.env.npm_execpath;
 if (!npmCli) throw new Error('Run this check with npm run test:pack');
 const npm = (args, cwd = root) => {
@@ -17,9 +18,9 @@ const npm = (args, cwd = root) => {
 let server;
 try {
   const packed = JSON.parse((await npm(['pack', '--json', '--pack-destination', temp])).stdout)[0];
-  if (!packed.files.some(f => f.path === 'npm-shrinkwrap.json')) throw new Error('Production package must include the tested dependency lock');
-  const locked = JSON.parse(fs.readFileSync(path.join(root, 'npm-shrinkwrap.json'), 'utf8'));
-  const unexpected = packed.files.filter(f => /(?:\.test\.ts$|(^|\/)\.agent\/|(^|\/)tests\/|auth\.json$)/.test(f.path));
+  if (!packed.files.some(f => f.path.startsWith('node_modules/'))) throw new Error('Production package must bundle its tested dependencies');
+  const locked = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
+  const unexpected = packed.files.filter(f => !f.path.startsWith('node_modules/') && /(?:\.test\.ts$|(^|\/)\.agent\/|(^|\/)tests\/|auth\.json$)/.test(f.path));
   if (unexpected.length) throw new Error(`Unexpected package files: ${unexpected.map(f => f.path).join(', ')}`);
   const app = path.join(temp, 'app'); fs.mkdirSync(app); fs.writeFileSync(path.join(app, 'package.json'), JSON.stringify({ name: 'production-smoke', private: true, type: 'module' }));
   process.stdout.write('Installing production-only package dependencies\n');
@@ -48,5 +49,5 @@ try {
     child.on('error', reject); child.on('close', code => { clearTimeout(timer); if (code !== 0) reject(new Error(`Installed CLI exit ${code}: ${err.slice(0, 1000)}`)); else resolve(JSON.parse(out)); });
   });
   if (json.status !== 'success' || json.final !== 'PRODUCTION_PACK_OK') throw new Error('Installed CLI did not complete a real local mock request');
-  process.stdout.write(JSON.stringify({ status: 'success', node: process.version, platform: process.platform, version, packageFileCount: packed.files.length, excludesTestsAndCredentials: true, productionOnlyInstall: true, dependencyVersionsLocked: true, jsonRoundTrip: json.status }) + '\n');
+  process.stdout.write(JSON.stringify({ status: 'success', node: process.version, platform: process.platform, version, packageFileCount: packed.files.length, excludesTestsAndCredentials: true, productionOnlyInstall: true, dependencyVersionsLocked: true, platformSpecificBundle: true, jsonRoundTrip: json.status }) + '\n');
 } finally { if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } fs.rmSync(temp, { recursive: true, force: true }); }

@@ -22,7 +22,7 @@ for (let i = 0; i < repetitions; i++) {
   const report = fs.existsSync(output) ? JSON.parse(fs.readFileSync(output, 'utf8')) : {};
   runs.push({ attempt: i + 1, exitCode: result.status, durationMs: Date.now() - start, passed: report.numPassedTests ?? 0, failed: report.numFailedTests ?? 0, total: report.numTotalTests ?? 0, skipped: (report.numPendingTests ?? 0) + (report.numTodoTests ?? 0), environmentError: result.error?.message ?? null });
 }
-const manifest = { schemaVersion: 1, kind: 'offline-runtime-fault-regression', timestamp, sourceSha: sha, workingDiffHash: source.digest('hex'), lockfileHash: createHash('sha256').update(fs.readFileSync('npm-shrinkwrap.json')).digest('hex'), node: process.version, platform: process.platform, model: 'local HTTP mock; no paid API', repetitions, expectedTests, runs, note: 'All attempts including failures are retained. This measures runtime reliability; it is not a SWE-bench or coding-success ranking.', artifacts: dir };
+const manifest = { schemaVersion: 1, kind: 'offline-runtime-fault-regression', timestamp, sourceSha: sha, workingDiffHash: source.digest('hex'), lockfileHash: createHash('sha256').update(fs.readFileSync('package-lock.json')).digest('hex'), node: process.version, platform: process.platform, model: 'local HTTP mock; no paid API', repetitions, expectedTests, runs, note: 'All attempts including failures are retained. This measures runtime reliability; it is not a SWE-bench or coding-success ranking.', artifacts: dir };
 fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2));
 fs.writeFileSync(path.join(root, '.agent', 'evals', 'latest.json'), JSON.stringify(manifest, null, 2));
 process.stdout.write(JSON.stringify(manifest, null, 2) + '\n');
