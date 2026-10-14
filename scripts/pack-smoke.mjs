@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
@@ -37,7 +38,7 @@ try {
   process.stdout.write('Installing production-only package dependencies\n');
   const installLogs = path.join(temp, 'npm-logs');
   try {
-    await npm(['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--prefer-offline', '--timing', '--loglevel=verbose', '--logs-dir=' + installLogs], app);
+    await npm(['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--offline', '--timing', '--loglevel=verbose', '--logs-dir=' + installLogs], app);
   } catch (error) {
     if (fs.existsSync(installLogs)) for (const filename of fs.readdirSync(installLogs)) {
       if (filename.endsWith('.log') || filename.endsWith('-timing.json')) {
@@ -51,7 +52,7 @@ try {
   const installedRoot = path.join(app, 'node_modules', 'claude-pi');
   const installedManifest = JSON.parse(fs.readFileSync(path.join(installedRoot, 'package.json'), 'utf8'));
   for (const field of ['name', 'version', 'dependencies', 'bin', 'engines']) {
-    if (JSON.stringify(installedManifest[field]) !== JSON.stringify(manifest[field])) throw new Error('Installed package metadata drift: ' + field);
+    assert.deepEqual(installedManifest[field], manifest[field], 'Installed package metadata drift: ' + field);
   }
   const actualBundle = installedManifest.bundleDependencies === true ? Object.keys(installedManifest.dependencies) : installedManifest.bundleDependencies;
   if (!Array.isArray(actualBundle) || JSON.stringify([...actualBundle].sort()) !== JSON.stringify([...packageMetadata.bundleDependencies].sort())) throw new Error('Installed bundle metadata drift');
