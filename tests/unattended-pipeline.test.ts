@@ -123,11 +123,12 @@ it("does not charge inherited parent history or report its cache as child usage"
   clearAgentRuns();
   const parent = SessionManager.create(root);
   parent.appendMessage({ role: "user", content: "prior task" });
-  parent.appendMessage({ role: "assistant", content: "prior answer", usage: { input: 100000, output: 100000, cacheRead: 100000, cacheWrite: 0, totalTokens: 300000, cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 0, total: 3 } } });
+  parent.appendMessage({ role: "assistant", content: "prior answer", usage: { input: 10000, output: 10000, cacheRead: 10000, cacheWrite: 0, totalTokens: 30000, cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 0, total: 3 } } });
   final("scout result");
-  await runWithWorkdir(root, () => spawnSubagent("inspect", { role: "scout", parentSession: parent }));
+  expect(await runWithWorkdir(root, () => spawnSubagent("inspect", { role: "scout", parentSession: parent }))).toBe("scout result");
+  expect(mock.requests).toHaveLength(1);
   const run = listAgentRuns().find(r => r.role === "scout")!;
-  expect(run.usage!.input).toBeLessThan(100000); expect(run.firstTurnCache!.cacheRead).toBeLessThan(100000);
+  expect(run.usage!.input).toBeLessThan(10000); expect(run.firstTurnCache!.cacheRead).toBeLessThan(10000);
   const child = SessionManager.open(run.sessionFile!); child.close(); parent.close();
 }, 15000);
 
