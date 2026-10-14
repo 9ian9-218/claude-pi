@@ -27,20 +27,10 @@ try {
   const installedRoot = path.join(app, 'node_modules', 'claude-pi');
   const requireFromPackage = createRequire(path.join(installedRoot, 'package.json'));
   for (const name of Object.keys(locked.packages[''].dependencies)) {
-    let directory = path.dirname(requireFromPackage.resolve(name));
-    let found = false;
-    while (path.dirname(directory) !== directory) {
-      const manifest = path.join(directory, 'package.json');
-      if (fs.existsSync(manifest)) {
-        const dependency = JSON.parse(fs.readFileSync(manifest, 'utf8'));
-        if (dependency.name === name) {
-          if (dependency.version !== locked.packages['node_modules/' + name].version) throw new Error('Installed dependency version drift: ' + name);
-          found = true; break;
-        }
-      }
-      directory = path.dirname(directory);
-    }
-    if (!found) throw new Error('Cannot verify installed dependency: ' + name);
+    const manifest = (requireFromPackage.resolve.paths(name) ?? []).map(directory => path.join(directory, name, 'package.json')).find(file => fs.existsSync(file));
+    if (!manifest) throw new Error('Cannot verify installed dependency: ' + name);
+    const dependency = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+    if (dependency.version !== locked.packages['node_modules/' + name].version) throw new Error('Installed dependency version drift: ' + name);
   }
   const bin = path.join(installedRoot, 'bin', 'cpi.js');
   const version = (await exec(process.execPath, [bin, '--version'], { cwd: app })).stdout.trim();
