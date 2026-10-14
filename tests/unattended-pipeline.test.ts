@@ -52,6 +52,8 @@ describe("unattended pipeline admission", () => {
     expect(observedTests("# tests 1\n# pass 1")).toBe(1);
     expect(observedTests("Tests  12 passed (12)")).toBe(12);
     expect(observedTests("No tests found; success")).toBe(0);
+    expect(observedTests("# tests 12\n# pass 0\n# skipped 12")).toBe(0);
+    expect(observedTests("Ran 12 tests\nOK (skipped=12)")).toBe(0);
   });
   it("does not accept empty or unbounded acceptance configuration", () => runWithWorkdir(root, () => {
     fs.mkdirSync(path.join(root, ".agent"));
@@ -185,4 +187,14 @@ it("rolls back a recovered committed integration when revalidation is cancelled"
     expect(result.status, result.reason).toBe("cancelled");
     expect(fs.readFileSync(path.join(root, "src/value.js"), "utf8")).toContain("return 0");
   } finally { clearTimeout(timer); }
+}, 20000);
+
+it("rejects a real all-skipped suite even when its exit code is zero", async () => {
+  fs.writeFileSync(path.join(root, "tests/value.test.js"), "import {test} from 'node:test'; test.skip('not evaluated',()=>{});\n");
+  fs.mkdirSync(path.join(root, ".agent"));
+  fs.writeFileSync(path.join(root, ".agent/pipeline.json"), JSON.stringify({ maxRepairs: 0, commands: [{ command: "npm test", requirement: "original contract", kind: "test", minTests: 1 }] }));
+  worker(); final('{"verdict":"pass","findings":[]}');
+  const result = JSON.parse(await runWithWorkdir(root, () => runCodingPipeline("return 42")));
+  expect(result.status).toBe("blocked"); expect(result.verification[0]).toMatchObject({ exitCode: 0, tests: 0 });
+  expect(fs.readFileSync(path.join(root, "src/value.js"), "utf8")).toContain("return 0");
 }, 20000);
