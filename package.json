@@ -35,6 +35,7 @@
     "cpi": "bin/cpi.js"
   },
   "files": [
+    "npm-shrinkwrap.json",
     "bin",
     "src",
     "scripts",
