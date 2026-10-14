@@ -7,7 +7,7 @@ import { withRepositoryLock } from "./repository-lock.ts";
 import { recoverFileTransactions, rollbackFileTransaction } from "./file-transactions.ts";
 import { finishWorkspace, readWorkspaceRecord, type WorkspaceBinding } from "./workspaces.ts";
 import { currentBudget } from "./task-budget.ts";
-import { newPipeline, savePipeline, loadPipeline, ownerAlive, ownerStart, workspaceDigest, artifactKey, assertOriginalAcceptance, parseReview, observedTests, type PipelineRecord } from "./pipeline-state.ts";
+import { newPipeline, savePipeline, loadPipeline, claimPipeline, ownerAlive, ownerStart, workspaceDigest, artifactKey, assertOriginalAcceptance, parseReview, observedTests, type PipelineRecord } from "./pipeline-state.ts";
 import type { SessionManager } from "./session-manager.ts";
 import type { UiEventSink } from "./ui-events.ts";
 
@@ -85,10 +85,14 @@ export async function runCodingPipeline(goal: string, options: PipelineOptions =
     throw error;
   }
   if (record.status === "completed") return finish(record, "completed", record.reason);
-  if (active.has(record.id) || (options.pipelineId && ownerAlive(record) && record.ownerPid !== process.pid)) throw new Error("Pipeline is owned by a live coordinator");
+  if (active.has(record.id) || (options.pipelineId && ["running", "checking", "approved", "integrating"].includes(record.status) && ownerAlive(record) && record.ownerPid !== process.pid)) throw new Error("Pipeline is owned by a live coordinator");
   active.add(record.id);
+  let claimed = false;
   try {
     cancelled(options);
+    record = await claimPipeline(record, options.signal ?? currentBudget()?.controller.signal);
+    claimed = true;
+    if (record.status === "completed") return finish(record, "completed", record.reason);
     await withRepositoryLock(root, () => recoverFileTransactions(root));
     if (record.status === "integrating" && record.artifact) {
       await withRepositoryLock(root, async () => {
@@ -167,6 +171,11 @@ export async function runCodingPipeline(goal: string, options: PipelineOptions =
     return finish(record, "blocked", "Repair limit reached: " + feedback);
   } catch (error) {
     const isCancelled = options.signal?.aborted || currentBudget()?.controller.signal.aborted || (error as Error).name === "AbortError";
+    if (!claimed) {
+      const status = isCancelled ? "cancelled" : "blocked";
+      currentBudget()?.pipelineOutcomes.set(record.id, { status, reason: String(error) });
+      return JSON.stringify({ pipelineId: record.id, status, reason: String(error) });
+    }
     return finish(record, isCancelled ? "cancelled" : "blocked", String((error as Error).message ?? error));
   } finally { active.delete(record.id); }
 }
