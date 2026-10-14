@@ -52,7 +52,7 @@ export function savePipeline(record: PipelineRecord): void {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   writeFileAtomic(file, JSON.stringify(record, null, 2));
   const fd = fs.openSync(file, "r"); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-  if (process.platform !== "win32") { const dir = fs.openSync(path.dirname(file), "r"); try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); }
+  if (process.platform !== "win32") { const dir = fs.openSync(path.dirname(file), "r"); try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); } }
 }
 export function loadPipeline(root: string, id: string): PipelineRecord {
   const record = JSON.parse(fs.readFileSync(recordPath(root, id), "utf8")) as PipelineRecord;
