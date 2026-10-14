@@ -71,6 +71,7 @@ export interface SpawnSubagentOptions {
   parentSession?: SessionManager | null;
   /** 父 UI 通道：有 UI 时不再往 stdout 打日志（改由 AgentPanel 展示） */
   parentUiEvents?: UiEventSink;
+  signal?: AbortSignal;
   workspace?: string;
   runId?: string;
   deferIntegration?: boolean;
@@ -235,6 +236,7 @@ export async function spawnSubagent(
   // fork 子 agent：system 提示与工具面按父身份构造，缓存路由用父会话 id
   const loopOptions = LoopOptions.fromProfile(profile, {
     uiEvents: agentSink,
+    signal: options.signal,
     ...(forked && parentSession
       ? {
           cachePrefix: { role: parent.role, isSubagent: parent.role === "subagent" },
