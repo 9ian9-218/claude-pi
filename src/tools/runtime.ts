@@ -185,7 +185,7 @@ export function presetBlockedMessage(toolName: string): string {
 }
 
 export function isToolAllowedForRole(role: AgentRole, toolName: string): boolean {
-  if (["connect_mcp", "disconnect_mcp", "restart_mcp", "list_mcp_servers"].includes(toolName)) return role === "lead";
+  if (["connect_mcp", "disconnect_mcp", "restart_mcp", "list_mcp_servers", "create_team", "spawn_teammate", "shutdown_teammate"].includes(toolName)) return role === "lead";
   if (role === "lead" || role === "teammate") return true;
   if (isMcpTool(toolName) && !toolName.startsWith("mcp__local__")) return false;
   if (role === "subagent") return !SUBAGENT_EXCLUDED.has(toolName);
