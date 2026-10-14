@@ -31,7 +31,7 @@ it("replays an unacknowledged persisted delivery without a second injection", as
   const ids = readMailbox("team-lead", "durable").map(m => m.id!);
   const marker = "\n[Mailbox delivery: durable:" + ids.join(",") + "]";
   const session = SessionManager.create(dir, path.join(dir, "sessions"));
-  session.appendMessage({ role: "user", content: "already persisted" + marker });
+  session.appendMessage({ role: "user", content: "already persisted" + marker, mailboxDelivery: { team: "durable", ids } });
   clearPollerQueues(); await pollOnce("durable");
   const messages: import("../src/client.ts").ChatMessage[] = [];
   await deliverPendingMessages(session, messages);
@@ -47,4 +47,22 @@ it("recovers only verifiably dead teammate owners", async () => {
   const member = config.members.find(m => m.name === "worker")!;
   member.ownerPid = 2147483647; member.ownerStart = "dead"; writeTeamConfig(config);
   expect(ensureTeammateForSpawn("owners", "worker").ownerPid).toBe(process.pid);
+});
+
+it("deduplicates overlapping poll batches by individual message ID", async () => {
+  const { SessionManager } = await import("../src/session-manager.ts");
+  const { pollOnce, deliverPendingMessages, clearPollerQueues } = await import("../src/teammates/poller.ts");
+  const { createTeam } = await import("../src/teammates/team-helpers.ts");
+  createTeam("overlap"); clearPollerQueues();
+  await writeToMailbox("team-lead", { from: "worker", text: "first" }, "overlap");
+  await pollOnce("overlap");
+  await writeToMailbox("team-lead", { from: "worker", text: "second" }, "overlap");
+  await pollOnce("overlap");
+  const session = SessionManager.create(dir, path.join(dir, "sessions"));
+  const messages: import("../src/client.ts").ChatMessage[] = [];
+  await deliverPendingMessages(session, messages);
+  expect(messages.flatMap(m => m.mailboxDelivery!.ids)).toHaveLength(2);
+  expect(messages.map(m => m.content).join(" ")).toContain("first");
+  expect(messages.map(m => m.content).join(" ")).toContain("second");
+  session.close(); clearPollerQueues();
 });
