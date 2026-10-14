@@ -18,7 +18,7 @@ function cancelled(options: PipelineOptions): void {
   if (options.signal?.aborted) throw options.signal.reason ?? new DOMException("Cancelled", "AbortError");
 }
 function response(record: PipelineRecord): string {
-  return JSON.stringify({ pipelineId: record.id, status: record.status, attempt: record.attempt, artifact: record.artifact, reviewer: record.reviewer, verification: record.verification, reason: record.reason });
+  return JSON.stringify({ pipelineId: record.id, status: record.status, attempt: record.attempt, artifact: record.artifact, reviewer: record.reviewer, verification: record.verification, postIntegrationVerification: record.postIntegrationVerification, reason: record.reason });
 }
 function finish(record: PipelineRecord, status: PipelineRecord["status"], reason?: string): string {
   record.status = status; record.reason = reason; savePipeline(record); return response(record);
@@ -103,7 +103,7 @@ export async function runCodingPipeline(goal: string, options: PipelineOptions =
         let exported: TaskArtifact | undefined;
         const text = await spawnSubagent(record.goal + "\n" + (feedback ? "Repair these independent findings:\n" + feedback : "") + "\nOriginal tests and test entry points are independent acceptance; do not modify them.", {
           role: "worker", workspace: candidate?.worktree ?? root, runId: record.id + "-worker-" + record.attempt,
-          parentSession: options.session, parentUiEvents: options.uiEvents, deferIntegration: true,
+          parentSession: options.session, parentUiEvents: options.uiEvents, signal: options.signal, deferIntegration: true,
           onWorkspace: binding => { record.worker = binding; record.originalBaseSha ??= binding.baseSha; originalBase ??= binding.baseSha; savePipeline(record); },
           onArtifact: artifact => { exported = artifact; record.artifact = artifact; savePipeline(record); },
         });
@@ -122,7 +122,7 @@ export async function runCodingPipeline(goal: string, options: PipelineOptions =
       record.candidateDigest = workspaceDigest(candidate.worktree);
       savePipeline(record);
       const review = await spawnSubagent("Independently review this frozen candidate for the user goal: " + record.goal + "\nReturn only JSON: {\"verdict\":\"pass\"|\"block\",\"findings\":[{\"severity\":\"critical\"|\"warning\"|\"suggestion\",\"message\":\"...\"}]}. Any critical finding requires block. Do not modify files. Original requirements outrank worker claims.", {
-        role: "reviewer", workspace: candidate.worktree, parentSession: options.session, parentUiEvents: options.uiEvents,
+        role: "reviewer", workspace: candidate.worktree, parentSession: options.session, parentUiEvents: options.uiEvents, signal: options.signal,
       });
       cancelled(options);
       record.reviewer = parseReview(review);
