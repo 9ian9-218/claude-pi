@@ -14,6 +14,7 @@ export type PipelineRole = (typeof PIPELINE_ROLES)[number];
 export type AgentRole = "lead" | "teammate" | "subagent" | PipelineRole;
 
 export interface AgentContext {
+  signal?: AbortSignal;
   teamName: string | null;
   agentName: string;
   agentId: string | null;
@@ -24,6 +25,7 @@ export interface AgentContext {
 
 export function createAgentContext(init: Partial<AgentContext> = {}): AgentContext {
   return {
+    signal: init.signal,
     teamName: init.teamName ?? null,
     agentName: init.agentName ?? TEAM_LEAD_NAME,
     agentId: init.agentId ?? null,
