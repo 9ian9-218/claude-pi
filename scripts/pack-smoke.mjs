@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { createRequire } from 'node:module';
@@ -6,9 +7,7 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 const exec = promisify(execFile);
 const root = process.cwd();
-const packScratch = path.join(root, '.agent', 'pack-smoke');
-fs.mkdirSync(packScratch, { recursive: true });
-const temp = fs.mkdtempSync(path.join(packScratch, 'cpi-production-pack-'));
+const temp = fs.mkdtempSync(path.join(process.env.RUNNER_TEMP ?? os.tmpdir(), 'cpi-pack-'));
 const npmCli = process.env.npm_execpath;
 if (!npmCli) throw new Error('Run this check with npm run test:pack');
 const npm = (args, cwd = root, maxBuffer = 4 * 1024 * 1024) => {
