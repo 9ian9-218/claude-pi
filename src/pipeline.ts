@@ -21,7 +21,9 @@ function response(record: PipelineRecord): string {
   return JSON.stringify({ pipelineId: record.id, status: record.status, attempt: record.attempt, artifact: record.artifact, reviewer: record.reviewer, verification: record.verification, postIntegrationVerification: record.postIntegrationVerification, reason: record.reason });
 }
 function finish(record: PipelineRecord, status: PipelineRecord["status"], reason?: string): string {
-  record.status = status; record.reason = reason; savePipeline(record); return response(record);
+  record.status = status; record.reason = reason; savePipeline(record);
+  currentBudget()?.pipelineOutcomes.set(record.id, { status, reason });
+  return response(record);
 }
 async function recoverWorker(record: PipelineRecord): Promise<void> {
   const binding = (record as PipelineRecord & { worker?: WorkspaceBinding }).worker;
@@ -73,7 +75,7 @@ export async function runCodingPipeline(goal: string, options: PipelineOptions =
   const { spawnSubagent } = await import("./tool.ts");
   const root = getWorkdir();
   const record = options.pipelineId ? loadPipeline(root, options.pipelineId) : newPipeline(root, goal);
-  if (record.status === "completed") return response(record);
+  if (record.status === "completed") return finish(record, "completed", record.reason);
   if (active.has(record.id) || (options.pipelineId && ownerAlive(record) && record.ownerPid !== process.pid)) throw new Error("Pipeline is owned by a live coordinator");
   active.add(record.id);
   try {
