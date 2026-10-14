@@ -13,6 +13,7 @@ import { createWorkerWorkspace, finishWorkspace } from "../src/workspaces.ts";
 import { integrateTaskArtifact, preserveWorkspaceArtifact, setGitRoot } from "../src/worktree.ts";
 import { newPipeline, savePipeline, artifactKey, workspaceDigest, assertPipelineApproval, parseReview, observedTests } from "../src/pipeline-state.ts";
 import { runCodingPipeline } from "../src/pipeline.ts";
+import { agentLoopDetailed } from "../src/agent-loop.ts";
 import { SessionManager } from "../src/session-manager.ts";
 import { spawnSubagent } from "../src/tool.ts";
 import { listAgentRuns, clearAgentRuns } from "../src/agent-registry.ts";
@@ -155,3 +156,13 @@ it("cancels before starting model work and keeps the parent intact", async () =>
   const result = JSON.parse(await runWithWorkdir(root, () => runCodingPipeline("return 42", { signal: controller.signal })));
   expect(result.status).toBe("cancelled"); expect(fs.readFileSync(path.join(root, "src/value.js"), "utf8")).toContain("return 0");
 });
+
+it("does not report successful delivery when the lead falsely declares completion", async () => {
+  fs.mkdirSync(path.join(root, ".agent"));
+  fs.writeFileSync(path.join(root, ".agent/pipeline.json"), JSON.stringify({ maxRepairs: 0, commands: [{ command: "npm test", requirement: "original contract", kind: "test", minTests: 1 }] }));
+  mock.push(() => ({ kind: "sse", chunks: [{ toolCalls: [{ index: 0, id: "pipeline", name: "run_pipeline", arguments: '{"goal":"return 42"}' }], finishReason: "tool_calls" }] }));
+  worker("export function value() { return 1; }\n"); final('{"verdict":"block","findings":[]}'); final("Everything is done");
+  const result = await runWithWorkdir(root, () => agentLoopDetailed([{ role: "user", content: "return 42" }]));
+  expect(result.status).toBe("error"); expect(result.reason).toContain("Pipeline delivery blocked");
+  expect(fs.readFileSync(path.join(root, "src/value.js"), "utf8")).toContain("return 0");
+}, 30000);
