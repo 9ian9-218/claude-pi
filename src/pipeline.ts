@@ -74,7 +74,16 @@ function verificationPassed(record: PipelineRecord, receipts: NonNullable<Pipeli
 export async function runCodingPipeline(goal: string, options: PipelineOptions = {}): Promise<string> {
   const { spawnSubagent } = await import("./tool.ts");
   const root = getWorkdir();
-  const record = options.pipelineId ? loadPipeline(root, options.pipelineId) : newPipeline(root, goal);
+  let record: PipelineRecord;
+  const initializationKey = "pipeline-initialization:" + goal;
+  try {
+    record = options.pipelineId ? loadPipeline(root, options.pipelineId) : newPipeline(root, goal);
+    currentBudget()?.pipelineOutcomes.delete(initializationKey);
+    currentBudget()?.pipelineOutcomes.set(record.id, { status: record.status, reason: record.reason });
+  } catch (error) {
+    currentBudget()?.pipelineOutcomes.set(initializationKey, { status: "blocked", reason: String(error) });
+    throw error;
+  }
   if (record.status === "completed") return finish(record, "completed", record.reason);
   if (active.has(record.id) || (options.pipelineId && ownerAlive(record) && record.ownerPid !== process.pid)) throw new Error("Pipeline is owned by a live coordinator");
   active.add(record.id);
