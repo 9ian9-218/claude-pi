@@ -36,9 +36,9 @@ Worker -> 冻结候选 -> Reviewer + 独立验证 -> 版本一致的准入 -> �
 
 Free Swarm 队友使用独立持久会话，成员记录 owner 信息；仅可核验的已退出进程才允许同名恢复。旧格式且无法核验的活动成员需人工处理。
 
-shutdown_teammate 的 force=true 取消当前工作并等待结束；默认仍是 graceful shutdown。权限等待与空闲等待可取消。
+shutdown_teammate 的 force=true 取消当前工作并等待结束；默认仍是 graceful shutdown。权限等待与空闲等待可取消。只有 Lead 能控制队友生命周期，权限应答与关闭请求也核验发送者。
 
-消息按稳定 ID 确认，仅 ACK 已消费的消息；Lead 会话写入后才 ACK，重投递按会话中的 delivery marker 去重。损坏邮箱保留现场并拒绝继续写，单消息与积压受限。显式 --no-session 不提供会话重启恢复；无人值守使用默认持久会话。
+消息按稳定 ID 确认，仅 ACK 已消费的消息；Lead 会话写入后才 ACK，重投递按会话中持久化的逐条 ID 回执去重。损坏邮箱保留现场并拒绝继续写，单消息与积压受限。显式 --no-session 不提供会话重启恢复；无人值守使用默认持久会话。
 
 ## 验证范围
 
