@@ -233,3 +233,23 @@ it("blocks undeclared permissions without waiting for a human approval", async (
     expect(result).toContain("unattended"); expect(asked).toBe(false);
   } finally { resetAskUserImpl(); }
 });
+
+it("cancels a pending human permission wait in free mode", async () => {
+  const { checkPermissionWithBubble, setAskUserImpl, resetAskUserImpl } = await import("../src/permission-sync.ts");
+  setSettingsOverrideForTest({ team: { mode: "free" } });
+  const controller = new AbortController();
+  let started!: () => void;
+  const waiting = new Promise<void>(resolve => { started = resolve; });
+  setAskUserImpl(() => { started(); return new Promise(() => {}); });
+  try {
+    const pending = runWithAgentContext(createAgentContext({ role: "subagent", signal: controller.signal }), () => checkPermissionWithBubble({ toolName: "run_bash", args: {}, reason: "approval required" }));
+    await waiting; controller.abort(new DOMException("cancelled", "AbortError"));
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+  } finally { resetAskUserImpl(); }
+});
+it("propagates parent cancellation to a delegated model request", async () => {
+  const controller = new AbortController();
+  mock.push(() => { controller.abort(new DOMException("cancelled", "AbortError")); return { kind: "sse", chunks: [{ content: "must not be delivered", finishReason: "stop" }] }; });
+  const result = await runWithAgentContext(createAgentContext({ role: "lead", signal: controller.signal }), () => runWithWorkdir(root, () => spawnSubagent("inspect", { role: "scout" })));
+  expect(result).toContain("cancelled"); expect(result).not.toBe("must not be delivered");
+}, 10000);

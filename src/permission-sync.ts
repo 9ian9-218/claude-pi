@@ -110,6 +110,23 @@ export function resetAskUserImpl(): void {
   };
 }
 
+
+/** Permission waits obey the same actor/task cancellation as model and tool work. */
+async function waitForUserApproval(request: SwarmPermissionRequest, label: string): Promise<PermissionResolution> {
+  const signal = getAgentContext().signal ?? currentBudget()?.controller.signal;
+  if (!signal) return askUserImpl(request, label);
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener("abort", cancel);
+    const cancel = () => { cleanup(); reject(signal.reason ?? new DOMException("Permission wait cancelled", "AbortError")); };
+    signal.addEventListener("abort", cancel, { once: true });
+    Promise.resolve().then(() => { signal.throwIfAborted(); return askUserImpl(request, label); }).then(
+      value => { cleanup(); resolve(value); },
+      error => { cleanup(); reject(error); },
+    );
+  });
+}
+
 // ── 邮箱发送 ──────────────────────────────────────────────────────────────
 
 export async function sendPermissionRequestViaMailbox(request: SwarmPermissionRequest): Promise<boolean> {
@@ -194,7 +211,7 @@ async function resolvePermissionItem(
     createdAt: Date.now(),
   };
 
-  const resolution = await askUserImpl(request, `Teammate [${request.workerName}]`);
+  const resolution = await waitForUserApproval(request, `Teammate [${request.workerName}]`);
   await sendPermissionResponseViaMailbox({
     workerName: request.workerName,
     resolution,
@@ -291,7 +308,7 @@ async function bubbleSubagentPermission(options: {
     workerName: ctx.agentName,
     workerId: ctx.agentId,
   });
-  const resolution = await askUserImpl(request, `Subagent [${ctx.agentName}]`);
+  const resolution = await waitForUserApproval(request, `Subagent [${ctx.agentName}]`);
   if (resolution.decision === "approved") return null;
   return `Permission denied: ${resolution.feedback ?? options.reason}`;
 }
@@ -332,7 +349,7 @@ export async function checkPermissionWithBubble(options: {
     inputData: options.args,
     description: options.reason,
   });
-  const resolution = await askUserImpl(request, "Lead");
+  const resolution = await waitForUserApproval(request, "Lead");
   if (resolution.decision === "approved") return null;
   return `Permission denied: ${resolution.feedback ?? options.reason}`;
 }

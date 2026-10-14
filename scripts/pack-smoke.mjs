@@ -17,7 +17,8 @@ const npm = (args, cwd = root, maxBuffer = 4 * 1024 * 1024) => {
 };
 let server;
 try {
-  const packed = JSON.parse((await npm(['pack', '--json', '--pack-destination', temp], root, 32 * 1024 * 1024)).stdout)[0];
+  const packResult = JSON.parse((await npm(['pack', '--json', '--pack-destination', temp], root, 32 * 1024 * 1024)).stdout);
+  const packed = Array.isArray(packResult) ? packResult[0] : packResult;
   if (!packed.files.some(f => f.path.startsWith('node_modules/'))) throw new Error('Production package must bundle its tested dependencies');
   const locked = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
   const unexpected = packed.files.filter(f => !f.path.startsWith('node_modules/') && /(?:\.test\.ts$|(^|\/)\.agent\/|(^|\/)tests\/|auth\.json$)/.test(f.path));

@@ -46,4 +46,4 @@ shutdown_teammate 的 force=true 取消当前工作并等待结束；默认仍�
 
 CI 必须探测成功的 Linux bubblewrap，并跑类型检查、全量回归、三次故障评测及生产包安装。没有实际业务分布的大规模评测，不能承诺任意任务的成功率或通用工业认证。上线应按任务类别、风险及允许人工介入率设 SLO，并保留失败与全部修复记录。
 
-源码继续使用 package-lock.json。CLI 发布包通过 npm 原生 bundleDependencies 携带已测试的生产依赖；更新依赖后重新执行 npm ci、回归与打包检查。平台相关的本地依赖使产物对应生成时的平台和架构，应分别构建和安装；CI 在 Linux/macOS/Windows 各自构建并验证同平台安装。打包冒烟检查依赖是否进入产物，并核对安装后的直接依赖版本。依据：[npm 关于随包发布固定依赖的说明](https://github.com/npm/cli/blob/latest/CHANGELOG.md)。
+源码继续使用 package-lock.json。CLI 发布包通过 npm 原生 bundleDependencies 携带已测试的生产依赖；更新依赖后重新执行 npm ci、回归与打包检查。平台相关的本地依赖使产物对应生成时的平台和架构，应分别构建和安装；CI 在 Linux/macOS/Windows 各自构建并验证同平台安装。发布检查固定使用 npm 12.0.2；打包冒烟检查依赖是否进入产物，并核对安装后的直接依赖版本。依据：[npm 关于随包发布固定依赖的说明](https://github.com/npm/cli/blob/latest/CHANGELOG.md)。

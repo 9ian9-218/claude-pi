@@ -94,6 +94,7 @@ export async function spawnSubagent(
 ): Promise<string> {
   const { agentLoopDetailed } = await import("../agent-loop.ts");
   const role: AgentRole = options.role ?? "subagent";
+  const signal = options.signal ?? getAgentContext().signal;
   const subId = options.runId ?? `${role}-${randomBytes(4).toString("hex")}`;
   const goal = description.trim();
   const parentSession = options.parentSession ?? null;
@@ -236,7 +237,7 @@ export async function spawnSubagent(
   // fork 子 agent：system 提示与工具面按父身份构造，缓存路由用父会话 id
   const loopOptions = LoopOptions.fromProfile(profile, {
     uiEvents: agentSink,
-    signal: options.signal,
+    signal,
     ...(forked && parentSession
       ? {
           cachePrefix: { role: parent.role, isSubagent: parent.role === "subagent" },
@@ -318,6 +319,7 @@ function execSubagentTask(args: Record<string, unknown>, ctx?: ToolExecContext):
     role,
     parentSession: ctx?.session ?? null,
     parentUiEvents: ctx?.uiEvents,
+    signal: ctx?.signal,
   });
 }
 
@@ -362,6 +364,7 @@ function execDelegateTask(args: Record<string, unknown>, ctx?: ToolExecContext):
     contextPackage: context,
     parentSession: ctx?.session ?? null,
     parentUiEvents: ctx?.uiEvents,
+    signal: ctx?.signal,
   });
 }
 

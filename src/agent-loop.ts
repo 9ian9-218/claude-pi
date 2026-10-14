@@ -73,7 +73,7 @@ export async function agentLoop(
   }
   const signal = original.signal ? AbortSignal.any([original.signal, budget.controller.signal]) : budget.controller.signal;
   const caller = getAgentContext();
-  const actor = caller.agentId ? caller : { ...caller, agentId: options.session ? `session:${options.session.sessionId}` : ephemeralWorkspaceAgentId };
+  const actor = { ...caller, signal, agentId: caller.agentId ?? (options.session ? `session:${options.session.sessionId}` : ephemeralWorkspaceAgentId) };
   try {
     return await runWithAgentContext(actor, () => runWithBudget(budget, () => runWithSessionWorkspace(options.session, () => runWithCurrentWorkdir(async () => { await restoreAgentWorkspace(); return agentLoopInner(messages, { ...options, onResult: result => {
       const blocked = [...budget.pipelineOutcomes].filter(([, value]) => value.status !== "completed");
