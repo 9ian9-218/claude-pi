@@ -6,7 +6,7 @@ import { spawnSubagent } from "./tools/agent-tools.ts";
 import { executeToolCallResult } from "./tools/runtime.ts";
 import { integrateTaskArtifact, preserveWorkspaceArtifact, artifactIntegrated, type TaskArtifact } from "./worktree.ts";
 import { withRepositoryLock } from "./repository-lock.ts";
-import { recoverFileTransactions } from "./file-transactions.ts";
+import { recoverFileTransactions, rollbackFileTransaction } from "./file-transactions.ts";
 import { finishWorkspace, readWorkspaceRecord, type WorkspaceBinding } from "./workspaces.ts";
 import { currentBudget } from "./task-budget.ts";
 import { newPipeline, savePipeline, loadPipeline, ownerAlive, ownerStart, workspaceDigest, artifactKey, assertOriginalAcceptance, parseReview, observedTests, type PipelineRecord } from "./pipeline-state.ts";
@@ -52,6 +52,23 @@ async function recoverWorker(record: PipelineRecord): Promise<void> {
     record.status = "checking"; savePipeline(record);
   });
 }
+async function verify(record: PipelineRecord, root: string, options: PipelineOptions): Promise<NonNullable<PipelineRecord["verification"]>> {
+  const receipts: NonNullable<PipelineRecord["verification"]> = [];
+  const parent = getAgentContext();
+  for (const command of record.commands) {
+    cancelled(options);
+    const result = await runWithAgentContext(createAgentContext({ ...parent, role: "verifier", agentName: record.id + "-verifier", agentId: record.id + "-verifier" }), () => runWithWorkdir(root, () => executeToolCallResult({ id: record.id + "-verify-" + record.attempt + "-" + receipts.length, function: { name: "run_verification", arguments: JSON.stringify({ command: command.command, requirement: command.requirement }) } }, undefined, { session: options.session ?? undefined, signal: options.signal ?? currentBudget()?.controller.signal })));
+    const logs = result.artifactRefs?.map(file => fs.readFileSync(file, "utf8")).join("\n") ?? result.output;
+    receipts.push({ command: command.command, status: result.status, exitCode: result.exitCode, tests: observedTests(logs), artifactRefs: result.artifactRefs ?? [] });
+    if (result.status === "cancelled" || result.status === "budget_exceeded") cancelled(options);
+    if (/bubblewrap|bwrap|Restricted execution|Operation not permitted/i.test(result.output) && result.status !== "success") throw new Error("Verification environment unavailable: " + result.output);
+  }
+  return receipts;
+}
+function verificationPassed(record: PipelineRecord, receipts: NonNullable<PipelineRecord["verification"]>): boolean {
+  return receipts.length === record.commands.length && receipts.every((v, i) => v.status === "success" && v.exitCode === 0 && (record.commands[i].kind !== "test" || v.tests >= (record.commands[i].minTests ?? 1)));
+}
+
 export async function runCodingPipeline(goal: string, options: PipelineOptions = {}): Promise<string> {
   const root = getWorkdir();
   const record = options.pipelineId ? loadPipeline(root, options.pipelineId) : newPipeline(root, goal);
@@ -61,7 +78,17 @@ export async function runCodingPipeline(goal: string, options: PipelineOptions =
   try {
     cancelled(options);
     await withRepositoryLock(root, () => recoverFileTransactions(root));
-    if (record.status === "integrating" && record.artifact && artifactIntegrated(record.artifact) && workspaceDigest(root) === record.candidateDigest) return finish(record, "completed", "Recovered completed integration");
+    if (record.status === "integrating" && record.artifact) {
+      await withRepositoryLock(root, async () => {
+        if (artifactIntegrated(record.artifact!) && workspaceDigest(root) === record.candidateDigest) {
+          const checks = await verify(record, root, options);
+          if (verificationPassed(record, checks)) { record.postIntegrationVerification = checks; finish(record, "completed", "Recovered and revalidated integration"); return; }
+        }
+        if (record.integrationTransaction) rollbackFileTransaction(root, record.integrationTransaction);
+        record.status = "checking"; savePipeline(record);
+      });
+      if (loadPipeline(root, record.id).status === "completed") return response(record);
+    }
     await recoverWorker(record);
     record.ownerPid = process.pid; record.ownerStart = ownerStart(); savePipeline(record);
     let candidate: TaskArtifact | undefined = record.artifact;
@@ -98,26 +125,26 @@ export async function runCodingPipeline(goal: string, options: PipelineOptions =
       });
       cancelled(options);
       record.reviewer = parseReview(review);
-      record.verification = [];
-      const parent = getAgentContext();
-      for (const command of record.commands) {
-        cancelled(options);
-        const result = await runWithAgentContext(createAgentContext({ ...parent, role: "verifier", agentName: record.id + "-verifier", agentId: record.id + "-verifier" }), () => runWithWorkdir(candidate!.worktree, () => executeToolCallResult({ id: record.id + "-verify-" + record.attempt, function: { name: "run_verification", arguments: JSON.stringify({ command: command.command, requirement: command.requirement }) } }, undefined, { session: options.session ?? undefined, signal: options.signal ?? currentBudget()?.controller.signal })));
-        const logs = result.artifactRefs?.map(file => fs.readFileSync(file, "utf8")).join("\n") ?? result.output;
-        record.verification.push({ command: command.command, status: result.status, exitCode: result.exitCode, tests: observedTests(logs), artifactRefs: result.artifactRefs ?? [] });
-        savePipeline(record);
-        if (result.status === "cancelled" || result.status === "budget_exceeded") throw new Error("Verification " + result.status);
-        if (/bubblewrap|bwrap|Restricted execution|Operation not permitted|No such file or directory/i.test(result.output) && result.status !== "success") return finish(record, "blocked", "Verification environment unavailable: " + result.output);
-      }
+      record.verification = await verify(record, candidate.worktree, options);
+      savePipeline(record);
       assertOriginalAcceptance(record, candidate.worktree);
       if (workspaceDigest(candidate.worktree) !== record.candidateDigest) return finish(record, "blocked", "Candidate changed while checking");
-      const passed = record.reviewer.verdict === "pass" && record.verification.every((v, i) => v.status === "success" && v.exitCode === 0 && (record.commands[i].kind !== "test" || v.tests >= (record.commands[i].minTests ?? 1)));
+      const passed = record.reviewer.verdict === "pass" && verificationPassed(record, record.verification);
       if (passed) {
         record.status = "approved"; savePipeline(record);
         cancelled(options);
         await withRepositoryLock(root, async () => {
           cancelled(options); record.status = "integrating"; savePipeline(record);
-          await integrateTaskArtifact(candidate!);
+          await integrateTaskArtifact(candidate!, transactionId => { record.integrationTransaction = transactionId; savePipeline(record); });
+          try {
+            const integratedVerification = await verify(record, root, options);
+            record.postIntegrationVerification = integratedVerification;
+            savePipeline(record);
+            if (!verificationPassed(record, integratedVerification) || workspaceDigest(root) !== record.candidateDigest) throw new Error("Integrated candidate failed revalidation");
+          } catch (error) {
+            if (record.integrationTransaction) rollbackFileTransaction(root, record.integrationTransaction);
+            throw error;
+          }
         });
         options.session?.appendCustom("pipeline_completed", { pipelineId: record.id, candidateDigest: record.candidateDigest, artifact: candidate });
         return finish(record, "completed");
