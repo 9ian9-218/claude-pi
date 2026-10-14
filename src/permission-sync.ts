@@ -12,6 +12,7 @@ import { sendStructuredMessage, readMailbox, markMessageAsReadByIndex } from "./
 import { createPermissionRequest as createPermMsg, createPermissionResponse, parseStructured } from "./teammates/message-types.ts";
 import { consumePendingPermissionRequests } from "./teammates/poller.ts";
 import { getLeaderName } from "./teammates/team-helpers.ts";
+import { currentBudget } from "./task-budget.ts";
 import { checkDenyList, checkRules } from "./permission.ts";
 
 export interface SwarmPermissionRequest {
@@ -215,6 +216,8 @@ export async function pollForPermissionResponse(options: {
   const timeoutMs = options.timeoutMs ?? 300_000;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    currentBudget()?.check();
+    if (getAgentContext().signal?.aborted) throw new DOMException("Permission wait cancelled", "AbortError");
     const mailbox = readMailbox(agentName, teamName);
     for (let i = 0; i < mailbox.length; i++) {
       const entry = mailbox[i];
