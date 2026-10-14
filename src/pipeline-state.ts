@@ -51,6 +51,8 @@ export function savePipeline(record: PipelineRecord): void {
   const file = recordPath(record.targetRoot, record.id);
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   writeFileAtomic(file, JSON.stringify(record, null, 2));
+  const fd = fs.openSync(file, "r"); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  if (process.platform !== "win32") { const dir = fs.openSync(path.dirname(file), "r"); try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); }
 }
 export function loadPipeline(root: string, id: string): PipelineRecord {
   const record = JSON.parse(fs.readFileSync(recordPath(root, id), "utf8")) as PipelineRecord;
@@ -82,6 +84,7 @@ export function acceptancePlan(root: string): { commands: AcceptanceCommand[]; m
   return { commands, maxRepairs, protectedFiles };
 }
 export function newPipeline(root: string, goal: string): PipelineRecord {
+  if (!goal.trim()) throw new Error("Pipeline goal must not be empty");
   const plan = acceptancePlan(root);
   return { schemaVersion: 1, id: "pipeline-" + randomUUID(), goal, targetRoot: fs.realpathSync(root), baseDigest: workspaceDigest(root), status: "running", attempt: 0, ownerPid: process.pid, ownerStart: ownerStart(), ...plan, updatedAt: new Date().toISOString() };
 }
