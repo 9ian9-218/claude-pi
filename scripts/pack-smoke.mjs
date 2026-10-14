@@ -11,13 +11,13 @@ fs.mkdirSync(packScratch, { recursive: true });
 const temp = fs.mkdtempSync(path.join(packScratch, 'cpi-production-pack-'));
 const npmCli = process.env.npm_execpath;
 if (!npmCli) throw new Error('Run this check with npm run test:pack');
-const npm = (args, cwd = root) => {
-  const task = exec(process.execPath, [npmCli, ...args], { cwd, timeout: 300_000, maxBuffer: 4 * 1024 * 1024, env: { ...process.env } });
+const npm = (args, cwd = root, maxBuffer = 4 * 1024 * 1024) => {
+  const task = exec(process.execPath, [npmCli, ...args], { cwd, timeout: 300_000, maxBuffer, env: { ...process.env } });
   task.child.stdin?.end(); return task;
 };
 let server;
 try {
-  const packed = JSON.parse((await npm(['pack', '--json', '--pack-destination', temp])).stdout)[0];
+  const packed = JSON.parse((await npm(['pack', '--json', '--pack-destination', temp], root, 32 * 1024 * 1024)).stdout)[0];
   if (!packed.files.some(f => f.path.startsWith('node_modules/'))) throw new Error('Production package must bundle its tested dependencies');
   const locked = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
   const unexpected = packed.files.filter(f => !f.path.startsWith('node_modules/') && /(?:\.test\.ts$|(^|\/)\.agent\/|(^|\/)tests\/|auth\.json$)/.test(f.path));
