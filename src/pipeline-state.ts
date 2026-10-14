@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { repositoryGit, repositoryInfo } from "./repository-lock.ts";
+import { repositoryGit, repositoryInfo, withRepositoryLock } from "./repository-lock.ts";
 import { writeFileAtomic } from "./atomic-write.ts";
 import type { TaskArtifact } from "./worktree.ts";
 
@@ -111,4 +111,17 @@ export function assertPipelineApproval(artifact: TaskArtifact): void {
   assertOriginalAcceptance(record, artifact.worktree);
   if (workspaceDigest(artifact.worktree) !== record.candidateDigest) throw new Error("Candidate changed after verification");
   if (workspaceDigest(record.targetRoot) !== record.baseDigest) throw new Error("Parent workspace changed; candidate must be revalidated");
+}
+
+/** Claim coordinator ownership under the same cross-process repository lock as integration. */
+export async function claimPipeline(record: PipelineRecord, signal?: AbortSignal): Promise<PipelineRecord> {
+  return withRepositoryLock(record.targetRoot, () => {
+    signal?.throwIfAborted();
+    let latest = record;
+    try { latest = loadPipeline(record.targetRoot, record.id); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    if (["running", "checking", "approved", "integrating"].includes(latest.status) && latest.ownerPid !== process.pid && ownerAlive(latest)) throw new Error("Pipeline is owned by a live coordinator");
+    if (latest.status !== "completed") { latest.ownerPid = process.pid; latest.ownerStart = ownerStart(); savePipeline(latest); }
+    return latest;
+  });
 }
