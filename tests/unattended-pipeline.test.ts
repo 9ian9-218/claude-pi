@@ -166,3 +166,22 @@ it("does not report successful delivery when the lead falsely declares completio
   expect(result.status).toBe("error"); expect(result.reason).toContain("Pipeline delivery blocked");
   expect(fs.readFileSync(path.join(root, "src/value.js"), "utf8")).toContain("return 0");
 }, 30000);
+
+it("rolls back a recovered committed integration when revalidation is cancelled", async () => {
+  fs.appendFileSync(path.join(root, "tests/value.test.js"), "test('slow root', async()=>{ if (!process.cwd().includes('/.agent/worktrees/')) await new Promise(r=>setTimeout(r,10000)); });\n");
+  const binding = await createWorkerWorkspace(root, "cancel-recovery");
+  const record = newPipeline(root, "return 42");
+  fs.writeFileSync(path.join(binding.worktreePath, "src/value.js"), "export function value() { return 42; }\n");
+  const artifact = preserveWorkspaceArtifact(binding.worktreePath, binding.taskId, binding.baseSha, root); finishWorkspace(binding, "review"); artifact.pipelineId = record.id;
+  record.artifact = artifact; record.artifactKey = artifactKey(artifact); record.candidateDigest = workspaceDigest(binding.worktreePath); record.status = "integrating";
+  record.reviewer = { verdict: "pass", findings: [] }; record.verification = [{ command: "npm test", status: "success", exitCode: 0, tests: 2, artifactRefs: [] }];
+  record.ownerPid = 2147483647; record.ownerStart = "dead"; savePipeline(record);
+  await runWithWorkdir(root, () => integrateTaskArtifact(artifact, id => { record.integrationTransaction = id; savePipeline(record); }));
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new DOMException("cancelled", "AbortError")), 1000);
+  try {
+    const result = JSON.parse(await runWithWorkdir(root, () => runCodingPipeline("", { pipelineId: record.id, signal: controller.signal })));
+    expect(result.status, result.reason).toBe("cancelled");
+    expect(fs.readFileSync(path.join(root, "src/value.js"), "utf8")).toContain("return 0");
+  } finally { clearTimeout(timer); }
+}, 20000);
