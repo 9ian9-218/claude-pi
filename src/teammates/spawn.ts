@@ -10,6 +10,7 @@ import {
   TEAMMATE_IDLE_TIMEOUT,
   TEAMMATE_WORK_MAX_TURNS,
 } from "./constants.ts";
+import { SessionManager } from "../session-manager.ts";
 import { runWithAgentContext } from "./context.ts";
 import { dispatchInboxBatch, maybeReinjectIdentity } from "./inbox-dispatch.ts";
 import { idlePoll } from "./autonomous.ts";
@@ -20,6 +21,7 @@ import {
   ensureTeammateForSpawn,
   readTeamConfig,
   getLeaderName,
+  recordTeammateSession,
 } from "./team-helpers.ts";
 import { getSkillCatalog } from "../skill-load.ts";
 import { SUBAGENT_IDENTITY } from "../prompt.ts";
@@ -40,6 +42,8 @@ import {
 interface ActiveTeammate {
   runId: number;
   shutdown: () => void;
+  controller: AbortController;
+  done?: Promise<void>;
 }
 
 const activeTeammates = new Map<string, ActiveTeammate>();
@@ -73,6 +77,7 @@ async function runTeammateLoop(options: {
   runId: number;
   /** 注册表运行 id：面板与用量聚合的键（teammate 是持久 agent，非一次性 subagent） */
   runKey: string;
+  signal: AbortSignal;
   /** 测试注入：空闲上限与轮询间隔；缺省取常量（30 分钟 / 5 秒） */
   idleTimeoutMs?: number;
   idlePollIntervalMs?: number;
@@ -86,6 +91,7 @@ async function runTeammateLoop(options: {
     agentType: role,
   });
   const ctx = profileToContext(profile);
+  ctx.signal = options.signal;
 
   const { agentLoopDetailed } = await import("../agent-loop.ts");
 
@@ -119,7 +125,14 @@ async function runTeammateLoop(options: {
   const idleTimeoutMs = options.idleTimeoutMs ?? TEAMMATE_IDLE_TIMEOUT * 1000;
   const idleMinutes = Math.max(1, Math.round(idleTimeoutMs / 60000));
 
+  let session: SessionManager | undefined;
   try {
+    const member = readTeamConfig(teamName)?.members.find(m => m.name === name);
+    session = member?.sessionFile ? SessionManager.open(member.sessionFile) : SessionManager.createChild(getWorkdir(), null, runKey);
+    const sessionFile = session.getSessionFile();
+    if (!sessionFile) throw new Error("Persistent teammate session required");
+    recordTeammateSession(teamName, name, sessionFile);
+    updateAgentRun(runKey, { sessionFile, sessionId: session.sessionId });
     const endReason = await runWithAgentContext(ctx, () => runWithWorkdir(getWorkdir(), async (): Promise<string> => {
       const system =
         teammateIdentity(name, role, teamName) +
@@ -127,13 +140,13 @@ async function runTeammateLoop(options: {
         SUBAGENT_IDENTITY.replace("{workspace}", process.cwd()) +
         "\n\n" +
         getSkillCatalog();
-      const messages = [
-        { role: "system" as const, content: system },
-        { role: "user" as const, content: initialPrompt },
-      ];
+      const prior = session!.buildSessionContext().messages;
+      const messages = prior.length ? prior : [{ role: "system" as const, content: system }];
+      const assignment = { role: "user" as const, content: initialPrompt };
+      session!.appendMessage(assignment); messages.push(assignment);
 
-      while (!isShutdownRequested(teamName, name, runId)) {
-        const dispatch = await dispatchInboxBatch({ agentName: name, teamName, messages });
+      while (!options.signal.aborted && !isShutdownRequested(teamName, name, runId)) {
+        const dispatch = await dispatchInboxBatch({ agentName: name, teamName, messages, session });
         if (dispatch.shouldShutdown) return "收到 shutdown 请求，已结束";
 
         maybeReinjectIdentity(messages, { name, role, teamName });
@@ -142,7 +155,8 @@ async function runTeammateLoop(options: {
         const result = await agentLoopDetailed(messages, {
           maxTurn: TEAMMATE_WORK_MAX_TURNS,
           maxTokens: 6000,
-          loopOptions: LoopOptions.fromProfile(profile, { uiEvents: agentSink }),
+          session,
+          loopOptions: LoopOptions.fromProfile(profile, { uiEvents: agentSink, signal: options.signal }),
         });
         if (result.status !== "success") throw new Error(`Teammate ${result.status}: ${result.reason ?? "no final result"}`);
         if (result.final) {
@@ -165,7 +179,9 @@ async function runTeammateLoop(options: {
           agentName: name,
           teamName,
           messages,
-          isShutdownRequested: () => isShutdownRequested(teamName, name, runId),
+          session,
+          isShutdownRequested: () => options.signal.aborted || isShutdownRequested(teamName, name, runId),
+          signal: options.signal,
           ...(options.idlePollIntervalMs !== undefined
             ? { pollIntervalMs: options.idlePollIntervalMs }
             : {}),
@@ -192,6 +208,7 @@ async function runTeammateLoop(options: {
   } catch (err) {
     finishAgentRun(runKey, { status: "failed", error: String((err as Error)?.message ?? err) });
   } finally {
+    session?.close();
     // 同步翻转两张表：注册表状态（done/failed）、进程内 active 表、团队成员表。
     // 三者之间不能有 await —— 否则外部会看到「已结束」却又被判定为仍活跃/仍占位，
     // 重新 spawn 同名 teammate 会被团队成员表的 isActive 守卫误拒。
@@ -249,6 +266,7 @@ export function spawnTeammate(options: {
   spawnCounter += 1;
   const runId = spawnCounter;
   const entry: ActiveTeammate = {
+    controller: new AbortController(),
     runId,
     shutdown: () => activeTeammates.delete(key),
   };
@@ -265,7 +283,7 @@ export function spawnTeammate(options: {
     label: `teammate · ${name} · ${prompt.slice(0, 40)}`,
   });
 
-  void runTeammateLoop({
+  entry.done = runTeammateLoop({
     name,
     role,
     teamName,
@@ -273,6 +291,7 @@ export function spawnTeammate(options: {
     initialPrompt: prompt,
     runId,
     runKey,
+    signal: entry.controller.signal,
     ...(options.idleTimeoutMs !== undefined ? { idleTimeoutMs: options.idleTimeoutMs } : {}),
     ...(options.idlePollIntervalMs !== undefined
       ? { idlePollIntervalMs: options.idlePollIntervalMs }
@@ -290,11 +309,15 @@ export function spawnTeammate(options: {
   );
 }
 
-export function requestTeammateShutdown(name: string, teamName: string): Promise<string> {
+export function requestTeammateShutdown(name: string, teamName: string, force = false): Promise<string> {
   const key = teammateKey(teamName, name);
   const entry = activeTeammates.get(key);
   if (!entry) {
     return Promise.resolve(`Teammate '${name}' is not active on team '${teamName}'`);
+  }
+  if (force) {
+    entry.controller.abort(new DOMException("Teammate cancelled", "AbortError"));
+    return (entry.done ?? Promise.resolve()).then(() => "Teammate '" + name + "' stopped after cancellation");
   }
   const leader = getLeaderName(teamName);
   return sendShutdownRequest({ targetName: name, teamName, fromAgent: leader }).then(

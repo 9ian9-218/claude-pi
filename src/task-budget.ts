@@ -6,10 +6,12 @@ export interface BudgetUsage { requests: number; tools: number; tokens: number; 
 
 export class TaskBudget {
   readonly controller = new AbortController();
+  readonly pipelineOutcomes = new Map<string, { status: string; reason?: string }>();
   readonly startedAt = Date.now();
   readonly seenInstructions = new Set<string>();
   readonly usage: BudgetUsage = { requests: 0, tools: 0, tokens: 0, cost: 0, priceUnknown: false, activeRequests: 0 };
   readonly limits: Required<Omit<BudgetLimits, "cost">> & Pick<BudgetLimits, "cost">;
+  private readonly requestWaiters = new Set<() => void>();
   private reservedTokens = 0;
   private reservedCost = 0;
   private timer: ReturnType<typeof setTimeout>;
@@ -48,12 +50,26 @@ export class TaskBudget {
     return usage => {
       if (settled) return;
       settled = true;
-      this.usage.activeRequests--; this.reservedTokens -= tokens; this.reservedCost -= estimatedCost ?? 0;
+      this.usage.activeRequests--; for (const wake of [...this.requestWaiters]) wake(); this.reservedTokens -= tokens; this.reservedCost -= estimatedCost ?? 0;
       // Failed requests without usage stay conservatively charged at their reservation.
       this.usage.tokens += usage?.totalTokens ?? tokens;
       this.usage.cost += usage?.cost?.total ?? estimatedCost ?? 0;
       if (this.usage.tokens > this.limits.tokens || (this.limits.cost !== undefined && this.usage.cost > this.limits.cost)) this.exhaust("Provider usage exceeded the reserved budget");
     };
+  }
+  async reserveRequestAsync(tokens: number, cost: number | null, signal?: AbortSignal): Promise<(usage?: { totalTokens: number; cost?: { total: number } }) => void> {
+    const combined = signal ? AbortSignal.any([signal, this.controller.signal]) : this.controller.signal;
+    while (this.usage.activeRequests >= this.limits.concurrency) {
+      this.check(); combined.throwIfAborted();
+      await new Promise<void>((resolve, reject) => {
+        const cleanup = () => { this.requestWaiters.delete(wake); combined.removeEventListener("abort", abort); };
+        const wake = () => { cleanup(); resolve(); };
+        const abort = () => { cleanup(); reject(combined.reason); };
+        this.requestWaiters.add(wake); combined.addEventListener("abort", abort, { once: true });
+        if (combined.aborted) abort();
+      });
+    }
+    combined.throwIfAborted(); return this.reserveRequest(tokens, cost);
   }
   dispose(): void { clearTimeout(this.timer); }
 }

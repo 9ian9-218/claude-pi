@@ -9,6 +9,7 @@
  * compact（04）、memory（05）、background（06）、错误恢复（03）后续接入。
  */
 import { randomUUID } from "node:crypto";
+import { getTeamMode } from "./settings.ts";
 import { triggerHooks } from "./hook.ts";
 import { LoopOptions } from "./loop-options.ts";
 import { executeToolCallResult, getOpenaiTools, type ToolCallLike } from "./tool.ts";
@@ -73,10 +74,13 @@ export async function agentLoop(
   }
   const signal = original.signal ? AbortSignal.any([original.signal, budget.controller.signal]) : budget.controller.signal;
   const caller = getAgentContext();
-  const actor = caller.agentId ? caller : { ...caller, agentId: options.session ? `session:${options.session.sessionId}` : ephemeralWorkspaceAgentId };
+  const actor = { ...caller, signal, agentId: caller.agentId ?? (options.session ? `session:${options.session.sessionId}` : ephemeralWorkspaceAgentId) };
   try {
     return await runWithAgentContext(actor, () => runWithBudget(budget, () => runWithSessionWorkspace(options.session, () => runWithCurrentWorkdir(async () => { await restoreAgentWorkspace(); return agentLoopInner(messages, { ...options, onResult: result => {
-      const outcome = { ...result, budget: { usage: { ...budget.usage }, limits: budget.limits } };
+      const blocked = [...budget.pipelineOutcomes].filter(([, value]) => value.status !== "completed");
+      const missingDelivery = caller.role === "lead" && original.role === "lead" && getTeamMode() === "pipeline" && budget.pipelineOutcomes.size === 0;
+      const deliveryError = blocked.length ? blocked.map(([id, value]) => id + " (" + (value.reason ?? value.status) + ")").join("; ") : missingDelivery ? "No independently accepted pipeline was executed" : undefined;
+      const outcome = { ...result, ...(caller.role === "lead" && result.status === "success" && deliveryError ? { status: "error" as const, reason: "Pipeline delivery blocked: " + deliveryError } : {}), budget: { usage: { ...budget.usage }, limits: budget.limits } };
       options.session?.appendCustom("run_end", outcome);
       options.onResult?.(outcome);
     }, loopOptions: new LoopOptions({ ...original, signal }) }); }))));
@@ -161,6 +165,8 @@ async function agentLoopInner(
     currentBudget()?.check();
     // teammate/通知注入
     if (opts.injectLeadNotifications) {
+      const { deliverPendingMessages } = await import("./teammates/poller.ts");
+      await deliverPendingMessages(session, messages);
       // 仅 Lead 消费队友权限队列；subagent 走同步冒泡（bubbleSubagentPermission），
       // teammate 无 UI 不消费（否则 subagent 会替 Lead 弹 askUser）
       if (opts.isLeadRole) {

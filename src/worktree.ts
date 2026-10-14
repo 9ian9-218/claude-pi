@@ -9,7 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { AGENT_ROOT } from "./config.ts";
 import { getWorkdir, getWorkspaceBinding, runWithWorkdir } from "./workdir.ts";
-import { safePath } from "./tools/path.ts";
+import { safePath, realpathDeep } from "./tools/path.ts";
 import { fileHash } from "./checkpoints.ts";
 import { createHash } from "node:crypto";
 import { writeFileAtomic } from "./atomic-write.ts";
@@ -107,6 +107,7 @@ export interface TaskArtifact {
   baseSha: string;
   headSha: string;
   targetRoot?: string;
+  pipelineId?: string;
   files: Array<{ path: string; hash: string | null; baseHash: string | null; mode?: number; executable?: boolean; baseExecutable?: boolean }>;
 }
 
@@ -147,7 +148,9 @@ export function preserveWorkspaceArtifact(worktree: string, taskId: string, base
 }
 
 /** Explicit review/integration step. Refuse overwriting main-workspace changes. */
-export async function integrateTaskArtifact(artifact: TaskArtifact): Promise<void> {
+export async function integrateTaskArtifact(artifact: TaskArtifact, onPrepared?: (transactionId: string) => void): Promise<void> {
+  const { getTeamMode } = await import("./settings.ts");
+  const { assertPipelineApproval } = await import("./pipeline-state.ts");
   const root = artifact.targetRoot ?? gitRoot;
   if (getAgentContext().role !== "lead") {
     const binding = getWorkspaceBinding();
@@ -155,8 +158,10 @@ export async function integrateTaskArtifact(artifact: TaskArtifact): Promise<voi
     validateWorkspace(binding);
   }
   await withRepositoryLock(root, async () => runWithWorkdir(root, async () => {
+    if (repositoryInfo(artifact.worktree).id !== repositoryInfo(root).id) throw new Error("Artifact belongs to another repository");
     assertWorkspaceQuiescent(root);
     recoverFileTransactions(root);
+    if (artifact.pipelineId || getTeamMode() === "pipeline") assertPipelineApproval(artifact);
     const staged = artifact.files.map(file => {
       const target = safePath(file.path);
       if (fs.existsSync(target) && !fs.lstatSync(target).isFile()) throw new Error(`Integration conflict: ${file.path} is not a regular file`);
@@ -165,11 +170,16 @@ export async function integrateTaskArtifact(artifact: TaskArtifact): Promise<voi
       const integrated = current === file.hash && (file.hash === null || file.executable === undefined || executable === file.executable);
       const matchesBase = current === file.baseHash && (file.baseHash === null || file.baseExecutable === undefined || executable === file.baseExecutable);
       if (!integrated && !matchesBase) throw new Error(`Integration conflict: ${file.path} changed in the main workspace`);
-      const data = file.hash === null ? null : fs.readFileSync(safePath(path.join(artifact.directory, "files", file.path)));
+      const storageRoot = path.join(repositoryInfo(artifact.worktree).root, ".agent", "artifacts");
+      const directory = fs.realpathSync(artifact.directory);
+      if (!directory.startsWith(fs.realpathSync(storageRoot) + path.sep)) throw new Error("Artifact storage is outside the repository");
+      const artifactFile = realpathDeep(path.resolve(directory, "files", file.path));
+      if (!artifactFile.startsWith(path.join(directory, "files") + path.sep)) throw new Error("Artifact file escapes storage");
+      const data = file.hash === null ? null : fs.readFileSync(artifactFile);
       if (data && fileHash(data) !== file.hash) throw new Error(`Artifact integrity check failed: ${file.path}`);
       return { file, target, current, data, integrated };
     });
-    await applyFileTransaction(staged.filter(f => !f.integrated).map(({ file, current, data }) => ({ path: file.path, data, mode: file.mode, expectedHash: current, expectedExecutable: file.baseExecutable })), { coordinator: true });
+    await applyFileTransaction(staged.filter(f => !f.integrated).map(({ file, current, data }) => ({ path: file.path, data, mode: file.mode, expectedHash: current, expectedExecutable: file.baseExecutable })), { coordinator: true, onPrepared });
   }));
 }
 

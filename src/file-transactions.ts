@@ -73,7 +73,7 @@ export function recoverFileTransactions(root = getWorkdir()): void {
   }
 }
 
-export async function applyFileTransaction(changes: FileChange[], options: { afterApply?: (index: number) => void; coordinator?: boolean } = {}): Promise<string[]> {
+export async function applyFileTransaction(changes: FileChange[], options: { afterApply?: (index: number) => void; coordinator?: boolean; onPrepared?: (transactionId: string) => void } = {}): Promise<string[]> {
   const root = fs.realpathSync(getWorkdir());
   return withRepositoryLock(root, () => {
     if (!options.coordinator) requireWritableWorkspace();
@@ -98,6 +98,7 @@ export async function applyFileTransaction(changes: FileChange[], options: { aft
     if (journal.files.length) syncDirectory(path.join(root, ".agent", "checkpoints"));
     durableJson(journalPath, journal);
     try {
+      options.onPrepared?.(path.basename(journalPath, ".json"));
       plan.forEach(({ change, p, beforeHash }, i) => {
         if (hashAt(p) !== beforeHash) throw new Error(`Edit conflict: ${change.path} changed during integration`);
         fs.mkdirSync(path.dirname(p), { recursive: true });
@@ -113,4 +114,13 @@ export async function applyFileTransaction(changes: FileChange[], options: { aft
       throw e;
     }
   });
+}
+
+/** Explicit rollback of an integration, preserving later user edits. Caller holds the writer lock. */
+export function rollbackFileTransaction(root: string, id: string): void {
+  if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error("Invalid integration transaction ID");
+  const journalPath = path.join(root, ".agent", "transactions", id + ".json");
+  const journal = JSON.parse(fs.readFileSync(journalPath, "utf8")) as Journal;
+  if (journal.version !== 1 || journal.root !== fs.realpathSync(root)) throw new Error("Integration journal identity mismatch");
+  if (journal.status !== "rolled_back") rollback(root, journal, journalPath);
 }

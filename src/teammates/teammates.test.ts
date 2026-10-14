@@ -15,7 +15,8 @@ import {
 } from "./mailbox.ts";
 import { createTeam, ensureTeammateForSpawn } from "./team-helpers.ts";
 import { formatTeammateMessages, isStructuredProtocolMessage } from "./message-types.ts";
-import { pollOnce, consumePendingInjections, clearPollerQueues } from "./poller.ts";
+import { SessionManager } from "../session-manager.ts";
+import { pollOnce, deliverPendingMessages, clearPollerQueues } from "./poller.ts";
 import {
   spawnTeammate,
   requestTeammateShutdown,
@@ -110,13 +111,15 @@ describe("poller（S10）", () => {
       color: "green",
     });
     await pollOnce("beta");
-    const injections = consumePendingInjections();
-    expect(injections).toHaveLength(1);
-    expect(injections[0]).toContain("<teammate-message");
-    expect(injections[0]).toContain("进度报告");
-    // 已读：再次 poll 不重复注入
-    await pollOnce("beta");
-    expect(consumePendingInjections()).toEqual([]);
+    const session = SessionManager.create(dir, path.join(dir, "sessions"));
+    const messages: import("../client.ts").ChatMessage[] = [];
+    await deliverPendingMessages(session, messages);
+    expect(messages).toHaveLength(1);
+    expect(messages[0].content).toContain("<teammate-message");
+    expect(messages[0].content).toContain("进度报告");
+    await pollOnce("beta"); await deliverPendingMessages(session, messages);
+    expect(messages).toHaveLength(1);
+    session.close();
   });
 });
 
@@ -291,3 +294,15 @@ describe("spawn 端到端（S10）", () => {
     );
   });
 });
+
+it("force shutdown wakes a long idle wait and releases the durable session", async () => {
+  createTeam("force", TEAM_LEAD_NAME);
+  mock.always(() => ({ kind: "sse", chunks: [{ content: "ready", finishReason: "stop" }] }));
+  spawnTeammate({ name: "cancel", role: "worker", prompt: "inspect", teamName: "force", idleTimeoutMs: 120000, idlePollIntervalMs: 60000 });
+  await vi.waitFor(() => expect(getAgentRun("cancel@force")?.phase).toBe("idle"), { timeout: 10000, interval: 25 });
+  const file = getAgentRun("cancel@force")!.sessionFile!;
+  expect(await requestTeammateShutdown("cancel", "force", true)).toContain("stopped after cancellation");
+  expect(isTeammateActive("force", "cancel")).toBe(false);
+  const restored = SessionManager.open(file);
+  expect(restored.isConcurrent()).toBe(false); restored.close();
+}, 15000);

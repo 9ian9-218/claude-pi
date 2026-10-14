@@ -4,8 +4,9 @@
  * 读队友邮箱 → 注入 messages；shutdown_request 走 lifecycle 应答。
  * 有新消息时 resumeWork=true（autonomous idle 据此回到 WORK）。
  */
-import { readMailbox, markMessagesAsRead, type MailboxMessage } from "./mailbox.ts";
+import { readMailbox, acknowledgeMessages, type MailboxMessage } from "./mailbox.ts";
 import { formatTeammateMessages, isStructuredProtocolMessage, parseStructured } from "./message-types.ts";
+import { getLeaderName } from "./team-helpers.ts";
 import { handleShutdownRequest } from "./lifecycle.ts";
 import { maybeReinjectIdentity as reinject } from "./autonomous.ts";
 import type { ChatMessage } from "../client.ts";
@@ -20,8 +21,9 @@ export async function dispatchInboxBatch(options: {
   agentName: string;
   teamName: string;
   messages: ChatMessage[];
+  session?: import("../session-manager.ts").SessionManager;
 }): Promise<DispatchResult> {
-  const { agentName, teamName, messages } = options;
+  const { agentName, teamName, messages, session } = options;
   const mailbox = readMailbox(agentName, teamName);
   const plain: MailboxMessage[] = [];
   let shouldShutdown = false;
@@ -31,9 +33,10 @@ export async function dispatchInboxBatch(options: {
     const text = String(entry["text"] ?? "");
     if (isStructuredProtocolMessage(text)) {
       const parsed = parseStructured(text);
-      if (parsed && parsed["type"] === "shutdown_request") {
+      if (parsed && parsed["type"] === "shutdown_request" && entry.from === getLeaderName(teamName)) {
         await handleShutdownRequest(text, agentName, teamName);
         shouldShutdown = true;
+        await acknowledgeMessages(agentName, teamName, [entry.id!]);
       }
       // permission_response 由 pollForPermissionResponse 自读自标；
       // 其它结构化消息忽略（已读标记由 poller/协议处理）
@@ -45,9 +48,14 @@ export async function dispatchInboxBatch(options: {
   if (plain.length > 0) {
     const formatted = formatTeammateMessages(plain as Array<Record<string, unknown>>);
     if (formatted) {
-      messages.push({ role: "user", content: formatted });
+      const known = new Set(session?.getEntries().flatMap(e => e.type === "message" && e.message.mailboxDelivery?.team === teamName ? e.message.mailboxDelivery.ids : []) ?? []);
+      const fresh = plain.filter(e => !known.has(e.id!));
+      if (fresh.length) {
+        const message: ChatMessage = { role: "user", content: formatTeammateMessages(fresh as Array<Record<string, unknown>>), mailboxDelivery: { team: teamName, ids: fresh.map(e => e.id!) } };
+        session?.appendMessage(message); messages.push(message);
+      }
     }
-    await markMessagesAsRead(agentName, teamName);
+    await acknowledgeMessages(agentName, teamName, plain.map(message => message.id!));
   }
 
   return { shouldShutdown, resumeWork: plain.length > 0, injected: plain.length };

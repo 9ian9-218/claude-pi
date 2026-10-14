@@ -5,12 +5,14 @@
  * （proper-lockfile，格式与 Python 版字节兼容）。
  */
 import fs from "node:fs";
+import { randomUUID, createHash } from "node:crypto";
 import { writeFileAtomic } from "../atomic-write.ts";
 import path from "node:path";
 import { getTeamsDir } from "./constants.ts";
 import { withFileLock } from "../file-lock.ts";
 
 export interface MailboxMessage {
+  id?: string;
   from: string;
   text: string;
   color?: string | null;
@@ -21,6 +23,7 @@ export interface MailboxMessage {
 }
 
 export function sanitizePathComponent(name: string): string {
+  if (name === "." || name === "..") throw new Error("Reserved mailbox path component");
   const safe = name.replace(/[^\w\-.@]+/g, "-").trim();
   return safe || "agent";
 }
@@ -45,16 +48,17 @@ export function readMailbox(agentName: string, teamName: string): MailboxMessage
   if (!fs.existsSync(inboxPath)) return [];
   try {
     const messages = JSON.parse(fs.readFileSync(inboxPath, "utf8"));
-    return Array.isArray(messages) ? messages : [];
+    if (!Array.isArray(messages)) throw new Error("Mailbox must be an array");
+    return messages.map((message: MailboxMessage, index: number) => ({ ...message, id: message.id ?? createHash("sha256").update(JSON.stringify([index, message.from, message.timestamp, message.text])).digest("hex") }));
   } catch (e) {
     // 损坏时静默当空 = 静默丢消息；轮询每秒读一次，故每个路径只报一次
     if (!warnedCorrupt.has(inboxPath)) {
       warnedCorrupt.add(inboxPath);
       console.warn(
-        `  \x1b[33m[mailbox] ${inboxPath} 解析失败，已按空收件箱处理：${String((e as Error)?.message ?? e)}\x1b[0m`,
+        `  \x1b[33m[mailbox] ${inboxPath} 解析失败，保留现场并停止投递：${String((e as Error)?.message ?? e)}\x1b[0m`,
       );
     }
-    return [];
+    throw new Error("Corrupt mailbox retained; delivery stopped: " + inboxPath);
   }
 }
 
@@ -68,17 +72,16 @@ export async function writeToMailbox(
   const inboxPath = getInboxPath(recipientName, teamName);
   const lockPath = `${inboxPath}.lock`;
 
-  if (!fs.existsSync(inboxPath)) {
-    writeFileAtomic(inboxPath, "[]");
-  }
-
   await withFileLock(lockPath, () => {
+    if (!fs.existsSync(inboxPath)) writeFileAtomic(inboxPath, "[]");
     const messages = readMailbox(recipientName, teamName);
     const newMessage: MailboxMessage = {
       ...message,
+      id: randomUUID(),
       read: false,
       timestamp: message.timestamp ?? new Date().toISOString(),
     };
+    if (Buffer.byteLength(newMessage.text, "utf8") > 64 * 1024 || messages.filter(m => !m.read).length >= 1000) throw new Error("Mailbox message or backlog limit exceeded");
     messages.push(newMessage);
     writeFileAtomic(inboxPath, JSON.stringify(messages, null, 2));
   });
@@ -154,4 +157,16 @@ export async function sendStructuredMessage(options: {
     },
     options.teamName,
   );
+}
+
+/** ACK only the immutable IDs actually consumed, never arrivals after a snapshot. */
+export async function acknowledgeMessages(agentName: string, teamName: string, ids: string[]): Promise<void> {
+  const inboxPath = getInboxPath(agentName, teamName);
+  if (!fs.existsSync(inboxPath)) return;
+  const selected = new Set(ids);
+  await withFileLock(inboxPath + ".lock", () => {
+    const messages = readMailbox(agentName, teamName);
+    for (const message of messages) if (message.id && selected.has(message.id)) message.read = true;
+    writeFileAtomic(inboxPath, JSON.stringify(messages, null, 2));
+  });
 }

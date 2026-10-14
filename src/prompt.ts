@@ -106,10 +106,10 @@ export const PIPELINE_SECTION =
   "- `worker`: implement the change and run self-tests (the only role allowed to write files).\n" +
   "- `reviewer`: adversarial static review of the diff for bugs, style and security (read-only).\n" +
   "- `verifier`: run tests / build / type-check and report objective evidence (read-only).\n\n" +
-  "**Standard flow: scout → planner → worker → reviewer → verifier.** Skip a stage only when it is " +
-  "genuinely unnecessary (trivial edit: scout + worker + verifier). Pass each stage the previous " +
+  "For any implementation use run_pipeline(goal), or delegate(worker) which enters the same runtime-controlled pipeline. " +
+  "Scout and planner are optional context gathering stages. Candidate review and independent acceptance cannot be skipped. Pass each stage the previous " +
   "stage's deliverable through `context`. Route review findings back to `worker`, then re-verify. " +
-  "While delegating, your own job is routing, merging and reporting — do not edit files yourself.\n\n" +
+  "While delegating, your job is routing and reporting. Report completed only for pipeline status=completed. Blocked or cancelled runs retain artifacts and can resume by pipeline_id. Do not bypass acceptance or alter original tests.\n\n" +
   "**This is enforced by the runtime, not a request:** your own `write_file` / `edit_file` / " +
   "`run_bash` calls are rejected while this preset is on. `read_file` / `grep` / `glob` / " +
   "`delegate` still work. Need a file changed → `delegate(role=\"worker\", ...)`; need a " +

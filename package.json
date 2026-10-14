@@ -45,6 +45,7 @@
     "PLAN.md",
     "!src/**/*.test.ts"
   ],
+  "bundleDependencies": true,
   "engines": {
     "node": ">=22.18"
   }

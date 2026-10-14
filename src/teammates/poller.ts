@@ -5,12 +5,14 @@
  * permission/plan 归 11），普通消息包装为 <teammate-message> 注入队列。
  */
 import { LEAD_INBOX_POLL_INTERVAL } from "./constants.ts";
-import { readMailbox, markMessageAsReadByIndex, type MailboxMessage } from "./mailbox.ts";
+import { readMailbox, acknowledgeMessages, markMessageAsReadByIndex, type MailboxMessage } from "./mailbox.ts";
 import { formatTeammateMessages, isStructuredProtocolMessage, parseStructured } from "./message-types.ts";
 import { getLeaderName } from "./team-helpers.ts";
 
 // 注入队列（agent_loop 每轮消费）
 let pendingInjections: string[] = [];
+let pendingDeliveries: Array<{ content: string; entries: MailboxMessage[]; ids: string[]; team: string; lead: string }> = [];
+const inFlightDeliveryIds = new Set<string>();
 let pendingIdleNotifications: Record<string, unknown>[] = [];
 let pendingPermissionRequests: Array<{
   entry: Record<string, unknown>;
@@ -33,6 +35,8 @@ export function consumePendingIdleNotifications(): Record<string, unknown>[] {
 /** 测试隔离 */
 export function clearPollerQueues(): void {
   pendingInjections = [];
+  pendingDeliveries = [];
+  inFlightDeliveryIds.clear();
   pendingIdleNotifications = [];
   pendingPermissionRequests = [];
 }
@@ -119,6 +123,7 @@ export async function pollOnce(teamName: string): Promise<void> {
     const leadName = getLeaderName(teamName);
     const mailbox = readMailbox(leadName, teamName);
     const plainBatch: MailboxMessage[] = [];
+    const queued = new Set([...pendingDeliveries.flatMap(d => d.ids), ...inFlightDeliveryIds]);
 
     for (let i = 0; i < mailbox.length; i++) {
       const entry = mailbox[i];
@@ -127,20 +132,38 @@ export async function pollOnce(teamName: string): Promise<void> {
       if (isStructuredProtocolMessage(text)) {
         await routeMessage(entry, i, teamName, leadName);
       } else {
-        plainBatch.push(entry);
+        if (!queued.has(entry.id!)) plainBatch.push(entry);
       }
     }
 
     if (plainBatch.length > 0) {
       const formatted = formatTeammateMessages(plainBatch as Array<Record<string, unknown>>);
-      if (formatted) pendingInjections.push(formatted);
-      for (let i = 0; i < mailbox.length; i++) {
-        if (plainBatch.includes(mailbox[i])) {
-          await markMessageAsReadByIndex(leadName, teamName, i);
-        }
+      const ids = plainBatch.map(message => message.id!);
+      if (formatted && !pendingDeliveries.some(d => d.team === teamName && d.ids.join(",") === ids.join(","))) {
+        pendingDeliveries.push({ content: formatted, entries: plainBatch, ids, team: teamName, lead: leadName });
       }
     }
   } catch (e) {
     console.log(`  \x1b[31m[poller] error: ${String(e)}\x1b[0m`);
   }
+}
+
+/** Persist a delivery in the session before ACK. Replayed IDs never cause a second injection. */
+export async function deliverPendingMessages(session: import("../session-manager.ts").SessionManager | undefined, messages: import("../client.ts").ChatMessage[]): Promise<void> {
+  const deliveries = pendingDeliveries;
+  for (const delivery of deliveries) for (const id of delivery.ids) inFlightDeliveryIds.add(id);
+  pendingDeliveries = [];
+  try {
+    for (const delivery of deliveries) {
+      const known = new Set(session?.getEntries().flatMap(e => e.type === "message" && e.message.mailboxDelivery?.team === delivery.team ? e.message.mailboxDelivery.ids : []) ?? []);
+      const entries = delivery.entries.filter(e => !known.has(e.id!));
+      if (entries.length) {
+        const ids = entries.map(e => e.id!);
+        const content = formatTeammateMessages(entries as Array<Record<string, unknown>>);
+        const message: import("../client.ts").ChatMessage = { role: "user", content, mailboxDelivery: { team: delivery.team, ids } };
+        session?.appendMessage(message); messages.push(message);
+      }
+      await acknowledgeMessages(delivery.lead, delivery.team, delivery.ids);
+    }
+  } finally { for (const delivery of deliveries) for (const id of delivery.ids) inFlightDeliveryIds.delete(id); }
 }

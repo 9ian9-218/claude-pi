@@ -47,6 +47,7 @@ import {
 import {
   SUBAGENT_TASK_TOOL,
   DELEGATE_TASK_TOOL,
+  RUN_PIPELINE_TOOL,
   CREATE_TEAM_TOOL,
   SPAWN_TEAMMATE_TOOL,
   SEND_MESSAGE_TOOL,
@@ -79,6 +80,7 @@ export const BUILTIN_TOOLS: Tool[] = [
   INTEGRATE_TASK_TOOL,
   SUBAGENT_TASK_TOOL,
   DELEGATE_TASK_TOOL,
+  RUN_PIPELINE_TOOL,
   CREATE_TEAM_TOOL,
   SPAWN_TEAMMATE_TOOL,
   SEND_MESSAGE_TOOL,
@@ -166,7 +168,8 @@ export const PIPELINE_LEAD_FORBIDDEN = new Set(["write_file", "edit_file", "appl
  */
 export function isToolBlockedByPreset(role: AgentRole, toolName: string): boolean {
   if (role !== "lead") return false;
-  return getTeamMode() === "pipeline" && PIPELINE_LEAD_FORBIDDEN.has(toolName);
+  if (getTeamMode() !== "pipeline") return false;
+  return !new Set(["read_file", "grep", "glob", "repository_info", "symbol_search", "load_skill", "list_tasks", "get_task", "todo_write", "delegate", "run_pipeline", "integrate_task", "list_mcp_servers"]).has(toolName);
 }
 
 /** 预设拦截时的可操作提示（告诉模型该怎么绕道，而不是只说「不行」） */
@@ -182,7 +185,7 @@ export function presetBlockedMessage(toolName: string): string {
 }
 
 export function isToolAllowedForRole(role: AgentRole, toolName: string): boolean {
-  if (["connect_mcp", "disconnect_mcp", "restart_mcp", "list_mcp_servers"].includes(toolName)) return role === "lead";
+  if (["connect_mcp", "disconnect_mcp", "restart_mcp", "list_mcp_servers", "create_team", "spawn_teammate", "shutdown_teammate"].includes(toolName)) return role === "lead";
   if (role === "lead" || role === "teammate") return true;
   if (isMcpTool(toolName) && !toolName.startsWith("mcp__local__")) return false;
   if (role === "subagent") return !SUBAGENT_EXCLUDED.has(toolName);

@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { AGENT_COLORS, TEAM_LEAD_NAME, getTeamsDir } from "./constants.ts";
 import { sanitizePathComponent } from "./mailbox.ts";
+import { ownerStart, ownerAlive } from "../pipeline-state.ts";
 import { writeFileAtomic } from "../atomic-write.ts";
 
 export interface TeamMember {
@@ -17,6 +18,9 @@ export interface TeamMember {
   isActive: boolean;
   joinedAt: string;
   model?: string | null;
+  ownerPid?: number;
+  ownerStart?: string;
+  sessionFile?: string;
 }
 
 export interface TeamConfig {
@@ -92,8 +96,10 @@ export function ensureTeammateForSpawn(
   if (!config) throw new Error(`team '${teamName}' not found`);
   const existing = config.members.find((m) => m.name === name);
   if (existing) {
+    if (existing.isActive && existing.ownerPid && existing.ownerStart && !ownerAlive({ ownerPid: existing.ownerPid, ownerStart: existing.ownerStart })) existing.isActive = false;
     if (existing.isActive) throw new Error(`teammate '${name}' already active on team '${teamName}'`);
     existing.isActive = true;
+    existing.ownerPid = process.pid; existing.ownerStart = ownerStart();
     existing.agentType = agentType;
     writeTeamConfig(config);
     return existing;
@@ -106,6 +112,7 @@ export function ensureTeammateForSpawn(
     agentType,
     color,
     isActive: true,
+    ownerPid: process.pid, ownerStart: ownerStart(),
     joinedAt: new Date().toISOString(),
   };
   config.members.push(member);
@@ -121,4 +128,11 @@ export function deactivateTeammate(teamName: string, name: string): void {
     member.isActive = false;
     writeTeamConfig(config);
   }
+}
+
+export function recordTeammateSession(teamName: string, name: string, sessionFile: string): void {
+  const config = readTeamConfig(teamName);
+  const member = config?.members.find(m => m.name === name);
+  if (!config || !member) throw new Error("Teammate membership missing");
+  member.sessionFile = sessionFile; writeTeamConfig(config);
 }
