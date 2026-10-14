@@ -54,7 +54,7 @@ export function readMailbox(agentName: string, teamName: string): MailboxMessage
     if (!warnedCorrupt.has(inboxPath)) {
       warnedCorrupt.add(inboxPath);
       console.warn(
-        `  \x1b[33m[mailbox] ${inboxPath} 解析失败，已按空收件箱处理：${String((e as Error)?.message ?? e)}\x1b[0m`,
+        `  \x1b[33m[mailbox] ${inboxPath} 解析失败，保留现场并停止投递：${String((e as Error)?.message ?? e)}\x1b[0m`,
       );
     }
     throw new Error("Corrupt mailbox retained; delivery stopped: " + inboxPath);
