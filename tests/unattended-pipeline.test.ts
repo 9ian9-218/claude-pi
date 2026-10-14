@@ -13,6 +13,9 @@ import { createWorkerWorkspace, finishWorkspace } from "../src/workspaces.ts";
 import { integrateTaskArtifact, preserveWorkspaceArtifact, setGitRoot } from "../src/worktree.ts";
 import { newPipeline, savePipeline, artifactKey, workspaceDigest, assertPipelineApproval, parseReview, observedTests } from "../src/pipeline-state.ts";
 import { runCodingPipeline } from "../src/pipeline.ts";
+import { SessionManager } from "../src/session-manager.ts";
+import { spawnSubagent } from "../src/tools/agent-tools.ts";
+import { listAgentRuns, clearAgentRuns } from "../src/agent-registry.ts";
 import { applyFileTransaction, rollbackFileTransaction } from "../src/file-transactions.ts";
 import { isToolBlockedByPreset } from "../src/tools/runtime.ts";
 let root: string;
@@ -114,3 +117,15 @@ describe("unattended pipeline admission", () => {
     expect(fs.existsSync(result.artifact.worktree)).toBe(true);
   }, 30000);
 });
+
+it("does not charge inherited parent history or report its cache as child usage", async () => {
+  clearAgentRuns();
+  const parent = SessionManager.create(root);
+  parent.appendMessage({ role: "user", content: "prior task" });
+  parent.appendMessage({ role: "assistant", content: "prior answer", usage: { input: 100000, output: 100000, cacheRead: 100000, cacheWrite: 0, totalTokens: 300000, cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 0, total: 3 } } });
+  final("scout result");
+  await runWithWorkdir(root, () => spawnSubagent("inspect", { role: "scout", parentSession: parent }));
+  const run = listAgentRuns().find(r => r.role === "scout")!;
+  expect(run.usage!.input).toBeLessThan(100000); expect(run.firstTurnCache!.cacheRead).toBeLessThan(100000);
+  const child = SessionManager.open(run.sessionFile!); child.close(); parent.close();
+}, 15000);
