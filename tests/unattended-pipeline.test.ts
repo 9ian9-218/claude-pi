@@ -27,8 +27,8 @@ beforeEach(async () => {
   fs.writeFileSync(path.join(root, "src/value.js"), "export function value() { return 0; }\n");
   fs.writeFileSync(path.join(root, "tests/value.test.js"), "import {test} from 'node:test'; import assert from 'node:assert/strict'; import {value} from '../src/value.js'; test('original contract',()=>assert.equal(value(),42));\n");
   git("add", "."); git("commit", "-qm", "baseline"); setGitRoot(root);
-  setSettingsOverrideForTest({ retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 }, team: { mode: "pipeline" }, memory: { enabled: false } });
   mock = await MockOpenAI.create(); installMockModels(mock.baseUrl);
+  setSettingsOverrideForTest({ retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 }, team: { mode: "pipeline" }, memory: { enabled: false } });
 });
 afterEach(async () => { resetClient(); setSettingsOverrideForTest(null); await mock.close(); fs.rmSync(root, { recursive: true, force: true }); });
 function final(text: string) { mock.push(() => ({ kind: "sse", chunks: [{ content: text, finishReason: "stop" }] })); }
