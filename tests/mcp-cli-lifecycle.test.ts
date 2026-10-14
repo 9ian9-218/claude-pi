@@ -84,7 +84,7 @@ try:
   if ready:
    try: output+=os.read(fd,65536)
    except OSError: pass
-  if not typed and '输入 /help'.encode() in output:
+  if not typed and b'\x1b[?2004h' in output and b'\x1b[?2026l' in output:
    os.write(fd,b'/quit');typed=True;echoStart=len(output)
   if typed and not sent and b'/quit' in output[echoStart:]:
    os.write(fd,b'\r');sent=True

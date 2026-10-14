@@ -23,13 +23,21 @@ try {
   const locked = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
   const unexpected = packed.files.filter(f => !f.path.startsWith('node_modules/') && /(?:\.test\.ts$|(^|\/)\.agent\/|(^|\/)tests\/|auth\.json$)/.test(f.path));
   if (unexpected.length) throw new Error(`Unexpected package files: ${unexpected.map(f => f.path).join(', ')}`);
-  const app = path.join(temp, 'app'); fs.mkdirSync(app); fs.writeFileSync(path.join(app, 'package.json'), JSON.stringify({ name: 'production-smoke', private: true, type: 'module' }));
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const app = path.join(temp, 'app'); fs.mkdirSync(app);
+  const packageSpec = 'file:../' + packed.filename;
+  const appManifest = { name: 'production-smoke', version: '1.0.0', private: true, type: 'module', dependencies: { 'claude-pi': packageSpec } };
+  fs.writeFileSync(path.join(app, 'package.json'), JSON.stringify(appManifest));
+  // A standard install lock supplies metadata already known from this build,
+  // so npm verifies and installs the tarball without discovery-only extractions.
+  const packageMetadata = { name: manifest.name, version: manifest.version, resolved: packageSpec, integrity: packed.integrity, bin: manifest.bin, engines: manifest.engines, dependencies: manifest.dependencies, bundleDependencies: Object.keys(manifest.dependencies) };
+  if (!packed.integrity) throw new Error('Packed archive has no integrity receipt');
+  fs.writeFileSync(path.join(app, 'package-lock.json'), JSON.stringify({ name: appManifest.name, version: appManifest.version, lockfileVersion: 3, requires: true, packages: { '': appManifest, 'node_modules/claude-pi': packageMetadata } }));
+
   process.stdout.write('Installing production-only package dependencies\n');
   const installLogs = path.join(temp, 'npm-logs');
-  // Supplying the name avoids Arborist extracting a local tarball just to discover it.
-  const packageSpec = 'claude-pi@file:' + path.join(temp, packed.filename);
   try {
-    await npm(['install', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--prefer-offline', '--timing', '--loglevel=verbose', '--logs-dir=' + installLogs, packageSpec], app);
+    await npm(['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--prefer-offline', '--timing', '--loglevel=verbose', '--logs-dir=' + installLogs], app);
   } catch (error) {
     if (fs.existsSync(installLogs)) for (const filename of fs.readdirSync(installLogs)) {
       if (filename.endsWith('.log') || filename.endsWith('-timing.json')) {
@@ -41,6 +49,14 @@ try {
   }
   process.stdout.write('Verifying installed dependency versions\n');
   const installedRoot = path.join(app, 'node_modules', 'claude-pi');
+  const installedManifest = JSON.parse(fs.readFileSync(path.join(installedRoot, 'package.json'), 'utf8'));
+  for (const field of ['name', 'version', 'dependencies', 'bin', 'engines']) {
+    if (JSON.stringify(installedManifest[field]) !== JSON.stringify(manifest[field])) throw new Error('Installed package metadata drift: ' + field);
+  }
+  const actualBundle = installedManifest.bundleDependencies === true ? Object.keys(installedManifest.dependencies) : installedManifest.bundleDependencies;
+  if (!Array.isArray(actualBundle) || JSON.stringify([...actualBundle].sort()) !== JSON.stringify([...packageMetadata.bundleDependencies].sort())) throw new Error('Installed bundle metadata drift');
+  const installedBin = path.join(app, 'node_modules', '.bin', process.platform === 'win32' ? 'cpi.cmd' : 'cpi');
+  if (!fs.existsSync(installedBin)) throw new Error('npm did not link the installed CLI binary');
   const requireFromPackage = createRequire(path.join(installedRoot, 'package.json'));
   for (const name of Object.keys(locked.packages[''].dependencies)) {
     const manifest = (requireFromPackage.resolve.paths(name) ?? []).map(directory => path.join(directory, name, 'package.json')).find(file => fs.existsSync(file));
@@ -68,5 +84,5 @@ try {
     child.on('error', reject); child.on('close', code => { clearTimeout(timer); if (code !== 0) reject(new Error(`Installed CLI exit ${code}: ${err.slice(0, 1000)}`)); else resolve(JSON.parse(out)); });
   });
   if (json.status !== 'success' || json.final !== 'PRODUCTION_PACK_OK') throw new Error('Installed CLI did not complete a real local mock request');
-  process.stdout.write(JSON.stringify({ status: 'success', node: process.version, platform: process.platform, version, packageFileCount: packed.files.length, excludesTestsAndCredentials: true, productionOnlyInstall: true, dependencyVersionsLocked: true, platformSpecificBundle: true, jsonRoundTrip: json.status }) + '\n');
+  process.stdout.write(JSON.stringify({ status: 'success', node: process.version, platform: process.platform, version, packageFileCount: packed.files.length, excludesTestsAndCredentials: true, productionOnlyInstall: true, dependencyVersionsLocked: true, installedBinLinked: true, platformSpecificBundle: true, jsonRoundTrip: json.status }) + '\n');
 } finally { if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } fs.rmSync(temp, { recursive: true, force: true }); }
