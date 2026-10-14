@@ -33,6 +33,7 @@ import { requestDeadline, RequestTimeout } from "./request-deadline.ts";
 export type ChatRole = "system" | "user" | "assistant" | "tool";
 
 export interface ChatMessage {
+  mailboxDelivery?: { team: string; ids: string[] };
   role: ChatRole;
   content?: string | null;
   tool_calls?: unknown[];
