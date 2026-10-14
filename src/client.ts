@@ -111,12 +111,12 @@ const ZERO_USAGE = {
 let _modelsOverride: Models | null = null;
 
 /** Conservative byte-token reservation includes system text, tools and output. */
-function reserveModelRequest(model: Model<Api>, context: Context, outputTokens: number) {
+async function reserveModelRequest(model: Model<Api>, context: Context, outputTokens: number, signal?: AbortSignal) {
   const inputTokens = Buffer.byteLength(JSON.stringify(context), "utf8") + 256;
   const costs = model.cost;
   const priceKnown = costs.input > 0 || costs.output > 0;
   const cost = priceKnown ? (inputTokens * Math.max(costs.input, costs.cacheRead, costs.cacheWrite) + outputTokens * costs.output) / 1_000_000 : null;
-  return currentBudget()?.reserveRequest(inputTokens + outputTokens, cost) ?? (() => {});
+  return (await currentBudget()?.reserveRequestAsync(inputTokens + outputTokens, cost, signal)) ?? (() => {});
 }
 
 /** 测试隔离：注入自定义 Models 集合（mock/对拍通道） */
@@ -363,7 +363,7 @@ export async function sendMessages(
 
   const budget = currentBudget();
   const combinedSignal = budget ? (signal ? AbortSignal.any([signal, budget.controller.signal]) : budget.controller.signal) : signal;
-  const settle = reserveModelRequest(model, context, maxTokens);
+  const settle = await reserveModelRequest(model, context, maxTokens, signal);
   const deadline = requestDeadline(combinedSignal);
   let partialText = "";
   try {
@@ -419,9 +419,9 @@ export async function completeTextWithUsage(
   const model = await resolveEffectiveModel();
   const context: Context = { messages: [{ role: "user", content: prompt, timestamp: Date.now() }] };
   const maxTokens = options.maxTokens ?? 200;
-  const settle = reserveModelRequest(model, context, maxTokens);
   const budgetSignal = currentBudget()?.controller.signal;
   const signal = options.signal && budgetSignal ? AbortSignal.any([options.signal, budgetSignal]) : options.signal ?? budgetSignal;
+  const settle = await reserveModelRequest(model, context, maxTokens, signal);
   const deadline = requestDeadline(signal);
   try {
     const m = await deadline.wait(models.completeSimple(model, context, { maxTokens, signal: deadline.signal }));
