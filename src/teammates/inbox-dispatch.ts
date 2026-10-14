@@ -6,6 +6,7 @@
  */
 import { readMailbox, acknowledgeMessages, type MailboxMessage } from "./mailbox.ts";
 import { formatTeammateMessages, isStructuredProtocolMessage, parseStructured } from "./message-types.ts";
+import { getLeaderName } from "./team-helpers.ts";
 import { handleShutdownRequest } from "./lifecycle.ts";
 import { maybeReinjectIdentity as reinject } from "./autonomous.ts";
 import type { ChatMessage } from "../client.ts";
@@ -32,9 +33,10 @@ export async function dispatchInboxBatch(options: {
     const text = String(entry["text"] ?? "");
     if (isStructuredProtocolMessage(text)) {
       const parsed = parseStructured(text);
-      if (parsed && parsed["type"] === "shutdown_request") {
+      if (parsed && parsed["type"] === "shutdown_request" && entry.from === getLeaderName(teamName)) {
         await handleShutdownRequest(text, agentName, teamName);
         shouldShutdown = true;
+        await acknowledgeMessages(agentName, teamName, [entry.id!]);
       }
       // permission_response 由 pollForPermissionResponse 自读自标；
       // 其它结构化消息忽略（已读标记由 poller/协议处理）
