@@ -1,11 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
-import { getWorkdir, runWithWorkdir } from "./workdir.ts";
+import { getWorkdir, getWorkspaceBinding, setWorkspaceBinding, runWithWorkdir } from "./workdir.ts";
 import { createAgentContext, getAgentContext, runWithAgentContext } from "./teammates/context.ts";
 import { integrateTaskArtifact, preserveWorkspaceArtifact, artifactIntegrated, type TaskArtifact } from "./worktree.ts";
 import { withRepositoryLock } from "./repository-lock.ts";
 import { recoverFileTransactions, rollbackFileTransaction } from "./file-transactions.ts";
-import { finishWorkspace, readWorkspaceRecord, type WorkspaceBinding } from "./workspaces.ts";
+import { finishWorkspace, readWorkspaceRecord, validateWorkspace, type WorkspaceBinding } from "./workspaces.ts";
 import { currentBudget } from "./task-budget.ts";
 import { newPipeline, savePipeline, loadPipeline, claimPipeline, ownerAlive, ownerStart, workspaceDigest, artifactKey, assertOriginalAcceptance, parseReview, observedTests, type PipelineRecord } from "./pipeline-state.ts";
 import type { SessionManager } from "./session-manager.ts";
@@ -57,9 +57,14 @@ async function verify(record: PipelineRecord, root: string, options: PipelineOpt
   const { executeToolCallResult } = await import("./tool.ts");
   const receipts: NonNullable<PipelineRecord["verification"]> = [];
   const parent = getAgentContext();
+  const binding = record.worker?.worktreePath === root ? validateWorkspace(record.worker, false) : getWorkspaceBinding();
   for (const command of record.commands) {
     cancelled(options);
-    const result = await runWithAgentContext(createAgentContext({ ...parent, role: "verifier", agentName: record.id + "-verifier", agentId: record.id + "-verifier" }), () => runWithWorkdir(root, () => executeToolCallResult({ id: record.id + "-verify-" + record.attempt + "-" + receipts.length, function: { name: "run_verification", arguments: JSON.stringify({ command: command.command, requirement: command.requirement }) } }, undefined, { session: options.session ?? undefined, signal: options.signal ?? currentBudget()?.controller.signal })));
+    const result = await runWithAgentContext(createAgentContext({ ...parent, role: "verifier", agentName: record.id + "-verifier", agentId: record.id + "-verifier" }), () => runWithWorkdir(root, () => {
+      // Keep the read-only worker binding so its trusted parent dependencies remain visible.
+      if (binding?.worktreePath === root) setWorkspaceBinding(binding);
+      return executeToolCallResult({ id: record.id + "-verify-" + record.attempt + "-" + receipts.length, function: { name: "run_verification", arguments: JSON.stringify({ command: command.command, requirement: command.requirement }) } }, undefined, { session: options.session ?? undefined, signal: options.signal ?? currentBudget()?.controller.signal });
+    }));
     const logs = result.artifactRefs?.map(file => fs.readFileSync(file, "utf8")).join("\n") ?? result.output;
     receipts.push({ command: command.command, status: result.status, exitCode: result.exitCode, tests: observedTests(logs), artifactRefs: result.artifactRefs ?? [] });
     if (result.status === "cancelled" || result.status === "budget_exceeded") cancelled(options);

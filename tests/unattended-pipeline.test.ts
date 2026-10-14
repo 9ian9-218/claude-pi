@@ -260,3 +260,28 @@ it("rejects a lead's final claim when no acceptance pipeline was executed", asyn
   expect(result.status).toBe("error"); expect(result.reason).toContain("No independently accepted pipeline");
   expect(fs.readFileSync(path.join(root, "src/value.js"), "utf8")).toContain("return 0");
 });
+
+it("runs installed dependency test binaries through a read-only candidate mount", async () => {
+  const dependency = path.join(root, "node_modules", "fixture-test-runner");
+  fs.mkdirSync(path.join(root, "node_modules", ".bin"), { recursive: true });
+  fs.mkdirSync(dependency);
+  fs.writeFileSync(path.join(dependency, "package.json"), JSON.stringify({ name: "fixture-test-runner", version: "1.0.0", type: "module" }));
+  fs.writeFileSync(path.join(dependency, "cli.js"), `#!/usr/bin/env node
+import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
+try { fs.writeFileSync(new URL('./mutated.txt', import.meta.url), 'unexpected write'); process.exit(9); }
+catch (error) { if (error.code !== 'EROFS') throw error; }
+const run = spawnSync(process.execPath, ['--test', 'tests/value.test.js'], { stdio: 'inherit' });
+process.exit(run.status ?? 1);
+`);
+  fs.chmodSync(path.join(dependency, "cli.js"), 0o755);
+  fs.symlinkSync("../fixture-test-runner/cli.js", path.join(root, "node_modules", ".bin", "fixture-test-runner"));
+  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ type: "module", scripts: { test: "fixture-test-runner" }, devDependencies: { "fixture-test-runner": "1.0.0" } }));
+  worker(); final('{"verdict":"pass","findings":[]}');
+  const result = JSON.parse(await runWithWorkdir(root, () => runCodingPipeline("return 42")));
+  expect(result.status, result.reason).toBe("completed");
+  expect(result.verification[0]).toMatchObject({ exitCode: 0, tests: 1 });
+  expect(result.postIntegrationVerification[0]).toMatchObject({ exitCode: 0, tests: 1 });
+  expect(fs.existsSync(path.join(dependency, "mutated.txt"))).toBe(false);
+  expect(fs.existsSync(path.join(result.artifact.worktree, "node_modules"))).toBe(false);
+}, 30000);
