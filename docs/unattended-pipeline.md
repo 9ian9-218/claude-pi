@@ -26,7 +26,7 @@
 
 Worker -> 冻结候选 -> Reviewer + 独立验证 -> 版本一致的准入 -> 集成 -> 集成后复验 -> completed。
 
-失败检查至多触发 maxRepairs 次修复；每次修复使旧证据失效。测试环境故障直接 blocked。产物与 worktree 保留，主工作区的冲突不会被覆盖。流水线未完成时，Lead 即使宣称完成，公共 RunResult 也返回 error，CLI 非零退出。实际业务完成仍须检查工具返回的 pipeline status=completed；一般 Agent Loop 的成功不代表任意业务正确性。
+失败检查至多触发 maxRepairs 次修复；每次修复使旧证据失效。测试环境故障直接 blocked。产物与 worktree 保留，主工作区的冲突不会被覆盖。Pipeline 的成功终态要求至少一个独立验收完成的流水线；仅分析可使用单 Agent 预设。没有执行流水线或流水线未完成时，Lead 即使宣称完成，公共 RunResult 也返回 error，CLI 非零退出。实际业务完成仍须检查工具返回的 pipeline status=completed；一般 Agent Loop 的成功不代表任意业务正确性。
 
 记录位于 .agent/pipelines/pipeline-<UUID>.json。通过 run_pipeline(goal="", pipeline_id="<ID>") 恢复；原目标与验收计划不会由恢复参数替换。仍存活的协调者不允许被接管。文件集成事务在应用前记录恢复 ID；未结束事务恢复，完成但未确认的集成重新验收，复验失败使用原检查点回退。检测到用户后续编辑时保留冲突并阻断，未知的活进程也不凭旧 PID 盲目终止。
 

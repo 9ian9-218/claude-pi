@@ -253,3 +253,10 @@ it("propagates parent cancellation to a delegated model request", async () => {
   const result = await runWithAgentContext(createAgentContext({ role: "lead", signal: controller.signal }), () => runWithWorkdir(root, () => spawnSubagent("inspect", { role: "scout" })));
   expect(result).toContain("cancelled"); expect(result).not.toBe("must not be delivered");
 }, 10000);
+
+it("rejects a lead's final claim when no acceptance pipeline was executed", async () => {
+  final("Everything is done");
+  const result = await runWithWorkdir(root, () => agentLoopDetailed([{ role: "user", content: "return 42" }]));
+  expect(result.status).toBe("error"); expect(result.reason).toContain("No independently accepted pipeline");
+  expect(fs.readFileSync(path.join(root, "src/value.js"), "utf8")).toContain("return 0");
+});

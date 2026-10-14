@@ -9,6 +9,7 @@
  * compact（04）、memory（05）、background（06）、错误恢复（03）后续接入。
  */
 import { randomUUID } from "node:crypto";
+import { getTeamMode } from "./settings.ts";
 import { triggerHooks } from "./hook.ts";
 import { LoopOptions } from "./loop-options.ts";
 import { executeToolCallResult, getOpenaiTools, type ToolCallLike } from "./tool.ts";
@@ -77,7 +78,9 @@ export async function agentLoop(
   try {
     return await runWithAgentContext(actor, () => runWithBudget(budget, () => runWithSessionWorkspace(options.session, () => runWithCurrentWorkdir(async () => { await restoreAgentWorkspace(); return agentLoopInner(messages, { ...options, onResult: result => {
       const blocked = [...budget.pipelineOutcomes].filter(([, value]) => value.status !== "completed");
-      const outcome = { ...result, ...(caller.role === "lead" && result.status === "success" && blocked.length ? { status: "error" as const, reason: "Pipeline delivery blocked: " + blocked.map(([id, value]) => id + " (" + (value.reason ?? value.status) + ")").join("; ") } : {}), budget: { usage: { ...budget.usage }, limits: budget.limits } };
+      const missingDelivery = caller.role === "lead" && original.role === "lead" && getTeamMode() === "pipeline" && budget.pipelineOutcomes.size === 0;
+      const deliveryError = blocked.length ? blocked.map(([id, value]) => id + " (" + (value.reason ?? value.status) + ")").join("; ") : missingDelivery ? "No independently accepted pipeline was executed" : undefined;
+      const outcome = { ...result, ...(caller.role === "lead" && result.status === "success" && deliveryError ? { status: "error" as const, reason: "Pipeline delivery blocked: " + deliveryError } : {}), budget: { usage: { ...budget.usage }, limits: budget.limits } };
       options.session?.appendCustom("run_end", outcome);
       options.onResult?.(outcome);
     }, loopOptions: new LoopOptions({ ...original, signal }) }); }))));
