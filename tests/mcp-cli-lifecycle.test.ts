@@ -77,20 +77,22 @@ node,tsx,entry,root=sys.argv[1:]
 pid,fd=pty.fork()
 if pid==0:
  os.chdir(root);os.execv(node,[node,tsx,entry])
-output=b'';sent=False;end=time.monotonic()+12
+output=b'';typed=False;sent=False;echoStart=0;end=time.monotonic()+12
 try:
  while time.monotonic()<end:
   ready,_,_=select.select([fd],[],[],0.05)
   if ready:
    try: output+=os.read(fd,65536)
    except OSError: pass
-  if not sent and '输入 /help'.encode() in output:
-   os.write(fd,b'/quit\r');sent=True
+  if not typed and '输入 /help'.encode() in output:
+   os.write(fd,b'/quit');typed=True;echoStart=len(output)
+  if typed and not sent and b'/quit' in output[echoStart:]:
+   os.write(fd,b'\r');sent=True
   done,status=os.waitpid(pid,os.WNOHANG)
   if done:
    print(json.dumps({'code':os.waitstatus_to_exitcode(status),'sentQuit':sent,'bytes':len(output)}));break
  else:
-  os.kill(pid,signal.SIGKILL);os.waitpid(pid,0);raise RuntimeError('TUI did not exit')
+  os.kill(pid,signal.SIGKILL);os.waitpid(pid,0);raise RuntimeError('TUI did not exit: typed='+str(typed)+' sentQuit='+str(sent)+' output='+repr(output[-4000:]))
 finally:
  os.close(fd)
 `;

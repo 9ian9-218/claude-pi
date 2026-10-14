@@ -25,6 +25,7 @@ try {
   const app = path.join(temp, 'app'); fs.mkdirSync(app); fs.writeFileSync(path.join(app, 'package.json'), JSON.stringify({ name: 'production-smoke', private: true, type: 'module' }));
   process.stdout.write('Installing production-only package dependencies\n');
   await npm(['install', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--prefer-offline', '--loglevel=verbose', path.join(temp, packed.filename)], app);
+  process.stdout.write('Verifying installed dependency versions\n');
   const installedRoot = path.join(app, 'node_modules', 'claude-pi');
   const requireFromPackage = createRequire(path.join(installedRoot, 'package.json'));
   for (const name of Object.keys(locked.packages[''].dependencies)) {
@@ -34,7 +35,10 @@ try {
     if (dependency.version !== locked.packages['node_modules/' + name].version) throw new Error('Installed dependency version drift: ' + name);
   }
   const bin = path.join(installedRoot, 'bin', 'cpi.js');
-  const version = (await exec(process.execPath, [bin, '--version'], { cwd: app })).stdout.trim();
+  process.stdout.write('Running installed CLI version probe\n');
+  const versionTask = exec(process.execPath, [bin, '--version'], { cwd: app, timeout: 30000 });
+  versionTask.child.stdin?.end();
+  const version = (await versionTask).stdout.trim();
   if (version !== JSON.parse(fs.readFileSync(path.join(root, 'package.json'))).version) throw new Error('Installed CLI version mismatch');
   server = http.createServer((req, res) => {
     req.resume(); req.on('end', () => { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end('data: ' + JSON.stringify({ choices: [{ index: 0, delta: { content: 'PRODUCTION_PACK_OK' }, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n'); });
@@ -43,6 +47,7 @@ try {
   const config = path.join(temp, 'config'); fs.mkdirSync(config);
   fs.writeFileSync(path.join(config, 'models.json'), JSON.stringify({ providers: { smoke: { baseUrl: `http://127.0.0.1:${server.address().port}/v1`, api: 'openai-completions', apiKey: 'local-test-key', compat: { supportsDeveloperRole: false }, models: [{ id: 'smoke', name: 'smoke', contextWindow: 128000, maxTokens: 8000 }] } } }));
   fs.writeFileSync(path.join(config, 'settings.json'), JSON.stringify({ defaultModel: 'smoke/smoke', retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 } }));
+  process.stdout.write('Running installed CLI request probe\n');
   const json = await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [bin, '--mode', 'json', '--no-session', 'Say production ok'], { cwd: app, env: { ...process.env, PI_CODING_AGENT_DIR: config, PI_OFFLINE: '1' }, stdio: ['pipe', 'pipe', 'pipe'] });
     let out = '', err = ''; const timer = setTimeout(() => child.kill(), 30000); child.stdout.on('data', b => out += b); child.stderr.on('data', b => err += b); child.stdin.end();
