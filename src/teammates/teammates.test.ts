@@ -15,7 +15,8 @@ import {
 } from "./mailbox.ts";
 import { createTeam, ensureTeammateForSpawn } from "./team-helpers.ts";
 import { formatTeammateMessages, isStructuredProtocolMessage } from "./message-types.ts";
-import { pollOnce, consumePendingInjections, clearPollerQueues } from "./poller.ts";
+import { SessionManager } from "../session-manager.ts";
+import { pollOnce, deliverPendingMessages, clearPollerQueues } from "./poller.ts";
 import {
   spawnTeammate,
   requestTeammateShutdown,
@@ -110,13 +111,15 @@ describe("poller（S10）", () => {
       color: "green",
     });
     await pollOnce("beta");
-    const injections = consumePendingInjections();
-    expect(injections).toHaveLength(1);
-    expect(injections[0]).toContain("<teammate-message");
-    expect(injections[0]).toContain("进度报告");
-    // 已读：再次 poll 不重复注入
-    await pollOnce("beta");
-    expect(consumePendingInjections()).toEqual([]);
+    const session = SessionManager.create(dir, path.join(dir, "sessions"));
+    const messages: import("../client.ts").ChatMessage[] = [];
+    await deliverPendingMessages(session, messages);
+    expect(messages).toHaveLength(1);
+    expect(messages[0].content).toContain("<teammate-message");
+    expect(messages[0].content).toContain("进度报告");
+    await pollOnce("beta"); await deliverPendingMessages(session, messages);
+    expect(messages).toHaveLength(1);
+    session.close();
   });
 });
 
