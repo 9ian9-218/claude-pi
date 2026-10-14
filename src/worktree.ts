@@ -158,6 +158,7 @@ export async function integrateTaskArtifact(artifact: TaskArtifact, onPrepared?:
     validateWorkspace(binding);
   }
   await withRepositoryLock(root, async () => runWithWorkdir(root, async () => {
+    if (repositoryInfo(artifact.worktree).id !== repositoryInfo(root).id) throw new Error("Artifact belongs to another repository");
     assertWorkspaceQuiescent(root);
     recoverFileTransactions(root);
     if (artifact.pipelineId || getTeamMode() === "pipeline") assertPipelineApproval(artifact);
