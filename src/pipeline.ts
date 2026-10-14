@@ -94,14 +94,22 @@ export async function runCodingPipeline(goal: string, options: PipelineOptions =
     claimed = true;
     if (record.status === "completed") return finish(record, "completed", record.reason);
     await withRepositoryLock(root, () => recoverFileTransactions(root));
+    if (record.integrationTransaction && record.status !== "integrating") {
+      await withRepositoryLock(root, () => rollbackFileTransaction(root, record.integrationTransaction!));
+      record.integrationTransaction = undefined; savePipeline(record);
+    }
     if (record.status === "integrating" && record.artifact) {
       await withRepositoryLock(root, async () => {
-        if (artifactIntegrated(record.artifact!) && workspaceDigest(root) === record.candidateDigest) {
-          const checks = await verify(record, root, options);
-          if (verificationPassed(record, checks)) { record.postIntegrationVerification = checks; finish(record, "completed", "Recovered and revalidated integration"); return; }
+        let recovered = false;
+        try {
+          if (artifactIntegrated(record.artifact!) && workspaceDigest(root) === record.candidateDigest) {
+            const checks = await verify(record, root, options);
+            if (verificationPassed(record, checks)) { record.postIntegrationVerification = checks; finish(record, "completed", "Recovered and revalidated integration"); recovered = true; }
+          }
+        } finally {
+          if (!recovered && record.integrationTransaction) rollbackFileTransaction(root, record.integrationTransaction);
         }
-        if (record.integrationTransaction) rollbackFileTransaction(root, record.integrationTransaction);
-        record.status = "checking"; savePipeline(record);
+        if (!recovered) { record.integrationTransaction = undefined; record.status = "checking"; savePipeline(record); }
       });
       if (loadPipeline(root, record.id).status === "completed") return response(record);
     }
