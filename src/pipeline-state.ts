@@ -100,8 +100,13 @@ export function parseReview(text: string): { verdict: "pass" | "block"; findings
 }
 export function observedTests(output: string): number {
   const plain = output.replace(/\x1b\[[0-9;]*m/g, "");
-  const patterns = [/# tests\s+(\d+)/g, /\bTests\s*:?\s+(\d+)\s+passed/g, /\b(\d+)\s+passed\b/g, /\bRan\s+(\d+)\s+tests?\b/g];
-  return Math.max(0, ...patterns.flatMap(pattern => [...plain.matchAll(pattern)].map(m => Number(m[1]))));
+  // Count passing cases, never TAP totals: an all-skipped suite exits zero.
+  const patterns = [/# pass\s+(\d+)/g, /\bTests\s*:?\s+(\d+)\s+passed/g, /\b(\d+)\s+passed\b/g];
+  const passed = patterns.flatMap(pattern => [...plain.matchAll(pattern)].map(m => Number(m[1])));
+  const unittest = [...plain.matchAll(/\bRan\s+(\d+)\s+tests?\b/g)].map(m => Number(m[1]));
+  const skipped = Number(plain.match(/\bskipped=(\d+)/)?.[1] ?? 0);
+  const goPassed = [...plain.matchAll(/--- PASS:/g)].length;
+  return Math.max(0, goPassed, ...passed, ...unittest.map(count => count - skipped));
 }
 export function assertPipelineApproval(artifact: TaskArtifact): void {
   if (!artifact.pipelineId) throw new Error("Pipeline integration requires version-bound review and verification evidence");
