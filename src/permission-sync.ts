@@ -224,7 +224,7 @@ export async function pollForPermissionResponse(options: {
       if (entry.read) continue;
       const parsed = parseStructured(String(entry["text"] ?? ""));
       if (!parsed || parsed["type"] !== "permission_response") continue;
-      if (parsed["request_id"] !== requestId) continue;
+      if (parsed["request_id"] !== requestId || entry.from !== getLeaderName(teamName)) continue;
       await markMessageAsReadByIndex(agentName, teamName, i);
       if (parsed["subtype"] === "success") {
         return { decision: "approved", resolvedBy: "leader" };
