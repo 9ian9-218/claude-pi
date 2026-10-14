@@ -161,6 +161,8 @@ async function agentLoopInner(
     currentBudget()?.check();
     // teammate/通知注入
     if (opts.injectLeadNotifications) {
+      const { deliverPendingMessages } = await import("./teammates/poller.ts");
+      await deliverPendingMessages(session, messages);
       // 仅 Lead 消费队友权限队列；subagent 走同步冒泡（bubbleSubagentPermission），
       // teammate 无 UI 不消费（否则 subagent 会替 Lead 弹 askUser）
       if (opts.isLeadRole) {
