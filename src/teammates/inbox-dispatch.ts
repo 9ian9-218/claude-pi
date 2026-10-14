@@ -46,9 +46,10 @@ export async function dispatchInboxBatch(options: {
   if (plain.length > 0) {
     const formatted = formatTeammateMessages(plain as Array<Record<string, unknown>>);
     if (formatted) {
-      const marker = "\n[Mailbox delivery: " + teamName + ":" + plain.map(m => m.id).join(",") + "]";
-      const message: ChatMessage = { role: "user", content: formatted + marker };
-      if (!session?.getEntries().some(e => e.type === "message" && typeof e.message.content === "string" && e.message.content.endsWith(marker))) {
+      const known = new Set(session?.getEntries().flatMap(e => e.type === "message" && e.message.mailboxDelivery?.team === teamName ? e.message.mailboxDelivery.ids : []) ?? []);
+      const fresh = plain.filter(e => !known.has(e.id!));
+      if (fresh.length) {
+        const message: ChatMessage = { role: "user", content: formatTeammateMessages(fresh as Array<Record<string, unknown>>), mailboxDelivery: { team: teamName, ids: fresh.map(e => e.id!) } };
         session?.appendMessage(message); messages.push(message);
       }
     }
