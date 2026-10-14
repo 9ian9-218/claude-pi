@@ -129,3 +129,29 @@ it("does not charge inherited parent history or report its cache as child usage"
   expect(run.usage!.input).toBeLessThan(100000); expect(run.firstTurnCache!.cacheRead).toBeLessThan(100000);
   const child = SessionManager.open(run.sessionFile!); child.close(); parent.close();
 }, 15000);
+
+it("resumes a committed integration by revalidating without repeating model work", async () => {
+  const binding = await createWorkerWorkspace(root, "recovery");
+  const record = newPipeline(root, "return 42");
+  fs.writeFileSync(path.join(binding.worktreePath, "src/value.js"), "export function value() { return 42; }\n");
+  const artifact = preserveWorkspaceArtifact(binding.worktreePath, binding.taskId, binding.baseSha, root); finishWorkspace(binding, "review"); artifact.pipelineId = record.id;
+  record.artifact = artifact; record.artifactKey = artifactKey(artifact); record.candidateDigest = workspaceDigest(binding.worktreePath); record.status = "integrating";
+  record.reviewer = { verdict: "pass", findings: [] }; record.verification = [{ command: "npm test", status: "success", exitCode: 0, tests: 1, artifactRefs: [] }];
+  record.ownerPid = 2147483647; record.ownerStart = "dead"; savePipeline(record);
+  await runWithWorkdir(root, () => integrateTaskArtifact(artifact, id => { record.integrationTransaction = id; savePipeline(record); }));
+  const result = JSON.parse(await runWithWorkdir(root, () => runCodingPipeline("", { pipelineId: record.id })));
+  expect(result.status, result.reason).toBe("completed"); expect(result.postIntegrationVerification[0].exitCode).toBe(0);
+}, 20000);
+it("rolls back when the integrated environment fails the unchanged acceptance", async () => {
+  fs.appendFileSync(path.join(root, "tests/value.test.js"), "test('root condition',()=>{ if (!process.cwd().includes('/.agent/worktrees/')) assert.equal(value(),0); });\n");
+  worker(); final('{"verdict":"pass","findings":[]}');
+  const result = JSON.parse(await runWithWorkdir(root, () => runCodingPipeline("return 42")));
+  expect(result.status, result.reason).toBe("blocked");
+  expect(result.postIntegrationVerification[0].exitCode).not.toBe(0);
+  expect(fs.readFileSync(path.join(root, "src/value.js"), "utf8")).toContain("return 0");
+}, 20000);
+it("cancels before starting model work and keeps the parent intact", async () => {
+  const controller = new AbortController(); controller.abort(new DOMException("cancelled", "AbortError"));
+  const result = JSON.parse(await runWithWorkdir(root, () => runCodingPipeline("return 42", { signal: controller.signal })));
+  expect(result.status).toBe("cancelled"); expect(fs.readFileSync(path.join(root, "src/value.js"), "utf8")).toContain("return 0");
+});
