@@ -169,7 +169,7 @@ export const PIPELINE_LEAD_FORBIDDEN = new Set(["write_file", "edit_file", "appl
 export function isToolBlockedByPreset(role: AgentRole, toolName: string): boolean {
   if (role !== "lead") return false;
   if (getTeamMode() !== "pipeline") return false;
-  return !new Set(["read_file", "grep", "glob", "repository_info", "symbol_search", "load_skill", "list_tasks", "get_task", "delegate", "run_pipeline", "integrate_task", "list_mcp_servers"]).has(toolName);
+  return !new Set(["read_file", "grep", "glob", "repository_info", "symbol_search", "load_skill", "list_tasks", "get_task", "todo_write", "delegate", "run_pipeline", "integrate_task", "list_mcp_servers"]).has(toolName);
 }
 
 /** 预设拦截时的可操作提示（告诉模型该怎么绕道，而不是只说「不行」） */
