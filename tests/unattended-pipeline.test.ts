@@ -236,7 +236,7 @@ it("blocks undeclared permissions without waiting for a human approval", async (
 
 it("cancels a pending human permission wait in free mode", async () => {
   const { checkPermissionWithBubble, setAskUserImpl, resetAskUserImpl } = await import("../src/permission-sync.ts");
-  setSettingsOverrideForTest({ team: { mode: "free" } });
+  setSettingsOverrideForTest({ retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 }, team: { mode: "free" }, memory: { enabled: false } });
   const controller = new AbortController();
   let started!: () => void;
   const waiting = new Promise<void>(resolve => { started = resolve; });
