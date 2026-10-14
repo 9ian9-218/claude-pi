@@ -23,6 +23,7 @@ export interface MailboxMessage {
 }
 
 export function sanitizePathComponent(name: string): string {
+  if (name === "." || name === "..") throw new Error("Reserved mailbox path component");
   const safe = name.replace(/[^\w\-.@]+/g, "-").trim();
   return safe || "agent";
 }
