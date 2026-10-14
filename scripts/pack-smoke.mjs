@@ -16,7 +16,8 @@ try {
   const unexpected = packed.files.filter(f => /(?:\.test\.ts$|(^|\/)\.agent\/|(^|\/)tests\/|auth\.json$)/.test(f.path));
   if (unexpected.length) throw new Error(`Unexpected package files: ${unexpected.map(f => f.path).join(', ')}`);
   const app = path.join(temp, 'app'); fs.mkdirSync(app); fs.writeFileSync(path.join(app, 'package.json'), JSON.stringify({ name: 'production-smoke', private: true, type: 'module' }));
-  await npm(['install', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', path.join(temp, packed.filename)], app);
+  process.stdout.write('Installing production-only package dependencies\n');
+  await npm(['install', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--prefer-offline', '--loglevel=verbose', path.join(temp, packed.filename)], app);
   const bin = path.join(app, 'node_modules', 'claude-pi', 'bin', 'cpi.js');
   const version = (await exec(process.execPath, [bin, '--version'], { cwd: app })).stdout.trim();
   if (version !== JSON.parse(fs.readFileSync(path.join(root, 'package.json'))).version) throw new Error('Installed CLI version mismatch');
