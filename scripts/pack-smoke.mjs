@@ -25,7 +25,20 @@ try {
   if (unexpected.length) throw new Error(`Unexpected package files: ${unexpected.map(f => f.path).join(', ')}`);
   const app = path.join(temp, 'app'); fs.mkdirSync(app); fs.writeFileSync(path.join(app, 'package.json'), JSON.stringify({ name: 'production-smoke', private: true, type: 'module' }));
   process.stdout.write('Installing production-only package dependencies\n');
-  await npm(['install', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--prefer-offline', '--loglevel=verbose', path.join(temp, packed.filename)], app);
+  const installLogs = path.join(temp, 'npm-logs');
+  // Supplying the name avoids Arborist extracting a local tarball just to discover it.
+  const packageSpec = 'claude-pi@file:' + path.join(temp, packed.filename);
+  try {
+    await npm(['install', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--prefer-offline', '--timing', '--loglevel=verbose', '--logs-dir=' + installLogs, packageSpec], app);
+  } catch (error) {
+    if (fs.existsSync(installLogs)) for (const filename of fs.readdirSync(installLogs)) {
+      if (filename.endsWith('.log') || filename.endsWith('-timing.json')) {
+        const lines = fs.readFileSync(path.join(installLogs, filename), 'utf8').split('\n');
+        process.stderr.write('npm diagnostic ' + filename + '\n' + lines.slice(-100).join('\n') + '\n');
+      }
+    }
+    throw error;
+  }
   process.stdout.write('Verifying installed dependency versions\n');
   const installedRoot = path.join(app, 'node_modules', 'claude-pi');
   const requireFromPackage = createRequire(path.join(installedRoot, 'package.json'));
