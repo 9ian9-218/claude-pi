@@ -1,5 +1,11 @@
 name: Runtime quality
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+concurrency:
+  group: runtime-quality-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
