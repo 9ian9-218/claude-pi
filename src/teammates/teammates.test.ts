@@ -294,3 +294,15 @@ describe("spawn 端到端（S10）", () => {
     );
   });
 });
+
+it("force shutdown wakes a long idle wait and releases the durable session", async () => {
+  createTeam("force", TEAM_LEAD_NAME);
+  mock.always(() => ({ kind: "sse", chunks: [{ content: "ready", finishReason: "stop" }] }));
+  spawnTeammate({ name: "cancel", role: "worker", prompt: "inspect", teamName: "force", idleTimeoutMs: 120000, idlePollIntervalMs: 60000 });
+  await vi.waitFor(() => expect(getAgentRun("cancel@force")?.phase).toBe("idle"), { timeout: 10000, interval: 25 });
+  const file = getAgentRun("cancel@force")!.sessionFile!;
+  expect(await requestTeammateShutdown("cancel", "force", true)).toContain("stopped after cancellation");
+  expect(isTeammateActive("force", "cancel")).toBe(false);
+  const restored = SessionManager.open(file);
+  expect(restored.isConcurrent()).toBe(false); restored.close();
+}, 15000);
