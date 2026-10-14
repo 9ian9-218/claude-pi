@@ -2,8 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { getWorkdir, runWithWorkdir } from "./workdir.ts";
 import { createAgentContext, getAgentContext, runWithAgentContext } from "./teammates/context.ts";
-import { spawnSubagent } from "./tools/agent-tools.ts";
-import { executeToolCallResult } from "./tools/runtime.ts";
 import { integrateTaskArtifact, preserveWorkspaceArtifact, artifactIntegrated, type TaskArtifact } from "./worktree.ts";
 import { withRepositoryLock } from "./repository-lock.ts";
 import { recoverFileTransactions, rollbackFileTransaction } from "./file-transactions.ts";
@@ -53,6 +51,7 @@ async function recoverWorker(record: PipelineRecord): Promise<void> {
   });
 }
 async function verify(record: PipelineRecord, root: string, options: PipelineOptions): Promise<NonNullable<PipelineRecord["verification"]>> {
+  const { executeToolCallResult } = await import("./tools/runtime.ts");
   const receipts: NonNullable<PipelineRecord["verification"]> = [];
   const parent = getAgentContext();
   for (const command of record.commands) {
@@ -70,6 +69,7 @@ function verificationPassed(record: PipelineRecord, receipts: NonNullable<Pipeli
 }
 
 export async function runCodingPipeline(goal: string, options: PipelineOptions = {}): Promise<string> {
+  const { spawnSubagent } = await import("./tools/agent-tools.ts");
   const root = getWorkdir();
   const record = options.pipelineId ? loadPipeline(root, options.pipelineId) : newPipeline(root, goal);
   if (record.status === "completed") return response(record);
