@@ -2,6 +2,8 @@
  * agent-tools.ts — subagent_task / 队友工具（从 tool.ts 拆出）
  */
 import { randomBytes } from "node:crypto";
+import { getTeamMode } from "../settings.ts";
+import type { TaskArtifact } from "../worktree.ts";
 import type { ChatMessage } from "../client.ts";
 import { SUBAGENT_STOPPED_MESSAGE, getRoleIdentity } from "../prompt.ts";
 import {
@@ -69,6 +71,11 @@ export interface SpawnSubagentOptions {
   parentSession?: SessionManager | null;
   /** 父 UI 通道：有 UI 时不再往 stdout 打日志（改由 AgentPanel 展示） */
   parentUiEvents?: UiEventSink;
+  workspace?: string;
+  runId?: string;
+  deferIntegration?: boolean;
+  onWorkspace?: (binding: WorkspaceBinding) => void;
+  onArtifact?: (artifact: TaskArtifact) => void;
 }
 
 /** 无 UI 时的日志回退（TUI 下由折叠面板承载，避免污染 pi-tui 渲染） */
@@ -86,12 +93,12 @@ export async function spawnSubagent(
 ): Promise<string> {
   const { agentLoopDetailed } = await import("../agent-loop.ts");
   const role: AgentRole = options.role ?? "subagent";
-  const subId = `${role}-${randomBytes(4).toString("hex")}`;
+  const subId = options.runId ?? `${role}-${randomBytes(4).toString("hex")}`;
   const goal = description.trim();
   const parentSession = options.parentSession ?? null;
   const parentFile = parentSession?.getSessionFile() ?? null;
-  const parentPath = getWorkdir();
-  const parentBinding = getWorkspaceBinding();
+  const parentPath = options.workspace ?? getWorkdir();
+  const parentBinding = options.workspace ? undefined : getWorkspaceBinding();
   let owned: WorkspaceBinding | undefined;
   if (role === "worker" || role === "subagent") {
     try { owned = await createWorkerWorkspace(parentPath, subId); }
@@ -99,6 +106,7 @@ export async function spawnSubagent(
   }
   const workspace = owned?.worktreePath ?? parentPath;
   try {
+  if (owned) options.onWorkspace?.(owned);
 
   // 子会话落盘：
   //  - 有父会话 → fork 父分支（system / 工具面 / 历史前缀与父一致 → prompt cache 命中）
@@ -114,6 +122,7 @@ export async function spawnSubagent(
       childSession = SessionManager.createChild(workspace, null, sessionName);
     }
   } catch (err) {
+    if (owned) throw new Error("Writable agent requires a durable session: " + String(err));
     childSession = null;
     logIfNoUi(options.parentUiEvents, `  \x1b[31m[${role}] 子会话创建失败：${String(err)}\x1b[0m`);
   }
@@ -177,6 +186,8 @@ export async function spawnSubagent(
     childSession?.appendMessage({ role: "user", content: initialUserPrompt });
   }
 
+  const inheritedEntryCount = childSession?.getEntries().length ?? 0;
+
   // 子 agent 的 UI 事件只喂注册表（父面板折叠展示），不进父聊天区
   const agentSink = new UiEventSink();
   let turns = 0;
@@ -194,10 +205,10 @@ export async function spawnSubagent(
   const refreshUsage = () => {
     if (!childSession) return;
     const patch: Parameters<typeof updateAgentRun>[1] = {
-      usage: { ...computeUsageTotals(childSession.getEntries()) },
+      usage: { ...computeUsageTotals(childSession.getEntries().slice(inheritedEntryCount)) },
     };
     // 首轮缓存读写：cacheRead > 0 ⇒ 命中了父会话前缀（fork 生效的现场证据）
-    const firstAssistant = childSession.getEntries().find((entry) => {
+    const firstAssistant = childSession.getEntries().slice(inheritedEntryCount).find((entry) => {
       if (entry.type !== "message") return false;
       const message = entry.message as { role?: string; usage?: { cacheRead?: number; cacheWrite?: number } };
       return message.role === "assistant" && message.usage !== undefined;
@@ -248,12 +259,15 @@ export async function spawnSubagent(
       await withRepositoryLock(parentPath, async () => {
         const artifact = preserveWorkspaceArtifact(owned!.worktreePath, owned!.taskId, owned!.baseSha, parentPath);
         finishWorkspace(owned!, "review");
-        if (result.status === "success" && result.final) {
+        options.onArtifact?.(artifact);
+        let integrated = false;
+        if (result.status === "success" && result.final && !options.deferIntegration && getTeamMode() !== "pipeline") {
           if (parentBinding) validateWorkspace(parentBinding);
           await integrateTaskArtifact(artifact);
           finishWorkspace(owned!, "closed");
+          integrated = true;
         }
-        parentSession?.appendCustom("worker_artifact", { agentId: subId, artifact, integrated: result.status === "success" });
+        parentSession?.appendCustom("worker_artifact", { agentId: subId, artifact, integrated });
       });
     }
     if (result.status === "success" && result.final) {
@@ -288,6 +302,7 @@ export async function spawnSubagent(
       await withRepositoryLock(parentPath, () => {
         const artifact = preserveWorkspaceArtifact(owned!.worktreePath, owned!.taskId, owned!.baseSha, parentPath);
         finishWorkspace(owned!, "review");
+        options.onArtifact?.(artifact);
         parentSession?.appendCustom("worker_artifact", { agentId: subId, artifact, integrated: false });
       });
     }
@@ -335,6 +350,9 @@ export const SUBAGENT_TASK_TOOL = buildTool({
 function execDelegateTask(args: Record<string, unknown>, ctx?: ToolExecContext): Promise<string> {
   const role = String(args["role"]) as AgentRole;
   const task = String(args["task"]);
+  if (getTeamMode() === "pipeline" && role === "worker") {
+    return import("../pipeline.ts").then(({ runCodingPipeline }) => runCodingPipeline(task, { session: ctx?.session, uiEvents: ctx?.uiEvents, signal: ctx?.signal }));
+  }
   const context = args["context"] ? String(args["context"]) : undefined;
   return spawnSubagent(task, {
     role,
@@ -574,3 +592,14 @@ export const SHUTDOWN_TEAMMATE_TOOL = buildTool({
 });
 
 // ── 注册表与对外 API ──────────────────────────────────────────────────────
+
+export const RUN_PIPELINE_TOOL = buildTool({
+  name: "run_pipeline",
+  description: "Implement and independently review/verify a frozen candidate before integration. Failed checks trigger bounded repairs. Resume a durable run by pipeline_id. Acceptance comes from the original repository or user-controlled .agent/pipeline.json, not model-selected tests.",
+  parameters: { type: "object", properties: { goal: { type: "string" }, pipeline_id: { type: "string" } }, required: ["goal"], additionalProperties: false },
+  execute: async (args, ctx) => {
+    const { runCodingPipeline } = await import("../pipeline.ts");
+    return runCodingPipeline(String(args.goal), { session: ctx?.session, uiEvents: ctx?.uiEvents, signal: ctx?.signal, pipelineId: args.pipeline_id ? String(args.pipeline_id) : undefined });
+  },
+  isReadOnly: false,
+});
