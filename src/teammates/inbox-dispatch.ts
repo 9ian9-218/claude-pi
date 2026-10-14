@@ -4,7 +4,7 @@
  * 读队友邮箱 → 注入 messages；shutdown_request 走 lifecycle 应答。
  * 有新消息时 resumeWork=true（autonomous idle 据此回到 WORK）。
  */
-import { readMailbox, markMessagesAsRead, type MailboxMessage } from "./mailbox.ts";
+import { readMailbox, acknowledgeMessages, type MailboxMessage } from "./mailbox.ts";
 import { formatTeammateMessages, isStructuredProtocolMessage, parseStructured } from "./message-types.ts";
 import { handleShutdownRequest } from "./lifecycle.ts";
 import { maybeReinjectIdentity as reinject } from "./autonomous.ts";
@@ -47,7 +47,7 @@ export async function dispatchInboxBatch(options: {
     if (formatted) {
       messages.push({ role: "user", content: formatted });
     }
-    await markMessagesAsRead(agentName, teamName);
+    await acknowledgeMessages(agentName, teamName, plain.map(message => message.id!));
   }
 
   return { shouldShutdown, resumeWork: plain.length > 0, injected: plain.length };
