@@ -5,12 +5,13 @@
  * permission/plan 归 11），普通消息包装为 <teammate-message> 注入队列。
  */
 import { LEAD_INBOX_POLL_INTERVAL } from "./constants.ts";
-import { readMailbox, markMessageAsReadByIndex, type MailboxMessage } from "./mailbox.ts";
+import { readMailbox, acknowledgeMessages, markMessageAsReadByIndex, type MailboxMessage } from "./mailbox.ts";
 import { formatTeammateMessages, isStructuredProtocolMessage, parseStructured } from "./message-types.ts";
 import { getLeaderName } from "./team-helpers.ts";
 
 // 注入队列（agent_loop 每轮消费）
 let pendingInjections: string[] = [];
+let pendingDeliveries: Array<{ content: string; ids: string[]; team: string; lead: string }> = [];
 let pendingIdleNotifications: Record<string, unknown>[] = [];
 let pendingPermissionRequests: Array<{
   entry: Record<string, unknown>;
@@ -33,6 +34,7 @@ export function consumePendingIdleNotifications(): Record<string, unknown>[] {
 /** 测试隔离 */
 export function clearPollerQueues(): void {
   pendingInjections = [];
+  pendingDeliveries = [];
   pendingIdleNotifications = [];
   pendingPermissionRequests = [];
 }
@@ -133,14 +135,29 @@ export async function pollOnce(teamName: string): Promise<void> {
 
     if (plainBatch.length > 0) {
       const formatted = formatTeammateMessages(plainBatch as Array<Record<string, unknown>>);
-      if (formatted) pendingInjections.push(formatted);
-      for (let i = 0; i < mailbox.length; i++) {
-        if (plainBatch.includes(mailbox[i])) {
-          await markMessageAsReadByIndex(leadName, teamName, i);
-        }
+      const ids = plainBatch.map(message => message.id!);
+      if (formatted && !pendingDeliveries.some(d => d.team === teamName && d.ids.join(",") === ids.join(","))) {
+        pendingDeliveries.push({ content: formatted, ids, team: teamName, lead: leadName });
       }
     }
   } catch (e) {
     console.log(`  \x1b[31m[poller] error: ${String(e)}\x1b[0m`);
+  }
+}
+
+/** Persist a delivery in the session before ACK. Replayed IDs never cause a second injection. */
+export async function deliverPendingMessages(session: import("../session-manager.ts").SessionManager | undefined, messages: import("../client.ts").ChatMessage[]): Promise<void> {
+  const deliveries = pendingDeliveries;
+  pendingDeliveries = [];
+  for (const delivery of deliveries) {
+    const marker = "\n[Mailbox delivery: " + delivery.team + ":" + delivery.ids.join(",") + "]";
+    const content = delivery.content + marker;
+    const already = session?.getEntries().some(e => e.type === "message" && typeof e.message.content === "string" && e.message.content.endsWith(marker));
+    if (!already) {
+      const message: import("../client.ts").ChatMessage = { role: "user", content };
+      session?.appendMessage(message);
+      messages.push(message);
+    }
+    await acknowledgeMessages(delivery.lead, delivery.team, delivery.ids);
   }
 }
