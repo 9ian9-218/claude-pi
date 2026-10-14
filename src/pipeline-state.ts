@@ -100,8 +100,11 @@ export function parseReview(text: string): { verdict: "pass" | "block"; findings
 }
 export function observedTests(output: string): number {
   const plain = output.replace(/\x1b\[[0-9;]*m/g, "");
-  // Count passing cases, never TAP totals: an all-skipped suite exits zero.
-  const patterns = [/# pass\s+(\d+)/g, /\bTests\s*:?\s+(\d+)\s+passed/g, /\b(\d+)\s+passed\b/g];
+  // Prefer the runner's final TAP summary over incidental output/test names.
+  const tap = [...plain.matchAll(/^# pass\s+(\d+)\s*$/gm)];
+  if (tap.length) return Number(tap.at(-1)![1]);
+  // Count passing cases, never test totals: an all-skipped suite exits zero.
+  const patterns = [ /\bTests\s*:?\s+(\d+)\s+passed/g, /\b(\d+)\s+passed\b/g];
   const passed = patterns.flatMap(pattern => [...plain.matchAll(pattern)].map(m => Number(m[1])));
   const unittest = [...plain.matchAll(/\bRan\s+(\d+)\s+tests?\b/g)].map(m => Number(m[1]));
   const skipped = Number(plain.match(/\bskipped=(\d+)/)?.[1] ?? 0);
