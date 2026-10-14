@@ -20,8 +20,9 @@ export async function dispatchInboxBatch(options: {
   agentName: string;
   teamName: string;
   messages: ChatMessage[];
+  session?: import("../session-manager.ts").SessionManager;
 }): Promise<DispatchResult> {
-  const { agentName, teamName, messages } = options;
+  const { agentName, teamName, messages, session } = options;
   const mailbox = readMailbox(agentName, teamName);
   const plain: MailboxMessage[] = [];
   let shouldShutdown = false;
@@ -45,7 +46,11 @@ export async function dispatchInboxBatch(options: {
   if (plain.length > 0) {
     const formatted = formatTeammateMessages(plain as Array<Record<string, unknown>>);
     if (formatted) {
-      messages.push({ role: "user", content: formatted });
+      const marker = "\n[Mailbox delivery: " + teamName + ":" + plain.map(m => m.id).join(",") + "]";
+      const message: ChatMessage = { role: "user", content: formatted + marker };
+      if (!session?.getEntries().some(e => e.type === "message" && typeof e.message.content === "string" && e.message.content.endsWith(marker))) {
+        session?.appendMessage(message); messages.push(message);
+      }
     }
     await acknowledgeMessages(agentName, teamName, plain.map(message => message.id!));
   }
