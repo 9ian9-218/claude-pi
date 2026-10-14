@@ -22,7 +22,7 @@ export function ownerStart(pid = process.pid): string {
   try { return fs.readFileSync("/proc/" + pid + "/stat", "utf8").split(") ")[1].split(" ")[19]; } catch { return "unknown"; }
 }
 export function ownerAlive(record: Pick<PipelineRecord, "ownerPid" | "ownerStart">): boolean {
-  try { process.kill(record.ownerPid, 0); return record.ownerStart === "unknown" || ownerStart(record.ownerPid) === record.ownerStart; } catch { return false; }
+  try { process.kill(record.ownerPid, 0); return record.ownerStart === "unknown" || ownerStart(record.ownerPid) === record.ownerStart; } catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
 }
 export function sourceFiles(root: string): string[] {
   return [...new Set(repositoryGit(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"]).split("\0"))]
