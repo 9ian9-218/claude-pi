@@ -14,7 +14,7 @@ import { integrateTaskArtifact, preserveWorkspaceArtifact, setGitRoot } from "..
 import { newPipeline, savePipeline, artifactKey, workspaceDigest, assertPipelineApproval, parseReview, observedTests } from "../src/pipeline-state.ts";
 import { runCodingPipeline } from "../src/pipeline.ts";
 import { SessionManager } from "../src/session-manager.ts";
-import { spawnSubagent } from "../src/tools/agent-tools.ts";
+import { spawnSubagent } from "../src/tool.ts";
 import { listAgentRuns, clearAgentRuns } from "../src/agent-registry.ts";
 import { applyFileTransaction, rollbackFileTransaction } from "../src/file-transactions.ts";
 import { isToolBlockedByPreset } from "../src/tools/runtime.ts";
