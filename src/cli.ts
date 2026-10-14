@@ -17,6 +17,7 @@ import { triggerHooks } from "./hook.ts";
 import type { ChatMessage } from "./client.ts";
 import { UiEventSink } from "./ui-events.ts";
 import { SessionManager } from "./session-manager.ts";
+import { forkSession, runWithSessionWorkspace } from "./session-fork.ts";
 import { TuiApp } from "./tui/app.ts";
 import { handleSessionCommand } from "./tui/session-commands.ts";
 import { setTuiApp } from "./tui/ui-provider.ts";
@@ -133,7 +134,8 @@ async function runRepl(initialSession: SessionManager | null, signal: AbortSigna
     let query = line;
     if (["/new", "/n"].includes(query.trim().toLowerCase())) {
       // 开新会话文件（对齐 /new 语义变化：ADR-0003）
-      session = SessionManager.create(process.cwd());
+      const next = SessionManager.create(process.cwd());
+      session?.close(); session = next;
       console.log("=".repeat(50));
       process.stdout.write(USER_PROMPT);
       continue;
@@ -193,7 +195,7 @@ function finalContent(messages: ChatMessage[]): string | null {
 }
 
 /** 带值的 flag：其后的值不是提示词（否则 `--mode json` 会把 "json" 当成用户输入） */
-const VALUE_FLAGS = new Set(["--mode", "--session", "--fork", "-e", "--extension"]);
+const VALUE_FLAGS = new Set(["--mode", "--session", "--fork", "--fork-entry", "--fork-position", "--fork-workspace", "-e", "--extension"]);
 
 /** 提取位置参数作为提示词（跳过 flag 及其值） */
 function positionals(args: string[]): string[] {
@@ -222,7 +224,7 @@ async function runSingleTurn(args: string[], mode: "print" | "json", lifetimeSig
     return;
   }
   {
-    const session = pickSession(args);
+    const session = await pickSession(args);
 
     if (session) {
       const result = await runQueryDetailed(query, { session, signal: lifetimeSignal, quietOutput: true, runHooks: false });
@@ -249,24 +251,40 @@ function emitSingleTurn(messages: ChatMessage[], mode: "print" | "json", result:
   }
 }
 
-function pickSession(args: string[]): SessionManager | null {
+async function pickSession(args: string[]): Promise<SessionManager | null> {
   const cwd = process.cwd();
   const idx = (flag: string) => {
     const i = args.indexOf(flag);
     return i >= 0 && i + 1 < args.length ? args[i + 1] : null;
   };
   if (args.includes("--no-session")) return null;
+  if (args.includes("--session") && args.includes("--fork")) throw new Error("Choose --session or --fork");
+  const position = idx("--fork-position") ?? "after";
+  const workspaceArg = idx("--fork-workspace");
+  if (position !== "before" && position !== "after") throw new Error("--fork-position must be before or after");
+  if (workspaceArg && workspaceArg !== "shared" && workspaceArg !== "isolated") throw new Error("--fork-workspace must be shared or isolated");
+  const workspace = workspaceArg === "isolated" ? "isolated" : workspaceArg === "shared" ? "shared" : undefined;
+  for (const flag of ["--fork-entry", "--fork-position", "--fork-workspace"]) {
+    if (args.includes(flag) && (!args.includes("--fork") || !idx(flag) || idx(flag)!.startsWith("--"))) throw new Error(`${flag} requires --fork and a value`);
+  }
+  const fork = async (file: string) => {
+    const source = SessionManager.open(file);
+    try { return await forkSession(source, { cwd, entryId: idx("--fork-entry") ?? undefined, position, workspace }); }
+    finally { source.close(); }
+  };
   const sessionArg = idx("--session") ?? idx("--fork");
   if (sessionArg) {
     // 支持 id（最近列表匹配）或路径
     const byPath = fs.existsSync(sessionArg) ? sessionArg : null;
     if (byPath) {
-      return args.includes("--fork") ? SessionManager.forkFrom(byPath, cwd) : SessionManager.open(byPath);
+      return args.includes("--fork") ? fork(byPath) : SessionManager.open(byPath);
     }
     const list = SessionManager.list(cwd);
-    const match = list.find((s) => s.id.startsWith(sessionArg));
+    const matches = list.filter((s) => s.id.startsWith(sessionArg));
+    if (matches.length > 1) throw new Error(`Ambiguous session ID: ${sessionArg}`);
+    const match = matches[0];
     if (match) {
-      return args.includes("--fork") ? SessionManager.forkFrom(match.path, cwd) : SessionManager.open(match.path);
+      return args.includes("--fork") ? fork(match.path) : SessionManager.open(match.path);
     }
     console.error(`Error: session not found: ${sessionArg}`);
     throw new Error(`Session not found: ${sessionArg}`);
@@ -299,7 +317,8 @@ async function runTui(
     terminal: new ProcessTerminal(),
     initialText: "claude-pi — 输入 /help 查看命令\n\n",
     onNewSession: () => {
-      sessionRef.current = SessionManager.create(process.cwd());
+      const next = SessionManager.create(process.cwd());
+      sessionRef.current?.close(); sessionRef.current = next;
     },
     onSessionCommand: (name, rest, a) => handleSessionCommand(a, sessionRef, name, rest),
     onReload: () => {
@@ -313,7 +332,7 @@ async function runTui(
     onThinkingChange: (level) => {
       sessionRef.current?.appendThinkingChange(level);
     },
-    statusText: () => `${currentModelLabel()}${thinkingLabel()} | ${process.cwd()}`,
+    statusText: () => `${currentModelLabel()}${thinkingLabel()} | ${sessionRef.current?.getHeader().cwd ?? process.cwd()}`,
     // footer 统计：渲染时现算（数据在会话 entry 上，零状态）
     footerStats: () => {
       const session = sessionRef.current;
@@ -337,11 +356,11 @@ async function runTui(
         ...(fleet.count > 0
           ? { agents: { count: fleet.count, running: fleet.running, usage: fleet.usage } }
           : {}),
-        branch: getGitBranch(process.cwd()),
+        branch: getGitBranch(sessionRef.current?.getHeader().cwd ?? process.cwd()),
       };
     },
     onQuery: async (query) => {
-      await triggerHooks("UserPromptSubmit", query);
+      await runWithSessionWorkspace(sessionRef.current, () => triggerHooks("UserPromptSubmit", query));
       const session = sessionRef.current;
       // 08：Esc 可中断回合（controller 由 handleSubmit 创建）
       const turnSignal = app.getTurnSignal();
@@ -518,7 +537,7 @@ async function main(): Promise<void> {
 
     initLeadTeam();
 
-    const session = pickSession(args);
+    const session = await pickSession(args);
     const sessionRef: { current: SessionManager | null } = { current: session };
     const extManager = createExtensionManager(sessionRef);
     void extManager.load(cliExtensionPaths(args));

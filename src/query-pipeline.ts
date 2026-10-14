@@ -15,6 +15,7 @@ import type { SessionManager } from "./session-manager.ts";
 import type { UiEventSink } from "./ui-events.ts";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ChatMessage } from "./client.ts";
+import { runWithSessionWorkspace } from "./session-fork.ts";
 
 export interface QueryTurnOptions {
   /** 会话树；null/缺省 = 无落盘的内存 turn */
@@ -50,6 +51,10 @@ export async function runQuery(
 }
 
 export async function runQueryDetailed(query: string, opts: QueryTurnOptions = {}): Promise<RunResult> {
+  return runWithSessionWorkspace(opts.session, () => runQueryInWorkspace(query, opts));
+}
+
+async function runQueryInWorkspace(query: string, opts: QueryTurnOptions): Promise<RunResult> {
   if (opts.runHooks !== false) {
     await triggerHooks("UserPromptSubmit", query);
     void triggerHooks("user_prompt_submit", query);

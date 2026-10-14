@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -60,6 +60,57 @@ function makeApp(session: SessionManager | null, sessionRef: { current: SessionM
 const nextTick = () => new Promise<void>((r) => setTimeout(r, 10));
 
 describe("会话命令（S15b）", () => {
+  it("does not accept a new query while an async session command is pending", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const query = vi.fn();
+    const app = new TuiApp({ terminal: new FakeTerminal(), onQuery: query, onSessionCommand: () => pending });
+    app.editor.onSubmit?.("/clone --isolated");
+    app.editor.onSubmit?.("must wait");
+    expect(query).not.toHaveBeenCalled();
+    release(); await nextTick();
+    app.editor.onSubmit?.("now ready"); await nextTick();
+    expect(query).toHaveBeenCalledWith("now ready");
+    app.stop();
+  });
+  it("/tree includes inactive siblings and can navigate to an assistant node", async () => {
+    const session = SessionManager.create(cwd);
+    const root = session.appendMessage({ role: "user", content: "question" });
+    const old = session.appendMessage({ role: "assistant", content: "old path" });
+    session.branch(root); session.appendMessage({ role: "assistant", content: "new path" });
+    const ref = { current: session }, app = makeApp(session, ref);
+    const select = vi.spyOn(app, "showSelector").mockResolvedValue({ value: old, label: "old path" });
+    await handleSessionCommand(app, ref, "tree", "");
+    expect(select.mock.calls[0][0].map(item => item.value)).toContain(old);
+    expect(session.getLeafId()).toBe(old);
+    expect(app.getChatText()).toContain("old path"); expect(app.getChatText()).not.toContain("new path");
+    expect(SessionManager.open(session.getSessionFile()!).getLeafId()).toBe(old);
+  });
+  it("/fork accepts an inactive node and --after, while user defaults to --before", async () => {
+    const session = SessionManager.create(cwd);
+    const root = session.appendMessage({ role: "user", content: "edit prompt" });
+    const old = session.appendMessage({ role: "assistant", content: "old path" });
+    session.branch(root); session.appendMessage({ role: "assistant", content: "new path" });
+    const ref = { current: session }, app = makeApp(session, ref);
+    await handleSessionCommand(app, ref, "fork", `${old} --after`);
+    expect(ref.current!.buildSessionContext().messages.at(-1)?.content).toBe("old path");
+    ref.current = session;
+    await handleSessionCommand(app, ref, "fork", root);
+    expect(ref.current!.buildSessionContext().messages).toEqual([]);
+    expect(app.editor.getText()).toBe("edit prompt");
+    expect(session.buildSessionContext().messages.at(-1)?.content).toBe("new path");
+  });
+  it("/tree restores model and thinking settings from the selected branch", async () => {
+    const session = SessionManager.create(cwd);
+    session.appendModelChange("test", "model-a"); session.appendThinkingChange("high");
+    const old = session.appendMessage({ role: "assistant", content: "old path" });
+    session.appendModelChange("test", "model-b"); session.appendThinkingChange("low");
+    const ref = { current: session }, app = makeApp(session, ref);
+    const model = vi.spyOn(app, "restoreModel").mockResolvedValue(true);
+    const thinking = vi.spyOn(app, "restoreThinkingLevel").mockResolvedValue(true);
+    await handleSessionCommand(app, ref, "tree", old);
+    expect(model).toHaveBeenCalledWith("test/model-a"); expect(thinking).toHaveBeenCalledWith("high");
+  });
   it("/session 显示会话信息", async () => {
     const session = SessionManager.create(cwd);
     session.appendMessage({ role: "user", content: "你好" });
@@ -100,12 +151,10 @@ describe("会话命令（S15b）", () => {
     s1.appendMessage({ role: "user", content: "第一个会话" });
     const ref = { current: s1 };
     const app = makeApp(s1, ref);
-    // 选择器取消 → 不切换
-    const before = ref.current;
+    vi.spyOn(app, "showSelector").mockResolvedValue(null);
     await handleSessionCommand(app, ref, "resume", "");
-    // showSelector 挂起等输入——需要先发取消键？测试直接取消：handleSessionCommand 内 await showSelector
-    // 简化：验证选择器已显示（overlay 文本不可直接断言），用超时保护
-    void before;
+    expect(ref.current).toBe(s1);
+    expect(app.getChatText()).toContain("已取消");
   });
 
   it("/tree 未知命令提示", async () => {
@@ -196,7 +245,7 @@ describe("会话命令：/compact（手动压缩）", () => {
 });
 
 describe("会话命令键盘驱动（S15b）", () => {
-  it("/tree 选择节点分支并生成 branch_summary", async () => {
+  it("/tree 选择 user 节点回到消息之前并填充编辑器", async () => {
     const session = SessionManager.create(cwd);
     const m1 = session.appendMessage({ role: "user", content: "问题" });
     session.appendMessage({ role: "assistant", content: "路径A" });
@@ -213,14 +262,11 @@ describe("会话命令键盘驱动（S15b）", () => {
     // SelectList 默认选中第一条（根 user 消息）→ 回车
     term.onInput?.("\r");
     await new Promise((r) => setTimeout(r, 100));
-    // branch 后 leaf 是 branch_summary entry（其 parentId 指向所选节点）
-    const summary = session.getEntries().find((e) => e.type === "branch_summary");
-    expect(summary).toBeDefined();
-    expect(summary!.parentId).toBe(m1);
-    // 分支后上下文从 m1 重建
-    const ctx = session.buildSessionContext();
-    expect(ctx.messages.map((x) => String(x.content))).toContain("问题");
-    expect(ctx.messages.map((x) => String(x.content))).not.toContain("路径A");
+    expect(session.getLeafId()).toBeNull();
+    expect(session.getEntries().some(e => e.type === "branch_summary")).toBe(false);
+    expect(session.getEntry(m1)).not.toBeNull();
+    expect(session.buildSessionContext().messages).toEqual([]);
+    expect(app.editor.getText()).toBe("问题");
     app.stop();
   });
 

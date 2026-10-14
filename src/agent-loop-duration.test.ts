@@ -110,6 +110,7 @@ describe("agentLoop 耗时补记", () => {
     }));
 
     await runWithWorkdir(ws, async () => {
+      fs.mkdirSync(path.join(ws, "proj"), { recursive: true });
       const session = SessionManager.create(path.join(ws, "proj"));
       const messages: ChatMessage[] = [{ role: "user", content: "hi" }];
       await agentLoop(messages, { session, loopOptions: quiet });

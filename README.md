@@ -101,11 +101,14 @@ cpi                   # 交互模式（TTY 自动进入 TUI；管道/非 TTY 走
 | `cpi -c` | 继续最近会话（默认行为） |
 | `cpi --session <id>` | 恢复指定会话 |
 | `cpi --fork <id>` | fork 会话到新文件 |
+| `cpi --fork <id> --fork-entry <node> --fork-position before --fork-workspace isolated` | 从历史节点之前分叉，并创建独立 worktree |
 | `cpi --no-session` | 临时会话（不落盘） |
 | cpi --refresh-models | 刷新远端模型目录（新模型/新价格；--force 跳过节流） |
 | cpi --team-mode <mode> | 指定多代理协同模式（pipeline 研发预设 / ree 自由组队） |
 
 TUI 内可用斜杠命令：`/tree`（会话树）、`/fork`、`/clone`、`/resume`、`/new`、`/name`、`/session`、`/export`（导出轨迹）、`/import`（导入会话）、`/compact`（手动压缩上下文）、`/settings`（设置）、`/team-mode`（切换协同模式）、`/agents`（子 agent 状态与子会话）、`/refresh-models`（刷新模型目录）、`/login`、`/logout`、`/model`、`/reload`（扩展热重载）等，可扩展注册。
+
+`/tree` 和 `/fork` 展示完整历史树。选择 user 节点默认回到消息之前并填回编辑器；`/fork --isolated`、`/clone --isolated` 创建独立工作区。完整参数、持久化和恢复边界见 [会话分叉](docs/session-forks.md)。
 
 ## 模型目录自动更新
 

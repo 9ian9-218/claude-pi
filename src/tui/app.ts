@@ -553,7 +553,11 @@ export class TuiApp {
     const trimmed = value.trim();
     this.editor.setText("");
     if (trimmed.startsWith("/")) {
-      await this.handleCommand(trimmed);
+      // Async session commands (summaries/worktree creation) must finish before
+      // another submission can mutate the session or its files.
+      this.turns.setBusy(true); this.updateStatus();
+      try { await this.handleCommand(trimmed); }
+      finally { this.turns.setBusy(false); this.updateStatus(); }
       return;
     }
     if (!trimmed) return;

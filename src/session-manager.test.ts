@@ -241,7 +241,9 @@ describe("closeOpenTurns（恢复期未闭合回合裁剪）", () => {
     const msgs = [u("go"), assistantT(null, ["c1"]), u("interrupt")];
     const out = closeOpenTurns(msgs);
     expect(out).toHaveLength(3);
-    expect(String(out[2].content)).toContain("工具调用未完成");
+    expect(String(out[1].content)).toContain("工具调用未完成");
+    expect(out[1].tool_calls).toBeUndefined();
+    expect(out[2]).toEqual(u("interrupt"));
   });
 
   it("多轮工具循环全部闭合时原样保留（含交错文本轮）", () => {

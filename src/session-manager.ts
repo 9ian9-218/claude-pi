@@ -26,6 +26,13 @@ export interface SessionHeader {
   timestamp: string;
   cwd: string;
   parentSession?: string;
+  /** Durable navigation cursor; absent in older files = last valid entry. */
+  activeLeafId?: string | null;
+  cursorEntryCount?: number;
+  fork?: { sourceSessionId: string; sourceEntryId: string | null; position: "before" | "after" };
+  /** Listing stays in the project group while execution uses cwd. */
+  projectCwd?: string;
+  workspace?: { id: string; recordPath: string; worktreePath: string; baseSha: string };
 }
 
 export interface SessionEntryBase {
@@ -63,6 +70,7 @@ export interface BranchSummaryEntry extends SessionEntryBase {
   type: "branch_summary";
   fromId: string;
   summary: string;
+  usage?: Usage;
 }
 
 export interface ModelChangeEntry extends SessionEntryBase {
@@ -241,6 +249,14 @@ export function closeOpenTurns(messages: ChatMessage[]): ChatMessage[] {
   let openFrom = -1;
 
   for (const m of messages) {
+    if (openFrom !== -1 && m.role !== "tool") {
+      const open = result[openFrom];
+      result.splice(openFrom);
+      result.push({ role: "assistant", content: `${typeof open.content === "string" ? open.content + "\n\n" : ""}[Error] 会话恢复：工具调用未完成，已回退到安全边界。` });
+      expected.clear(); openFrom = -1;
+      // A new user turn (including branch summaries) remains usable after recovery.
+      if (m.role !== "user") return result;
+    }
     if (m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
       expected = new Set(
         (m.tool_calls as Array<{ id: string }>).map((tc) => tc.id),
@@ -258,18 +274,15 @@ export function closeOpenTurns(messages: ChatMessage[]): ChatMessage[] {
         } as ChatMessage);
         return result;
       }
-      if (m.tool_call_id) expected.delete(m.tool_call_id);
+      if (!m.tool_call_id || !expected.has(m.tool_call_id)) {
+        result.splice(openFrom);
+        result.push({ role: "assistant", content: "[Error] 会话恢复：工具结果与调用不匹配，已回退到安全边界。" });
+        return result;
+      }
+      expected.delete(m.tool_call_id);
       result.push(m);
       if (expected.size === 0) openFrom = -1;
       continue;
-    }
-    if (openFrom !== -1) {
-      // 未闭合轮被非工具消息打断（防御：正常流程不应发生）
-      result.push({
-        role: "assistant",
-        content: "[Error] 会话恢复：工具调用未完成，中断点之后的内容已截断。",
-      } as ChatMessage);
-      return result;
     }
     result.push(m);
   }
@@ -297,6 +310,7 @@ export class SessionManager {
   private readonly inMemory: boolean;
   /** 会话文件被其他进程占用（锁获取失败）：truncateTo 只回滚内存、不重写磁盘 */
   private readonly concurrent: boolean;
+  private closed = false;
 
   private constructor(
     header: SessionHeader,
@@ -348,6 +362,7 @@ export class SessionManager {
   }
 
   static open(path_: string): SessionManager {
+    path_ = path.resolve(path_);
     const raw = fs.readFileSync(path_, "utf8");
     const lines = raw.trim().split("\n");
     const header = JSON.parse(lines[0]) as SessionHeader;
@@ -372,6 +387,9 @@ export class SessionManager {
     mgr.entries = entries;
     // 恢复 leaf：最后一个有 parentId 链的 entry（文件末尾）
     mgr.leafId = entries.length > 0 ? entries[entries.length - 1].id : null;
+    const cursorApplies = header.cursorEntryCount === undefined || header.cursorEntryCount === entries.length;
+    if (cursorApplies && header.activeLeafId === null) mgr.leafId = null;
+    else if (cursorApplies && header.activeLeafId && entries.some(e => e.id === header.activeLeafId)) mgr.leafId = header.activeLeafId;
     return mgr;
   }
 
@@ -389,10 +407,8 @@ export class SessionManager {
     // clone/fork 收敛：复制分支逻辑唯一实现（createBranchedSession），
     // fork 只是「新 cwd + 血缘 parentSession」的参数差异
     const source = SessionManager.open(sourcePath);
-    const mgr = source.createBranchedSession(source.getLeafId() ?? undefined);
-    mgr.header.cwd = targetCwd;
-    mgr.header.parentSession = sourcePath;
-    return mgr;
+    try { return source.createBranchedSession(undefined, { cwd: targetCwd }); }
+    finally { source.close(); }
   }
 
   static inMemory(cwd: string): SessionManager {
@@ -467,10 +483,16 @@ export class SessionManager {
   // ── 追加（全部落盘） ────────────────────────────────────────────────────
 
   private appendRawEntry(entry: SessionEntry): void {
+    if (this.closed) throw new Error("Session is closed; reopen it before writing");
     this.entries.push(entry);
     this.leafId = entry.id;
     if (this.filePath) {
       fs.appendFileSync(this.filePath, JSON.stringify(entry) + "\n");
+    }
+    if (this.header.activeLeafId !== undefined) {
+      delete this.header.activeLeafId;
+      delete this.header.cursorEntryCount;
+      if (!this.concurrent) this.rewriteHeader();
     }
   }
 
@@ -511,7 +533,7 @@ export class SessionManager {
     return id;
   }
 
-  appendBranchSummary(fromId: string, summary: string): string {
+  appendBranchSummary(fromId: string, summary: string, usage?: Usage): string {
     const id = genId();
     this.appendRawEntry({
       type: "branch_summary",
@@ -520,6 +542,7 @@ export class SessionManager {
       timestamp: nowIso(),
       fromId,
       summary,
+      ...(usage ? { usage } : {}),
     });
     return id;
   }
@@ -594,6 +617,7 @@ export class SessionManager {
    * 把本回合未完成落盘的 assistant/tool 消息整体撤销，恢复后从干净状态继续。
    */
   truncateTo(entryId: string | null): void {
+    if (this.closed) throw new Error("Session is closed; reopen it before writing");
     if (entryId === null) {
       this.entries = [];
       this.leafId = null;
@@ -603,6 +627,8 @@ export class SessionManager {
       this.entries = this.entries.slice(0, idx + 1);
       this.leafId = this.entries[this.entries.length - 1].id;
     }
+    delete this.header.activeLeafId;
+    delete this.header.cursorEntryCount;
     if (this.filePath) {
       if (this.concurrent) {
         // 并发会话：另一进程可能正在追加——重写会抹掉其增量，只回滚内存
@@ -662,12 +688,43 @@ export class SessionManager {
 
   /** 移动 leaf 到更早的 entry（原地分支） */
   branch(entryId: string): void {
+    if (this.closed) throw new Error("Session is closed; reopen it before navigation");
     if (!this.getEntry(entryId)) throw new Error(`Unknown entry: ${entryId}`);
     this.leafId = entryId;
+    this.persistCursor();
   }
 
   resetLeaf(): void {
+    if (this.closed) throw new Error("Session is closed; reopen it before navigation");
     this.leafId = null;
+    this.persistCursor();
+  }
+
+  private persistCursor(): void {
+    this.header.activeLeafId = this.leafId;
+    this.header.cursorEntryCount = this.entries.length;
+    // Keep the existing read-only navigation behavior for concurrently opened files.
+    if (!this.concurrent) this.rewriteHeader();
+  }
+
+  /** All branches in stable depth-first order, including inactive siblings. */
+  getTreeEntries(): Array<{ entry: SessionEntry; depth: number; active: boolean }> {
+    const active = new Set(this.getBranch().map(e => e.id));
+    const children = new Map<string | null, SessionEntry[]>();
+    for (const entry of this.entries) {
+      const siblings = children.get(entry.parentId) ?? [];
+      siblings.push(entry); children.set(entry.parentId, siblings);
+    }
+    const result: Array<{ entry: SessionEntry; depth: number; active: boolean }> = [];
+    const seen = new Set<string>();
+    const stack = (children.get(null) ?? []).map(entry => ({ entry, depth: 0 })).reverse();
+    while (stack.length) {
+      const item = stack.pop()!;
+      if (seen.has(item.entry.id)) continue;
+      seen.add(item.entry.id); result.push({ ...item, active: active.has(item.entry.id) });
+      for (const entry of [...(children.get(item.entry.id) ?? [])].reverse()) stack.push({ entry, depth: item.depth + 1 });
+    }
+    return result;
   }
 
   /** 带摘要分支：写 branch_summary（被弃路径的 LLM 摘要） */
@@ -747,15 +804,29 @@ export class SessionManager {
   }
 
   /** clone：把当前活动分支（到 leafId，默认当前 leaf）复制到新会话文件 */
-  createBranchedSession(leafId?: string): SessionManager {
-    const targetLeaf = leafId ?? this.leafId ?? undefined;
-    const mgr = SessionManager.create(this.header.cwd);
+  createBranchedSession(leafId?: string, options: { cwd?: string; position?: "before" | "after" } = {}): SessionManager {
+    const selected = leafId ?? this.leafId;
+    if (selected && !this.getEntry(selected)) throw new Error(`Unknown entry: ${selected}`);
+    const position = options.position ?? "after";
+    const targetLeaf = position === "before" && selected ? this.getEntry(selected)!.parentId : selected;
+    const mgr = SessionManager.create(options.cwd ?? this.header.cwd);
     mgr.header.parentSession = this.filePath ?? undefined;
-    const branch = this.getBranch(targetLeaf);
+    mgr.header.fork = { sourceSessionId: this.header.id, sourceEntryId: selected, position };
+    mgr.rewriteHeader();
+    const branch = targetLeaf ? this.getBranch(targetLeaf) : [];
     for (const entry of branch) {
-      mgr.appendRawEntry(entry);
+      // Copy the persisted value, not shared message/retainedTail objects. Child
+      // projections and compaction must never mutate the parent's in-memory tree.
+      mgr.appendRawEntry(JSON.parse(JSON.stringify(entry)) as SessionEntry);
     }
     return mgr;
+  }
+
+  bindWorkspace(binding: { id: string; recordPath: string; worktreePath: string; baseSha: string }, projectCwd: string): void {
+    this.header.projectCwd = projectCwd;
+    this.header.cwd = binding.worktreePath;
+    this.header.workspace = { id: binding.id, recordPath: binding.recordPath, worktreePath: binding.worktreePath, baseSha: binding.baseSha };
+    this.rewriteHeader();
   }
 
   /**
@@ -792,6 +863,7 @@ export class SessionManager {
   }
 
   private rewriteHeader(): void {
+    if (this.closed) throw new Error("Session is closed; reopen it before writing");
     if (!this.filePath) return;
     const raw = fs.readFileSync(this.filePath, "utf8");
     const lines = raw.split("\n");
@@ -820,6 +892,19 @@ export class SessionManager {
 
   getSessionFile(): string | null {
     return this.filePath;
+  }
+
+  /** Release only this instance's file lock when switching sessions. History stays readable. */
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    if (!this.filePath || this.concurrent) return;
+    const lockPath = `${this.filePath}.lock`;
+    if (!heldLocks.has(lockPath)) return;
+    try {
+      if (Number(fs.readFileSync(lockPath, "utf8").split(" ")[0]) === process.pid) fs.unlinkSync(lockPath);
+    } catch { /* Already cleaned up. */ }
+    heldLocks.delete(lockPath);
   }
 
   isPersisted(): boolean {

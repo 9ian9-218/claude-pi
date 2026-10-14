@@ -5,6 +5,9 @@
  * 后复制到当前项目的会话目录并打开——继续对话落在副本上，不污染源文件。
  */
 import fs from "node:fs";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { writeFileAtomic } from "./atomic-write.ts";
 import { SessionManager, createSessionPath } from "./session-manager.ts";
 
 export class SessionImportError extends Error {}
@@ -50,8 +53,17 @@ function parseImportableHeader(filePath: string): ImportableHeader {
  * → 打开。返回导入后的 SessionManager；失败抛 SessionImportError。
  */
 export function importSessionFromJsonl(filePath: string, cwd: string): SessionManager {
-  parseImportableHeader(filePath);
+  const sourceHeader = parseImportableHeader(filePath);
   const target = createSessionPath(cwd);
-  fs.copyFileSync(filePath, target);
+  const lines = fs.readFileSync(filePath, "utf8").trimStart().split("\n");
+  const header = JSON.parse(lines[0]);
+  // Imports create a new session identity and use this project. A foreign file
+  // must not transfer an exclusive workspace lease or redirect execution.
+  header.id = randomUUID(); header.cwd = path.resolve(cwd);
+  header.parentSession = path.resolve(filePath);
+  delete header.workspace; delete header.projectCwd;
+  header.fork = { sourceSessionId: sourceHeader.id, sourceEntryId: header.activeLeafId ?? null, position: "after" };
+  lines[0] = JSON.stringify(header);
+  writeFileAtomic(target, lines.join("\n"));
   return SessionManager.open(target);
 }

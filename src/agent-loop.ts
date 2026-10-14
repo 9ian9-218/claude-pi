@@ -32,6 +32,7 @@ import { formatIdleNotificationInjection } from "./teammates/protocol.ts";
 import { TaskBudget, BudgetExceeded, currentBudget, runWithBudget, budgetLimitsFromEnv } from "./task-budget.ts";
 import type { BudgetLimits } from "./task-budget.ts";
 import { RequestTimeout } from "./request-deadline.ts";
+import { runWithSessionWorkspace } from "./session-fork.ts";
 
 /** 耗时补记：把模型请求耗时挂到 assistant 裸消息上（S4 轨迹分析用，0ms 也记录） */
 function attachDuration(msg: ChatMessage, startedAt: number): ChatMessage {
@@ -74,11 +75,11 @@ export async function agentLoop(
   const caller = getAgentContext();
   const actor = caller.agentId ? caller : { ...caller, agentId: options.session ? `session:${options.session.sessionId}` : ephemeralWorkspaceAgentId };
   try {
-    return await runWithAgentContext(actor, () => runWithBudget(budget, () => runWithCurrentWorkdir(async () => { await restoreAgentWorkspace(); return agentLoopInner(messages, { ...options, onResult: result => {
+    return await runWithAgentContext(actor, () => runWithBudget(budget, () => runWithSessionWorkspace(options.session, () => runWithCurrentWorkdir(async () => { await restoreAgentWorkspace(); return agentLoopInner(messages, { ...options, onResult: result => {
       const outcome = { ...result, budget: { usage: { ...budget.usage }, limits: budget.limits } };
       options.session?.appendCustom("run_end", outcome);
       options.onResult?.(outcome);
-    }, loopOptions: new LoopOptions({ ...original, signal }) }); })));
+    }, loopOptions: new LoopOptions({ ...original, signal }) }); }))));
   } catch (e) {
     const result: RunResult = { status: e instanceof BudgetExceeded ? "budget_exceeded" : e instanceof RequestTimeout ? "timeout" : (e as Error)?.name === "AbortError" ? "cancelled" : "error", final: null, reason: String((e as Error)?.message ?? e), budget: { usage: { ...budget.usage }, limits: budget.limits } };
     options.session?.appendCustom("run_end", result); options.onResult?.(result);

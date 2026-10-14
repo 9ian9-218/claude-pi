@@ -38,6 +38,8 @@ describe("session-import", () => {
     // 导入到当前项目 projB（落在会话根下按 cwd 分组的目录）
     const projB = path.join(tmp, "projB");
     const imported = importSessionFromJsonl(exported, projB);
+    expect(imported.getHeader().cwd).toBe(projB);
+    expect(imported.getSessionId()).not.toBe(src.getSessionId());
     expect(imported.getSessionFile()!).toContain(path.join(tmp, `--${projB.replace(/\//g, "-")}--`));
     const msgs = imported
       .getBranch()
@@ -54,6 +56,17 @@ describe("session-import", () => {
     expect(() => importSessionFromJsonl(path.join(tmp, "nope.jsonl"), tmp)).toThrow(
       /文件不存在|not found/i,
     );
+  });
+  it("importing raw JSONL cannot inherit a foreign workspace lease", () => {
+    const source = SessionManager.create(tmp);
+    source.bindWorkspace({ id: "foreign", recordPath: "/foreign/lease.json", worktreePath: "/foreign/worktree", baseSha: "base" }, "/foreign/project");
+    source.appendMessage({ role: "user", content: "portable data" });
+    const imported = importSessionFromJsonl(source.getSessionFile()!, tmp);
+    expect(imported.getHeader().workspace).toBeUndefined();
+    expect(imported.getHeader().projectCwd).toBeUndefined();
+    expect(imported.getHeader().cwd).toBe(tmp);
+    expect(imported.getSessionId()).not.toBe(source.getSessionId());
+    expect(imported.buildSessionContext().messages[0].content).toBe("portable data");
   });
 
   it("header 非会话文件抛明确错误", () => {

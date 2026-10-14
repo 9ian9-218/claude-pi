@@ -12,6 +12,7 @@
 import { getToolParameters, validateArgs } from "./tool.ts";
 import { memoryStopHook } from "./memory.ts";
 import { permissionHookWithBubble } from "./permission-sync.ts";
+import { getWorkdir } from "./workdir.ts";
 
 export type HookCallback = (...args: any[]) => unknown;
 
@@ -92,7 +93,7 @@ export async function triggerToolHooks(block: ToolBlock): Promise<unknown> {
 // ── 内置 hook ─────────────────────────────────────────────────────────────
 
 export function contextInjectHook(): void {
-  console.log(`\x1b[90m[HOOK] UserPromptSubmit: working in ${process.cwd()}\x1b[0m`);
+  console.log(`\x1b[90m[HOOK] UserPromptSubmit: working in ${getWorkdir()}\x1b[0m`);
 }
 
 export function summaryHook(messages: { role?: string }[]): void {

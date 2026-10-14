@@ -6,6 +6,8 @@
  */
 import type { TuiApp } from "./app.ts";
 import { SessionManager } from "../session-manager.ts";
+import { forkSession } from "../session-fork.ts";
+import { summarizeBranchSwitch } from "../branch-summary.ts";
 import type { ChatMessage } from "../client.ts";
 import { ui } from "./ui-provider.ts";
 import {
@@ -15,6 +17,36 @@ import {
 } from "../session-export.ts";
 import { importSessionFromJsonl, SessionImportError } from "../session-import.ts";
 import { getExportMode } from "../project-config.ts";
+
+async function restoreSessionView(app: TuiApp, session: SessionManager): Promise<void> {
+  const ctx = session.buildSessionContext();
+  const { setCurrentModel } = await import("../ai-runtime.ts");
+  let warning: string | undefined;
+  if (!ctx.model) setCurrentModel(null);
+  else if (!await app.restoreModel(ctx.model)) {
+    setCurrentModel(null);
+    warning = `无法恢复模型 ${ctx.model}，使用配置的默认模型。`;
+  }
+  await app.restoreThinkingLevel(ctx.thinkingLevel ?? "off");
+  app.renderHistory(ctx.messages);
+  if (warning) app.appendMessage("system", warning);
+}
+
+function navigationArgs(rest: string) {
+  const args = rest.trim().split(/\s+/).filter(Boolean);
+  const allowed = new Set(["--before", "--after", "--isolated", "--shared", "--summarize"]);
+  for (const arg of args) if (arg.startsWith("--") && !allowed.has(arg)) throw new Error(`Unknown option: ${arg}`);
+  if (args.includes("--before") && args.includes("--after")) throw new Error("Choose --before or --after");
+  if (args.includes("--shared") && args.includes("--isolated")) throw new Error("Choose --shared or --isolated");
+  const nodes = args.filter(a => !a.startsWith("--"));
+  if (nodes.length > 1) throw new Error("Specify one entry ID");
+  return {
+    entryId: nodes[0],
+    position: args.includes("--before") ? "before" as const : args.includes("--after") ? "after" as const : undefined,
+    workspace: args.includes("--isolated") ? "isolated" as const : args.includes("--shared") ? "shared" as const : undefined,
+    summarize: args.includes("--summarize"),
+  };
+}
 
 /** 相对时间（对齐 pi formatSessionDate：now/m/h/d/w/mo/y） */
 function relativeTime(ts: number): string {
@@ -38,7 +70,7 @@ export async function handleSessionCommand(
   name: string,
   rest: string,
 ): Promise<void> {
-  const cwd = process.cwd();
+  const cwd = sessionRef.current?.getHeader().projectCwd ?? sessionRef.current?.getHeader().cwd ?? process.cwd();
   const session = sessionRef.current;
   switch (name) {
     case "tree": {
@@ -46,7 +78,9 @@ export async function handleSessionCommand(
         app.appendMessage("system", "会话已禁用（--no-session）。");
         return;
       }
-      const branch = session.getBranch();
+      const tree = session.getTreeEntries();
+      const args = navigationArgs(rest);
+      if (args.workspace) throw new Error("工作区隔离请使用 /fork --isolated 或 /clone --isolated。");
 
       // 子 agent 会话：从父会话的 custom entry 还原血缘清单（/resume 可复查完整轨迹）
       const appendChildAgents = () => {
@@ -82,33 +116,37 @@ export async function handleSessionCommand(
         app.appendMessage("system", lines.join("\n"));
       };
       appendChildAgents();
-      if (branch.length === 0) {
+      if (tree.length === 0) {
         app.appendMessage("system", "会话为空。");
         return;
       }
-      const items = branch.map((e) => ({
+      const items = tree.map(({ entry: e, depth, active }) => ({
         value: e.id,
-        label:
+        label: `${active ? "●" : "○"} ${"  ".repeat(Math.min(depth, 12))}` + (
           e.type === "message"
             ? `${(e as { message: ChatMessage }).message.role}: ${String((e as { message: ChatMessage }).message.content ?? "").slice(0, 60)}`
-            : `${e.type} (${e.id})`,
+            : `${e.type} (${e.id})`),
         description: `${e.id} (${e.timestamp})`,
       }));
-      const picked = await app.showSelector(items, "会话树 — 选择节点继续（分支）");
+      const picked = args.entryId ? { value: args.entryId } : await app.showSelector(items, "完整会话树 — user 默认回到消息之前，其余节点之后");
       if (!picked) {
         app.appendMessage("system", "已取消。");
         return;
       }
+      if (session.isConcurrent()) throw new Error("会话正在被另一实例使用，请 fork 到新文件后继续。");
+      const entry = session.getEntry(picked.value);
+      if (!entry) throw new Error(`Unknown entry: ${picked.value}`);
+      const isUser = entry.type === "message" && entry.message.role === "user";
+      const before = args.position === "before" || (args.position === undefined && isUser);
+      const targetId = before ? entry.parentId : entry.id;
       const fromLeaf = session.getLeafId();
-      session.branchWithSummary(picked.value, `[branch switch] 从 ${fromLeaf ?? "根"} 切换到 ${picked.value}`);
-      const ctx = session.buildSessionContext();
-      app.refreshChat(
-        ctx.messages
-          .slice(-8)
-          .map((m) => `${m.role}: ${String(m.content ?? "").slice(0, 100)}`)
-          .join("\n"),
-      );
-      app.appendMessage("system", `已切换到 ${picked.value}（branch_summary 已记录）`);
+      // Generate before navigation so failed requests cannot leave a half-switched session.
+      const summary = args.summarize ? await summarizeBranchSwitch(session, targetId) : null;
+      if (targetId) session.branch(targetId); else session.resetLeaf();
+      if (summary) session.appendBranchSummary(fromLeaf ?? "", summary.text, summary.usage);
+      await restoreSessionView(app, session);
+      app.editor.setText(before && isUser ? String(entry.message.content ?? "") : "");
+      app.appendMessage("system", `已切换到 ${picked.value} ${before ? "之前" : "之后"}${summary ? "（已生成分支摘要）" : ""}`);
       appendChildAgents();
       return;
     }
@@ -118,28 +156,28 @@ export async function handleSessionCommand(
         app.appendMessage("system", "会话已禁用（--no-session）。");
         return;
       }
-      let target: SessionManager;
-      if (name === "clone") {
-        target = session.createBranchedSession();
-      } else {
-        // fork：选择历史 user 消息节点
-        const branch = session.getBranch();
-        const userEntries = branch.filter(
-          (e) => e.type === "message" && (e as { message: ChatMessage }).message.role === "user",
-        );
-        const items = userEntries.map((e) => ({
-          value: e.id,
-          label: String((e as { message: ChatMessage }).message.content ?? "").slice(0, 60),
-          description: e.id,
+      const args = navigationArgs(rest);
+      if (args.summarize) throw new Error("--summarize 仅用于 /tree。");
+      let entryId = args.entryId;
+      if (name === "fork" && !entryId) {
+        const items = session.getTreeEntries().map(({ entry, depth, active }) => ({
+          value: entry.id,
+          label: `${active ? "●" : "○"} ${"  ".repeat(Math.min(depth, 12))}${entry.type === "message" ? `${entry.message.role}: ${String(entry.message.content ?? "").slice(0, 60)}` : entry.type}`,
+          description: entry.id,
         }));
-        const picked = await app.showSelector(items, "Fork — 选择起始 user 消息");
-        if (!picked) {
-          app.appendMessage("system", "已取消。");
-          return;
-        }
-        target = session.createBranchedSession(picked.value);
+        if (!items.length) { app.appendMessage("system", "会话为空。"); return; }
+        const picked = await app.showSelector(items, "Fork — 选择任意历史节点（含旧分支）");
+        if (!picked) { app.appendMessage("system", "已取消。"); return; }
+        entryId = picked.value;
       }
+      const selected = entryId ? session.getEntry(entryId) : null;
+      const isUser = selected?.type === "message" && selected.message.role === "user";
+      const position = args.position ?? (name === "fork" && isUser ? "before" : "after");
+      const target = await forkSession(session, { entryId, position, workspace: args.workspace });
+      session?.close();
       sessionRef.current = target;
+      await restoreSessionView(app, target);
+      app.editor.setText(position === "before" && isUser ? String(selected.message.content ?? "") : "");
       app.appendMessage(
         "system",
         `已${name === "clone" ? "clone" : "fork"}到新会话 ${target.getSessionId().slice(0, 8)}（${target.getSessionFile()}）`,
@@ -164,10 +202,11 @@ export async function handleSessionCommand(
         app.appendMessage("system", "已取消。");
         return;
       }
-      const restored = SessionManager.open(picked.value);
+      const restored = session?.getSessionFile() === picked.value ? session : SessionManager.open(picked.value);
+      if (session !== restored) session?.close();
       sessionRef.current = restored;
       // 对齐 pi renderSessionItems：恢复后渲染完整历史（可滚动查看）
-      app.renderHistory(restored.buildSessionContext().messages);
+      await restoreSessionView(app, restored);
       app.appendMessage("system", `已恢复会话 ${picked.value}`);
       return;
     }
@@ -197,6 +236,9 @@ export async function handleSessionCommand(
           `Entries: ${entries.length}`,
           `名称: ${session.getSessionName() ?? "(未命名)"}`,
           `父会话: ${session.getHeader().parentSession ?? "(无)"}`,
+          `工作目录: ${session.getHeader().cwd}`,
+          `工作区: ${session.getHeader().workspace?.id ?? "共享目录"}`,
+          `快照: ${session.getHeader().workspace?.baseSha ?? "(无)"}`,
         ].join("\n"),
       );
       return;
@@ -297,6 +339,7 @@ export async function handleSessionCommand(
       }
       try {
         const imported = importSessionFromJsonl(inputPath, process.cwd());
+        session?.close();
         sessionRef.current = imported;
         app.renderHistory(imported.buildSessionContext().messages);
         app.appendMessage(

@@ -13,7 +13,7 @@
  *   truncateTo 回滚，任何带 usage 的 assistant entry 均视为有效。
  */
 import type { Usage } from "@earendil-works/pi-ai";
-import type { SessionEntry, CompactionEntry } from "./session-manager.ts";
+import type { SessionEntry } from "./session-manager.ts";
 import type { ChatMessage } from "./client.ts";
 import { estimateMessagesTokens, hasValidPostCompactionUsage } from "./compact.ts";
 export { hasValidPostCompactionUsage } from "./compact.ts";
@@ -62,8 +62,8 @@ function usageOf(entry: SessionEntry): Usage | undefined {
   if (entry.type === "message" && entry.message.role === "assistant") {
     return (entry.message as ChatMessage & { usage?: Usage }).usage;
   }
-  if (entry.type === "compaction") {
-    return (entry as CompactionEntry).usage;
+  if (entry.type === "compaction" || entry.type === "branch_summary") {
+    return entry.usage;
   }
   return undefined;
 }
