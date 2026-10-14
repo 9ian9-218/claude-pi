@@ -6,6 +6,7 @@ export interface BudgetUsage { requests: number; tools: number; tokens: number; 
 
 export class TaskBudget {
   readonly controller = new AbortController();
+  readonly pipelineOutcomes = new Map<string, { status: string; reason?: string }>();
   readonly startedAt = Date.now();
   readonly seenInstructions = new Set<string>();
   readonly usage: BudgetUsage = { requests: 0, tools: 0, tokens: 0, cost: 0, priceUnknown: false, activeRequests: 0 };
