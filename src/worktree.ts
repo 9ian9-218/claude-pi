@@ -148,7 +148,7 @@ export function preserveWorkspaceArtifact(worktree: string, taskId: string, base
 }
 
 /** Explicit review/integration step. Refuse overwriting main-workspace changes. */
-export async function integrateTaskArtifact(artifact: TaskArtifact): Promise<void> {
+export async function integrateTaskArtifact(artifact: TaskArtifact, onPrepared?: (transactionId: string) => void): Promise<void> {
   const { getTeamMode } = await import("./settings.ts");
   const { assertPipelineApproval } = await import("./pipeline-state.ts");
   const root = artifact.targetRoot ?? gitRoot;
@@ -178,7 +178,7 @@ export async function integrateTaskArtifact(artifact: TaskArtifact): Promise<voi
       if (data && fileHash(data) !== file.hash) throw new Error(`Artifact integrity check failed: ${file.path}`);
       return { file, target, current, data, integrated };
     });
-    await applyFileTransaction(staged.filter(f => !f.integrated).map(({ file, current, data }) => ({ path: file.path, data, mode: file.mode, expectedHash: current, expectedExecutable: file.baseExecutable })), { coordinator: true });
+    await applyFileTransaction(staged.filter(f => !f.integrated).map(({ file, current, data }) => ({ path: file.path, data, mode: file.mode, expectedHash: current, expectedExecutable: file.baseExecutable })), { coordinator: true, onPrepared });
   }));
 }
 
