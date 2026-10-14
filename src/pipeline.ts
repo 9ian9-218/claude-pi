@@ -36,6 +36,7 @@ async function recoverWorker(record: PipelineRecord): Promise<void> {
       const file = path.join(dir, name);
       const processRecord = JSON.parse(fs.readFileSync(file, "utf8"));
       if (!["starting", "running"].includes(processRecord.status)) continue;
+      if (!processRecord.childPid) throw new Error("Interrupted process start has no verifiable PID; delivery blocked");
       if (processRecord.childPid) {
         try { process.kill(processRecord.childPid, 0); throw new Error("Previous process still alive or PID unverifiable"); }
         catch (e) { if ((e as NodeJS.ErrnoException).code !== "ESRCH") throw e; }
