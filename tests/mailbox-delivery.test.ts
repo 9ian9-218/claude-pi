@@ -38,3 +38,13 @@ it("replays an unacknowledged persisted delivery without a second injection", as
   expect(messages).toHaveLength(0); expect(readMailbox("team-lead", "durable")[0].read).toBe(true);
   session.close(); clearPollerQueues();
 });
+
+it("recovers only verifiably dead teammate owners", async () => {
+  const { createTeam, ensureTeammateForSpawn, readTeamConfig, writeTeamConfig } = await import("../src/teammates/team-helpers.ts");
+  createTeam("owners"); ensureTeammateForSpawn("owners", "worker");
+  expect(() => ensureTeammateForSpawn("owners", "worker")).toThrow("already active");
+  const config = readTeamConfig("owners")!;
+  const member = config.members.find(m => m.name === "worker")!;
+  member.ownerPid = 2147483647; member.ownerStart = "dead"; writeTeamConfig(config);
+  expect(ensureTeammateForSpawn("owners", "worker").ownerPid).toBe(process.pid);
+});
