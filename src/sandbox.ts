@@ -79,7 +79,13 @@ export function shellInvocation(command: string, cwd: string): Invocation {
       // Reuse installed dependencies as read-only data; installation stays in the coordinator.
       const binding = getWorkspaceBinding()!;
       const dependencies = [binding.parentPath, binding.repositoryRoot].filter((p): p is string => Boolean(p)).map(p => path.join(p, "node_modules")).find(p => fs.existsSync(p));
-      if (dependencies) args.push("--ro-bind", fs.realpathSync(dependencies), path.join(cwd, "node_modules"));
+      if (dependencies) {
+        const mountpoint = path.join(cwd, "node_modules");
+        if (!fs.existsSync(mountpoint)) fs.mkdirSync(mountpoint);
+        const node = fs.lstatSync(mountpoint);
+        if (!node.isDirectory() || node.isSymbolicLink()) throw new Error("Dependency mountpoint must be a real workspace directory");
+        args.push("--ro-bind", fs.realpathSync(dependencies), mountpoint);
+      }
     }
     // Hide session credentials and extensions from test programs.
     const privateDir = path.join(cwd, ".agent");

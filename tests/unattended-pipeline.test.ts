@@ -283,5 +283,5 @@ process.exit(run.status ?? 1);
   expect(result.verification[0]).toMatchObject({ exitCode: 0, tests: 1 });
   expect(result.postIntegrationVerification[0]).toMatchObject({ exitCode: 0, tests: 1 });
   expect(fs.existsSync(path.join(dependency, "mutated.txt"))).toBe(false);
-  expect(fs.existsSync(path.join(result.artifact.worktree, "node_modules"))).toBe(false);
+  expect(fs.readdirSync(path.join(result.artifact.worktree, "node_modules"))).toEqual([]);
 }, 30000);
