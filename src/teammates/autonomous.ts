@@ -39,6 +39,8 @@ export interface IdlePollOptions {
   agentName: string;
   teamName: string;
   messages: ChatMessage[];
+  session?: import("../session-manager.ts").SessionManager;
+  signal?: AbortSignal;
   isShutdownRequested: () => boolean;
   pollIntervalMs?: number;
   idleTimeoutMs?: number;
@@ -52,9 +54,9 @@ export async function idlePoll(options: IdlePollOptions): Promise<IdleResult> {
   const polls = Math.max(1, Math.trunc(idleTimeoutMs / pollIntervalMs));
 
   for (let i = 0; i < polls; i++) {
-    if (isShutdownRequested()) return "shutdown";
+    if (options.signal?.aborted || isShutdownRequested()) return "shutdown";
 
-    const dispatch = await dispatchInboxBatch({ agentName, teamName, messages });
+    const dispatch = await dispatchInboxBatch({ agentName, teamName, messages, session: options.session });
     if (dispatch.shouldShutdown) {
       lockedPrint(`  \x1b[35m[idle] ${agentName} approved shutdown\x1b[0m`);
       return "shutdown";
@@ -82,7 +84,11 @@ export async function idlePoll(options: IdlePollOptions): Promise<IdleResult> {
     // 空闲等待不钉住事件循环：headless（-p / --mode json）派生 teammate 后，
     // 主流程结束就该正常退出，不被 30 分钟空闲定时器挂住（TUI 由 stdin 保持事件循环）。
     await new Promise<void>((resolve) => {
-      setTimeout(resolve, pollIntervalMs).unref();
+      const finish = () => { clearTimeout(timer); options.signal?.removeEventListener("abort", finish); resolve(); };
+      const timer = setTimeout(finish, pollIntervalMs);
+      timer.unref();
+      options.signal?.addEventListener("abort", finish, { once: true });
+      if (options.signal?.aborted) finish();
     });
   }
 
