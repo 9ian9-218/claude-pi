@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import { createRequire } from 'node:module';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 const exec = promisify(execFile);
@@ -9,16 +10,39 @@ const root = process.cwd();
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'cpi-production-pack-'));
 const npmCli = process.env.npm_execpath;
 if (!npmCli) throw new Error('Run this check with npm run test:pack');
-const npm = (args, cwd = root) => exec(process.execPath, [npmCli, ...args], { cwd, timeout: 300_000, maxBuffer: 4 * 1024 * 1024, env: { ...process.env } });
+const npm = (args, cwd = root) => {
+  const task = exec(process.execPath, [npmCli, ...args], { cwd, timeout: 300_000, maxBuffer: 4 * 1024 * 1024, env: { ...process.env } });
+  task.child.stdin?.end(); return task;
+};
 let server;
 try {
   const packed = JSON.parse((await npm(['pack', '--json', '--pack-destination', temp])).stdout)[0];
+  if (!packed.files.some(f => f.path === 'npm-shrinkwrap.json')) throw new Error('Production package must include the tested dependency lock');
+  const locked = JSON.parse(fs.readFileSync(path.join(root, 'npm-shrinkwrap.json'), 'utf8'));
   const unexpected = packed.files.filter(f => /(?:\.test\.ts$|(^|\/)\.agent\/|(^|\/)tests\/|auth\.json$)/.test(f.path));
   if (unexpected.length) throw new Error(`Unexpected package files: ${unexpected.map(f => f.path).join(', ')}`);
   const app = path.join(temp, 'app'); fs.mkdirSync(app); fs.writeFileSync(path.join(app, 'package.json'), JSON.stringify({ name: 'production-smoke', private: true, type: 'module' }));
   process.stdout.write('Installing production-only package dependencies\n');
   await npm(['install', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--prefer-offline', '--loglevel=verbose', path.join(temp, packed.filename)], app);
-  const bin = path.join(app, 'node_modules', 'claude-pi', 'bin', 'cpi.js');
+  const installedRoot = path.join(app, 'node_modules', 'claude-pi');
+  const requireFromPackage = createRequire(path.join(installedRoot, 'package.json'));
+  for (const name of Object.keys(locked.packages[''].dependencies)) {
+    let directory = path.dirname(requireFromPackage.resolve(name));
+    let found = false;
+    while (path.dirname(directory) !== directory) {
+      const manifest = path.join(directory, 'package.json');
+      if (fs.existsSync(manifest)) {
+        const dependency = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+        if (dependency.name === name) {
+          if (dependency.version !== locked.packages['node_modules/' + name].version) throw new Error('Installed dependency version drift: ' + name);
+          found = true; break;
+        }
+      }
+      directory = path.dirname(directory);
+    }
+    if (!found) throw new Error('Cannot verify installed dependency: ' + name);
+  }
+  const bin = path.join(installedRoot, 'bin', 'cpi.js');
   const version = (await exec(process.execPath, [bin, '--version'], { cwd: app })).stdout.trim();
   if (version !== JSON.parse(fs.readFileSync(path.join(root, 'package.json'))).version) throw new Error('Installed CLI version mismatch');
   server = http.createServer((req, res) => {
@@ -34,5 +58,5 @@ try {
     child.on('error', reject); child.on('close', code => { clearTimeout(timer); if (code !== 0) reject(new Error(`Installed CLI exit ${code}: ${err.slice(0, 1000)}`)); else resolve(JSON.parse(out)); });
   });
   if (json.status !== 'success' || json.final !== 'PRODUCTION_PACK_OK') throw new Error('Installed CLI did not complete a real local mock request');
-  process.stdout.write(JSON.stringify({ status: 'success', node: process.version, platform: process.platform, version, packageFileCount: packed.files.length, excludesTestsAndCredentials: true, productionOnlyInstall: true, jsonRoundTrip: json.status }) + '\n');
+  process.stdout.write(JSON.stringify({ status: 'success', node: process.version, platform: process.platform, version, packageFileCount: packed.files.length, excludesTestsAndCredentials: true, productionOnlyInstall: true, dependencyVersionsLocked: true, jsonRoundTrip: json.status }) + '\n');
 } finally { if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } fs.rmSync(temp, { recursive: true, force: true }); }

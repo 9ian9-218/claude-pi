@@ -11,7 +11,7 @@ import { runWithWorkdir, setWorkspaceBinding } from "../src/workdir.ts";
 import { runWithAgentContext, createAgentContext } from "../src/teammates/context.ts";
 import { createWorkerWorkspace, finishWorkspace } from "../src/workspaces.ts";
 import { integrateTaskArtifact, preserveWorkspaceArtifact, setGitRoot } from "../src/worktree.ts";
-import { newPipeline, savePipeline, artifactKey, workspaceDigest, assertPipelineApproval, parseReview, observedTests } from "../src/pipeline-state.ts";
+import { newPipeline, savePipeline, artifactKey, workspaceDigest, assertOriginalAcceptance, assertPipelineApproval, parseReview, observedTests } from "../src/pipeline-state.ts";
 import { runCodingPipeline } from "../src/pipeline.ts";
 import { agentLoopDetailed } from "../src/agent-loop.ts";
 import { SessionManager } from "../src/session-manager.ts";
@@ -211,4 +211,13 @@ it("rejects an artifact from another repository before touching the target", asy
     await expect(runWithWorkdir(root, () => integrateTaskArtifact(artifact))).rejects.toThrow("another repository");
     expect(fs.existsSync(path.join(foreign, "src/value.js"))).toBe(false);
   } finally { fs.rmSync(foreign, { recursive: true, force: true }); }
+});
+
+it("protects the publishable dependency lock as original acceptance", async () => {
+  fs.writeFileSync(path.join(root, "npm-shrinkwrap.json"), '{"lockfileVersion":3}');
+  const record = newPipeline(root, "return 42");
+  const binding = await createWorkerWorkspace(root, "locked");
+  fs.writeFileSync(path.join(binding.worktreePath, "npm-shrinkwrap.json"), '{"lockfileVersion":2}');
+  expect(() => assertOriginalAcceptance(record, binding.worktreePath)).toThrow("acceptance file changed");
+  finishWorkspace(binding, "review");
 });

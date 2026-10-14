@@ -79,7 +79,7 @@ export function acceptancePlan(root: string): { commands: AcceptanceCommand[]; m
   if (!Array.isArray(commands) || !commands.length || commands.length > 10 || !commands.some(c => c.kind === "test")) throw new Error("Acceptance plan requires 1..10 commands and at least one test");
   for (const c of commands) if (typeof c.command !== "string" || !c.command.trim() || typeof c.requirement !== "string" || !c.requirement.trim() || !["test", "check"].includes(c.kind) || (c.minTests !== undefined && (!Number.isInteger(c.minTests) || c.minTests < 1))) throw new Error("Invalid acceptance command");
   const protectedFiles: Record<string, string> = {};
-  for (const p of sourceFiles(root)) if (/^(?:tests?|__tests__)\//.test(p) || /(?:^|\/)(?:[^/]*[._-](?:test|spec)\.[^/]+|(?:test|spec)_[^/]+|requirements[^/]*\.txt|package\.json|[^/]*lock[^/]*|pyproject\.toml|Cargo\.toml|go\.mod|[^/]*(?:vitest|jest|pytest|tsconfig)[^/]*)$/.test(p)) protectedFiles[p] = hashFile(path.join(root, p));
+  for (const p of sourceFiles(root)) if (/^(?:tests?|__tests__)\//.test(p) || /(?:^|\/)(?:[^/]*[._-](?:test|spec)\.[^/]+|(?:test|spec)_[^/]+|requirements[^/]*\.txt|package\.json|npm-shrinkwrap\.json|[^/]*lock[^/]*|pyproject\.toml|Cargo\.toml|go\.mod|[^/]*(?:vitest|jest|pytest|tsconfig)[^/]*)$/.test(p)) protectedFiles[p] = hashFile(path.join(root, p));
   if (!Object.keys(protectedFiles).length) throw new Error("No original acceptance files to protect");
   return { commands, maxRepairs, protectedFiles };
 }
