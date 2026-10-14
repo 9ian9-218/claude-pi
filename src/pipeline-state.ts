@@ -9,11 +9,13 @@ export interface AcceptanceCommand { command: string; requirement: string; kind:
 export interface PipelineRecord {
   schemaVersion: 1; id: string; goal: string; targetRoot: string; baseDigest: string;
   status: "running" | "checking" | "approved" | "integrating" | "completed" | "blocked" | "cancelled";
+  integrationTransaction?: string;
   originalBaseSha?: string; worker?: import("./workspaces.ts").WorkspaceBinding;
   attempt: number; maxRepairs: number; ownerPid: number; ownerStart: string;
   commands: AcceptanceCommand[]; protectedFiles: Record<string, string>; artifact?: TaskArtifact;
   artifactKey?: string; candidateDigest?: string; reviewer?: { verdict: "pass" | "block"; findings: unknown[] };
   verification?: Array<{ command: string; status: string; exitCode?: number | null; tests: number; artifactRefs: string[] }>;
+  postIntegrationVerification?: PipelineRecord["verification"];
   reason?: string; updatedAt: string;
 }
 export function ownerStart(pid = process.pid): string {
