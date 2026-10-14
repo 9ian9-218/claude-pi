@@ -53,6 +53,7 @@ describe("unattended pipeline admission", () => {
     expect(observedTests("Tests  12 passed (12)")).toBe(12);
     expect(observedTests("No tests found; success")).toBe(0);
     expect(observedTests("# tests 12\n# pass 0\n# skipped 12")).toBe(0);
+    expect(observedTests("ok 1 - 99 passed # SKIP\n# tests 1\n# pass 0")).toBe(0);
     expect(observedTests("Ran 12 tests\nOK (skipped=12)")).toBe(0);
   });
   it("does not accept empty or unbounded acceptance configuration", () => runWithWorkdir(root, () => {
@@ -198,3 +199,16 @@ it("rejects a real all-skipped suite even when its exit code is zero", async () 
   expect(result.status).toBe("blocked"); expect(result.verification[0]).toMatchObject({ exitCode: 0, tests: 0 });
   expect(fs.readFileSync(path.join(root, "src/value.js"), "utf8")).toContain("return 0");
 }, 20000);
+
+it("rejects an artifact from another repository before touching the target", async () => {
+  const binding = await createWorkerWorkspace(root, "foreign");
+  fs.writeFileSync(path.join(binding.worktreePath, "src/value.js"), "changed");
+  const artifact = preserveWorkspaceArtifact(binding.worktreePath, binding.taskId, binding.baseSha, root); finishWorkspace(binding, "review");
+  const foreign = fs.mkdtempSync(path.join(os.tmpdir(), "cpi-foreign-"));
+  try {
+    execFileSync("git", ["init", "-q"], { cwd: foreign });
+    artifact.targetRoot = foreign;
+    await expect(runWithWorkdir(root, () => integrateTaskArtifact(artifact))).rejects.toThrow("another repository");
+    expect(fs.existsSync(path.join(foreign, "src/value.js"))).toBe(false);
+  } finally { fs.rmSync(foreign, { recursive: true, force: true }); }
+});
