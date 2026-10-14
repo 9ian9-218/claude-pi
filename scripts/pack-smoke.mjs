@@ -9,14 +9,14 @@ const root = process.cwd();
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'cpi-production-pack-'));
 const npmCli = process.env.npm_execpath;
 if (!npmCli) throw new Error('Run this check with npm run test:pack');
-const npm = (args, cwd = root) => exec(process.execPath, [npmCli, ...args], { cwd, timeout: 180_000, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, npm_config_cache: path.join(temp, 'cache') } });
+const npm = (args, cwd = root) => exec(process.execPath, [npmCli, ...args], { cwd, timeout: 300_000, maxBuffer: 4 * 1024 * 1024, env: { ...process.env } });
 let server;
 try {
   const packed = JSON.parse((await npm(['pack', '--json', '--pack-destination', temp])).stdout)[0];
   const unexpected = packed.files.filter(f => /(?:\.test\.ts$|(^|\/)\.agent\/|(^|\/)tests\/|auth\.json$)/.test(f.path));
   if (unexpected.length) throw new Error(`Unexpected package files: ${unexpected.map(f => f.path).join(', ')}`);
   const app = path.join(temp, 'app'); fs.mkdirSync(app); fs.writeFileSync(path.join(app, 'package.json'), JSON.stringify({ name: 'production-smoke', private: true, type: 'module' }));
-  await npm(['install', '--omit=dev', '--ignore-scripts', path.join(temp, packed.filename)], app);
+  await npm(['install', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', path.join(temp, packed.filename)], app);
   const bin = path.join(app, 'node_modules', 'claude-pi', 'bin', 'cpi.js');
   const version = (await exec(process.execPath, [bin, '--version'], { cwd: app })).stdout.trim();
   if (version !== JSON.parse(fs.readFileSync(path.join(root, 'package.json'))).version) throw new Error('Installed CLI version mismatch');
