@@ -475,7 +475,7 @@ function execShutdownTeammate(args: Record<string, unknown>): Promise<string> {
   const ctx = getAgentContext();
   const teamName = String(args["team_name"] ?? "").trim() || ctx.teamName || "";
   if (!teamName) return Promise.resolve("Error: no team context");
-  return requestTeammateShutdown(String(args["name"]), teamName);
+  return requestTeammateShutdown(String(args["name"]), teamName, args["force"] === true);
 }
 
 const CREATE_TEAM_SCHEMA = {
@@ -538,6 +538,7 @@ const SHUTDOWN_TEAMMATE_SCHEMA = {
   type: "object",
   properties: {
     name: { type: "string", description: "Teammate name to shut down" },
+    force: { type: "boolean", description: "Cancel the active model request and tools, then wait for termination" },
     team_name: { type: "string", description: "Team name; empty for current team" },
   },
   required: ["name", "team_name"],
