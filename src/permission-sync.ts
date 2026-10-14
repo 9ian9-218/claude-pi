@@ -13,6 +13,7 @@ import { createPermissionRequest as createPermMsg, createPermissionResponse, par
 import { consumePendingPermissionRequests } from "./teammates/poller.ts";
 import { getLeaderName } from "./teammates/team-helpers.ts";
 import { currentBudget } from "./task-budget.ts";
+import { getTeamMode } from "./settings.ts";
 import { checkDenyList, checkRules } from "./permission.ts";
 
 export interface SwarmPermissionRequest {
@@ -304,6 +305,8 @@ export async function checkPermissionWithBubble(options: {
 }): Promise<string | null> {
   const ctx = getAgentContext();
   const toolUseId = options.toolUseId || generateRequestId();
+
+  if (getTeamMode() === "pipeline") return "Permission denied: unattended pipeline cannot wait for interactive approval. " + options.reason;
 
   if (ctx.role === "subagent") {
     return bubbleSubagentPermission({

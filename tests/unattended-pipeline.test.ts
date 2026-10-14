@@ -221,3 +221,15 @@ it("protects the publishable dependency lock as original acceptance", async () =
   expect(() => assertOriginalAcceptance(record, binding.worktreePath)).toThrow("acceptance file changed");
   finishWorkspace(binding, "review");
 });
+
+it("blocks undeclared permissions without waiting for a human approval", async () => {
+  const { checkPermissionWithBubble, setAskUserImpl, resetAskUserImpl } = await import("../src/permission-sync.ts");
+  let asked = false;
+  setAskUserImpl(() => { asked = true; return new Promise(() => {}); });
+  try {
+    const result = await runWithAgentContext(createAgentContext({ role: "worker" }), () => checkPermissionWithBubble({
+      toolName: "run_bash", args: { command: "rm -rf build" }, reason: "destructive command",
+    }));
+    expect(result).toContain("unattended"); expect(asked).toBe(false);
+  } finally { resetAskUserImpl(); }
+});
