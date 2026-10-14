@@ -105,13 +105,13 @@ export async function spawnSubagent(
     catch (e) { return `Error: cannot isolate ${role}: ${String(e)}`; }
   }
   const workspace = owned?.worktreePath ?? parentPath;
+  let childSession: SessionManager | null = null;
   try {
   if (owned) options.onWorkspace?.(owned);
 
   // 子会话落盘：
   //  - 有父会话 → fork 父分支（system / 工具面 / 历史前缀与父一致 → prompt cache 命中）
   //  - 无父会话（测试或直接调用）→ 独立空会话 + 角色 system 提示
-  let childSession: SessionManager | null = null;
   let forked = false;
   const sessionName = `${role}: ${goal.slice(0, 60)}`;
   try {
@@ -297,6 +297,7 @@ export async function spawnSubagent(
     throw owned ? new Error(`${String(err)}; worker worktree retained at ${owned.worktreePath}`) : err;
   }
   } finally {
+    childSession?.close();
     if (owned && readWorkspaceRecord(owned.recordPath)?.status === "active") {
       await cancelWorkspaceProcesses(owned.worktreePath);
       await withRepositoryLock(parentPath, () => {
